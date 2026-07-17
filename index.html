@@ -72,6 +72,10 @@
     </div>
     <div id="ol-room" hidden>
       <div id="ol-code-view"></div>
+      <div>
+        <button id="btn-copy-code" class="secondary" style="padding:5px 12px;font-size:13px;">コードをコピー</button>
+        <button id="btn-copy-url" class="secondary" style="padding:5px 12px;font-size:13px;">URLをコピー</button>
+      </div>
       <div id="ol-share"></div>
       <div id="ol-room-msg" style="font-size:15px;color:#cde"></div>
       <div id="ol-stage" hidden style="margin:12px 0 6px;">
@@ -166,6 +170,8 @@ const STOCKS = 3;
 const RESPAWN_INVULN = 150;
 const COUNTDOWN_TICKS = 180;
 const TIME_LIMIT = 120 * 60;   // 1ラウンドの制限時間（2分＝7200tick）
+const RESPAWN_TOP = 30;        // 復活時に出る高さ（画面上部）
+const RESPAWN_FLOAT = 1.8;     // 復活風船での降下速度（ふわふわ）
 
 // アイテム: 空からステージ上へ落下。先にタッチした人が取得、効果は10秒。
 //   reach = 攻撃(波動)のリーチ延長 / speed = 移動速度1.5倍
@@ -409,11 +415,17 @@ const USED_CODES = new Set([
   "ArrowUp","ArrowDown","ArrowLeft","ArrowRight","Comma","Period","Slash",
   "Enter","Escape","Space",
 ]);
+// 入力欄（オンラインのコード入力など）にフォーカス中はゲーム操作としてキーを拾わない
+function typingInField() {
+  const el = document.activeElement;
+  return el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA");
+}
 window.addEventListener("keydown", e => {
+  if (typingInField()) return;                 // コード入力中はそのまま入力欄へ
   if (USED_CODES.has(e.code)) e.preventDefault();
   if (!e.repeat) keys.add(e.code);
 });
-window.addEventListener("keyup", e => keys.delete(e.code));
+window.addEventListener("keyup", e => { if (typingInField()) return; keys.delete(e.code); });
 window.addEventListener("blur", () => keys.clear());
 
 const NEUTRAL = Object.freeze({ left:false,right:false,up:false,down:false,jump:false,attack:false,guard:false,balloon:false,start:false });
@@ -588,8 +600,10 @@ function makePlayer(slotIdx, stage) {
     itemGetFlash: 0,
     balloonFuel: BALLOON.fuel,    // 風船の残り燃料（0で割れて復活まで使えない）
     ballooning: false,
+    respawning: false,            // 復活風船でふわふわ降下中
     attackDir: "fwd",             // 攻撃の向き "fwd" | "up" | "down"
     warpCd: 0,                    // ワープ後クールダウン
+    stepPhase: 0,                 // 足のちょこちょこアニメ位相
     hitFlash: 0,
     prev: NEUTRAL,                // 前フレーム入力（エッジ検出用・状態の一部として保持）
   };
@@ -947,8 +961,17 @@ function stepMatch(state, samples) {
       }
     }
 
+    // --- 復活風船: ふわふわ降下。Sキー(down)で割って任意に降りられる ---
+    if (p.respawning) {
+      if (cur.down) { p.respawning = false; events.push({ type: "respawn-pop", x: p.x, y: p.y - PLAYER_H - 20 }); }
+      else {
+        p.vy += (RESPAWN_FLOAT - p.vy) * 0.25;   // 一定の緩い降下速度へ寄せる
+        p.onGround = false;
+      }
+    }
+
     // --- 風船（1ストック1回。押している間だけ浮上、燃料を使い切ると割れて復活まで無し）---
-    p.ballooning = cur.balloon && canAct && !locked && p.balloonFuel > 0;
+    p.ballooning = cur.balloon && canAct && !locked && !p.respawning && p.balloonFuel > 0;
     if (p.ballooning) {
       p.balloonFuel--;
       p.onGround = false;                             // 浮き上がる
@@ -957,8 +980,8 @@ function stepMatch(state, samples) {
       if (p.balloonFuel === 0) { p.ballooning = false; events.push({ type: "balloon-pop", x: p.x, y: p.y - PLAYER_H }); }
     }
 
-    // 重力（風船中はスキップ。空中で下入力＝急降下）
-    if (!p.onGround && !p.ballooning) {
+    // 重力（風船中・復活降下中はスキップ。空中で下入力＝急降下）
+    if (!p.onGround && !p.ballooning && !p.respawning) {
       const fast = cur.down && p.vy > 0;
       p.vy += fast ? PHYS.fastFallGravity : PHYS.gravity;
       const cap = fast ? PHYS.maxFastFall : PHYS.maxFall;
@@ -1021,12 +1044,17 @@ function stepMatch(state, samples) {
         if (!p.onGround) events.push({ type: "land", x: p.x, y: p.y });
         p.onGround = true;
         p.airJumps = PHYS.airJumps;
+        p.respawning = false;                 // 着地したら復活風船おわり
       } else {
         p.onGround = false;
       }
     } else {
       p.onGround = false;
     }
+
+    // 歩いているときの足のちょこちょこアニメ位相
+    if (p.onGround && Math.abs(p.vx) > 0.4) p.stepPhase += Math.abs(p.vx) * 0.12;
+    else p.stepPhase = 0;
 
     p.prev = cur;
   }
@@ -1130,20 +1158,31 @@ function stepMatch(state, samples) {
 
   // --- アイテム（出現・落下・取得）---
   if (!inCountdown && !state.ending) {
-    // 出現
+    // 出現（reach/speed/beam=各weight2、refill=weight1＝半分の頻度）
     if (state.itemTimer > 0) state.itemTimer--;
     if (state.itemTimer === 0) {
       state.itemTimer = ITEM.spawnInterval;
       if (state.items.length < ITEM.maxOnField) {
-        const type = ITEM_TYPES[Math.min(ITEM_TYPES.length - 1, Math.floor(rngNext(state) * ITEM_TYPES.length))];
-        const margin = 160;
-        const x = margin + rngNext(state) * (W - margin * 2);
-        state.items.push({ type, x, y: -30, vy: 0, landed: false });
-        events.push({ type: "item-spawn", x, itemType: type });
+        const roll = rngNext(state) * 7;
+        const type = roll < 2 ? "reach" : roll < 4 ? "speed" : roll < 6 ? "beam" : "refill";
+        if (type === "refill") {
+          // 風船なのでふわふわ浮いて、風で左右に流れて横切る
+          const dir = rngNext(state) < 0.5 ? 1 : -1;
+          const y = 170 + rngNext(state) * 170;
+          const x = dir > 0 ? -24 : W + 24;
+          state.items.push({ type, x, y, vy: 0, vx: dir * (0.9 + rngNext(state) * 0.7), float: true, landed: false });
+          events.push({ type: "item-spawn", x, itemType: type });
+        } else {
+          const margin = 160;
+          const x = margin + rngNext(state) * (W - margin * 2);
+          state.items.push({ type, x, y: -30, vy: 0, landed: false });
+          events.push({ type: "item-spawn", x, itemType: type });
+        }
       }
     }
-    // 落下＋設置
+    // 落下＋設置 / 風船はふわふわ横流れ
     for (const it of state.items) {
+      if (it.float) { it.x += it.vx; continue; }   // 風船アイテムは水平ドリフト（上下バブは描画で）
       if (!it.landed) {
         it.vy += ITEM.gravity;
         if (it.vy > ITEM.maxFall) it.vy = ITEM.maxFall;
@@ -1159,10 +1198,11 @@ function stepMatch(state, samples) {
         }
       }
     }
-    // 取得（落下中でも先に触れた方が取る）＋ ギャップ落下で消滅
+    // 取得（落下中でも先に触れた方が取る）＋ 画面外で消滅
     for (let k = state.items.length - 1; k >= 0; k--) {
       const it = state.items[k];
-      if (it.y > BLAST.bottom) { state.items.splice(k, 1); continue; }
+      if (it.float && (it.x < -50 || it.x > W + 50)) { state.items.splice(k, 1); continue; }
+      if (!it.float && it.y > BLAST.bottom) { state.items.splice(k, 1); continue; }
       let taken = -1;
       for (let i = 0; i < ps.length; i++) {
         const p = ps[i];
@@ -1174,8 +1214,12 @@ function stepMatch(state, samples) {
       }
       if (taken >= 0) {
         const p = ps[taken];
-        p.itemType = it.type;
-        p.itemTimer = ITEM.duration[it.type];
+        if (it.type === "refill") {
+          p.balloonFuel = BALLOON.fuel;   // 風船ゲージを満タンに（即時）
+        } else {
+          p.itemType = it.type;
+          p.itemTimer = ITEM.duration[it.type];
+        }
         p.itemGetFlash = 24;
         state.items.splice(k, 1);
         events.push({ type: "item-get", x: p.x, y: p.y - PLAYER_H, slot: p.slot, itemType: it.type });
@@ -1196,10 +1240,12 @@ function stepMatch(state, samples) {
     if (!p.alive) continue;
     if (p.x < BLAST.left || p.x > BLAST.right || p.y < BLAST.top || p.y > BLAST.bottom) {
       p.stocks--;
-      events.push({ type: "ko", slot: p.slot, x: Math.max(40, Math.min(W - 40, p.x)), y: Math.max(40, Math.min(H - 40, p.y)) });
+      // 撃墜方向（画面のどの辺から出たか）を派手エフェクト用に伝える
+      const koDir = p.x < 0 ? "L" : p.x > W ? "R" : p.y < 0 ? "U" : "D";
+      events.push({ type: "ko", slot: p.slot, x: Math.max(40, Math.min(W - 40, p.x)), y: Math.max(40, Math.min(H - 40, p.y)), dir: koDir });
       if (p.stocks > 0) {
         const sp = state.stage.spawns[p.slot];
-        p.x = sp.x; p.y = sp.y - 120;
+        p.x = sp.x; p.y = RESPAWN_TOP;         // 画面上部から
         p.vx = 0; p.vy = 0;
         p.damage = 0;
         p.hitstun = 0; p.attackTimer = 0; p.attackIsSpecial = false;
@@ -1210,6 +1256,8 @@ function stepMatch(state, samples) {
         p.warpCd = 0;
         p.airJumps = PHYS.airJumps;
         p.invuln = RESPAWN_INVULN;
+        p.respawning = true;                   // 復活風船でふわふわ降下
+        p.onGround = false;
       } else {
         p.alive = false;
       }
@@ -1565,6 +1613,9 @@ function refreshOnlineUI() {
     const stageBox = $ol("ol-stage");
     stageBox.hidden = !(NET.isHost && NET.status === "connected");
     $ol("ol-stage-name").textContent = STAGES[APP.stageIndex].name;
+    // コピーボタンはホストのみ
+    $ol("btn-copy-code").style.display = NET.isHost ? "" : "none";
+    $ol("btn-copy-url").style.display = NET.isHost ? "" : "none";
   }
   $ol("ol-status").textContent = NET.msg || "";
 }
@@ -1575,6 +1626,26 @@ function olChangeStage(delta) {
 }
 $ol("ol-stage-prev").addEventListener("click", () => olChangeStage(-1));
 $ol("ol-stage-next").addEventListener("click", () => olChangeStage(1));
+
+// コード/URLをクリップボードへコピー（フォールバック付き）
+function copyText(text, btn) {
+  const done = () => { const o = btn.textContent; btn.textContent = "コピーしました✓"; setTimeout(() => { btn.textContent = o; }, 1200); };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(done, () => fallbackCopy(text, done));
+  } else fallbackCopy(text, done);
+}
+function fallbackCopy(text, done) {
+  const ta = document.createElement("textarea");
+  ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+  document.body.appendChild(ta); ta.focus(); ta.select();
+  try { document.execCommand("copy"); done(); } catch (e) {}
+  document.body.removeChild(ta);
+}
+$ol("btn-copy-code").addEventListener("click", () => { if (NET.code) copyText(NET.code, $ol("btn-copy-code")); });
+$ol("btn-copy-url").addEventListener("click", () => {
+  const url = location.origin + location.pathname + "?room=" + (NET.code || "");
+  copyText(url, $ol("btn-copy-url"));
+});
 
 $ol("btn-host").addEventListener("click", () => {
   if (typeof Peer === "undefined") { NET.msg = "通信ライブラリを読み込めませんでした（要インターネット接続）"; refreshOnlineUI(); return; }
@@ -1620,6 +1691,8 @@ function claimedIds() {
 }
 
 function updateLobby() {
+  // オンラインメニューを開いている間はローカルロビー操作（参加/CPU/ステージ）を止める
+  if (!$ol("online").hidden) return;
   // 注意: 全ソースの prev を先に更新しきってから遷移する
   // （ループ途中で抜けると未更新の prev が偽エッジを生む）
   const claimed = claimedIds();
@@ -1733,7 +1806,7 @@ function olBroadcastStage() {
 
 /* ==================== 演出（非決定でOKな層） ==================== */
 
-const fx = { particles: [], shake: 0, koFlash: 0, tramp: {} };  // tramp: 床x→ビヨン揺れの経過フレーム
+const fx = { particles: [], shake: 0, koFlash: 0, tramp: {}, rings: [], koLabel: null };  // tramp: 床x→ビヨン揺れ
 
 function handleEvents(events) {
   for (const ev of events) {
@@ -1750,18 +1823,36 @@ function handleEvents(events) {
         });
       }
     } else if (ev.type === "ko") {
-      fx.shake = 16;
-      fx.koFlash = 12;
-      for (let k = 0; k < 28; k++) {
+      fx.shake = 22;
+      fx.koFlash = 22;
+      fx.rings.push({ x: ev.x, y: ev.y, t: 0, color: COLORS[ev.slot] });
+      fx.koLabel = { slot: ev.slot, t: 55 };
+      // 全方位バースト（大きめ・多め）
+      for (let k = 0; k < 44; k++) {
         const ang = Math.random() * Math.PI * 2;
-        const sp = 3 + Math.random() * 9;
+        const sp = 3 + Math.random() * 12;
         fx.particles.push({
           x: ev.x, y: ev.y,
           vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp,
-          life: 24 + Math.random() * 16,
-          size: 4 + Math.random() * 4,
-          color: COLORS[ev.slot],
+          life: 26 + Math.random() * 18,
+          size: 4 + Math.random() * 5,
+          color: Math.random() < 0.4 ? "#fff" : COLORS[ev.slot],
         });
+      }
+      // 撃墜方向へ飛ぶ星の尾（L/R/U/D）
+      const dv = { L: [-1, 0], R: [1, 0], U: [0, -1], D: [0, 1] }[ev.dir] || [0, -1];
+      for (let k = 0; k < 12; k++) {
+        const sp = 8 + Math.random() * 12;
+        fx.particles.push({
+          x: ev.x, y: ev.y,
+          vx: dv[0] * sp + (Math.random() - 0.5) * 4, vy: dv[1] * sp + (Math.random() - 0.5) * 4,
+          life: 20 + Math.random() * 12, size: 3 + Math.random() * 4, color: "#ffe680",
+        });
+      }
+    } else if (ev.type === "respawn-pop") {
+      for (let k = 0; k < 10; k++) {
+        const ang = Math.random() * Math.PI * 2, sp = 1 + Math.random() * 4;
+        fx.particles.push({ x: ev.x, y: ev.y, vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp, life: 12 + Math.random() * 6, size: 2 + Math.random() * 2, color: "#cfe8ff" });
       }
     } else if (ev.type === "land") {
       for (let k = 0; k < 4; k++) {
@@ -1819,7 +1910,7 @@ function handleEvents(events) {
       }
     } else if (ev.type === "item-get") {
       fx.shake = 4;
-      const col = ev.itemType === "reach" ? "#ff8c42" : "#42d9ff";
+      const col = (ITEM_STYLE[ev.itemType] && ITEM_STYLE[ev.itemType].color) || "#fff";
       for (let k = 0; k < 16; k++) {
         const ang = Math.random() * Math.PI * 2;
         const sp = 2 + Math.random() * 5;
@@ -1895,6 +1986,9 @@ function updateFx() {
   }
   // トランポリンのビヨン揺れ（経過フレームを進める。40超で終了）
   for (const k in fx.tramp) { fx.tramp[k]++; if (fx.tramp[k] > 40) delete fx.tramp[k]; }
+  // 撃墜リング
+  for (let i = fx.rings.length - 1; i >= 0; i--) { fx.rings[i].t++; if (fx.rings[i].t > 30) fx.rings.splice(i, 1); }
+  if (fx.koLabel && --fx.koLabel.t <= 0) fx.koLabel = null;
 }
 
 // トランポリンの沈み量（ビヨンビヨン＝減衰する正弦振動）。t=経過フレーム
@@ -2095,15 +2189,35 @@ function wallSnapshot(stage, phase) {
 }
 
 const ITEM_STYLE = {
-  reach: { color: "#ff8c42", dark: "#c85a1a", label: "リーチ" },
-  speed: { color: "#42d9ff", dark: "#1a8fc8", label: "スピード" },
-  beam:  { color: "#c86bff", dark: "#8a2ad0", label: "ビーム" },
+  reach:  { color: "#ff8c42", dark: "#c85a1a", label: "リーチ" },
+  speed:  { color: "#42d9ff", dark: "#1a8fc8", label: "スピード" },
+  beam:   { color: "#c86bff", dark: "#8a2ad0", label: "ビーム" },
+  refill: { color: "#ff7bb0", dark: "#c8407a", label: "風船満タン" },
 };
 
 // アイテム本体を描画（落下中はふわっと揺れる）
 function drawItem(it) {
   const st = ITEM_STYLE[it.type];
   const r = ITEM.radius;
+  // 風船満タンアイテム: ふわふわ浮く風船の姿
+  if (it.type === "refill") {
+    const bob = Math.sin(performance.now() / 260 + it.x / 40) * 5;
+    const cx = it.x, cy = it.y + bob;
+    ctx.save();
+    ctx.strokeStyle = "rgba(255,255,255,0.7)"; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(cx, cy + 20); ctx.quadraticCurveTo(cx + 5, cy + 30, cx, cy + 40); ctx.stroke();
+    ctx.shadowColor = st.color; ctx.shadowBlur = 12;
+    ctx.fillStyle = st.color; ctx.strokeStyle = "#fff"; ctx.lineWidth = 2.5;
+    ctx.beginPath(); ctx.ellipse(cx, cy, 17, 21, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    ctx.restore();
+    // 結び目
+    ctx.fillStyle = st.color; ctx.beginPath(); ctx.moveTo(cx - 4, cy + 20); ctx.lineTo(cx + 4, cy + 20); ctx.lineTo(cx, cy + 25); ctx.closePath(); ctx.fill();
+    // ハイライト＋「満」
+    ctx.fillStyle = "rgba(255,255,255,0.6)"; ctx.beginPath(); ctx.ellipse(cx - 5, cy - 6, 4, 6, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "#fff"; ctx.font = "bold 14px sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText("満", cx, cy + 1); ctx.textBaseline = "alphabetic";
+    return;
+  }
   const bob = it.landed ? Math.sin(performance.now() / 300 + it.x) * 3 : 0;
   const cx = it.x, cy = it.y + bob;
   // 光るカプセル
@@ -2285,6 +2399,24 @@ function drawPlayer(p) {
     }
     ctx.stroke();
     }
+  }
+
+  // 復活風船（ふわふわ降下中。頭上に大きめの縞模様バルーン＋糸）
+  if (p.respawning) {
+    const bx = p.x, byTop = by - 40;
+    ctx.strokeStyle = "rgba(255,255,255,0.8)"; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(bx - 6, by + 2); ctx.lineTo(bx, byTop + 18); ctx.moveTo(bx + 6, by + 2); ctx.lineTo(bx, byTop + 18); ctx.stroke();
+    ctx.fillStyle = "#ffffff"; ctx.strokeStyle = COLORS[p.slot]; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.ellipse(bx, byTop, 18, 22, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    // 縞模様（プレイヤー色）
+    ctx.save(); ctx.beginPath(); ctx.ellipse(bx, byTop, 18, 22, 0, 0, Math.PI * 2); ctx.clip();
+    ctx.fillStyle = COLORS[p.slot];
+    ctx.fillRect(bx - 18, byTop - 22, 7, 44); ctx.fillRect(bx - 2, byTop - 22, 7, 44); ctx.fillRect(bx + 12, byTop - 22, 7, 44);
+    ctx.restore();
+    ctx.fillStyle = "rgba(255,255,255,0.6)"; ctx.beginPath(); ctx.ellipse(bx - 6, byTop - 8, 4, 5, 0, 0, Math.PI * 2); ctx.fill();
+    // 「S で降りる」ヒント
+    ctx.fillStyle = "rgba(255,255,255,0.65)"; ctx.font = "11px sans-serif"; ctx.textAlign = "center";
+    ctx.fillText("Sで降りる", p.x, byTop - 28);
   }
 
   // 風船（浮上中: 背中の上に風船＋糸。残り燃料でしぼむ）
@@ -2537,6 +2669,17 @@ function drawMatch() {
   if (m.mob) drawMob(m.mob);
   if (m.pendulums.length) drawPendulums(m.pendulums);
 
+  // 撃墜リング（拡がる輪）
+  for (const rg of fx.rings) {
+    const r = rg.t * 9;
+    ctx.globalAlpha = Math.max(0, 1 - rg.t / 30);
+    ctx.strokeStyle = rg.color; ctx.lineWidth = 6;
+    ctx.beginPath(); ctx.arc(rg.x, rg.y, r, 0, Math.PI * 2); ctx.stroke();
+    ctx.strokeStyle = "#fff"; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(rg.x, rg.y, r * 0.7, 0, Math.PI * 2); ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+
   // パーティクル
   for (const pt of fx.particles) {
     ctx.globalAlpha = Math.min(1, pt.life / 12);
@@ -2547,8 +2690,20 @@ function drawMatch() {
   ctx.restore();
 
   if (fx.koFlash > 0) {
-    ctx.fillStyle = "rgba(255,255,255," + fx.koFlash / 30 + ")";
+    ctx.fillStyle = "rgba(255,255,255," + fx.koFlash / 34 + ")";
     ctx.fillRect(0, 0, W, H);
+  }
+  // 「PX 撃墜！」の表示
+  if (fx.koLabel) {
+    const a = Math.min(1, fx.koLabel.t / 12);
+    ctx.globalAlpha = a;
+    ctx.textAlign = "center";
+    ctx.font = "bold 72px sans-serif";
+    ctx.lineWidth = 6; ctx.strokeStyle = "rgba(0,0,0,0.6)";
+    ctx.strokeText(NAMES[fx.koLabel.slot] + " 撃墜！", W / 2, H / 2 - 40);
+    ctx.fillStyle = COLORS[fx.koLabel.slot];
+    ctx.fillText(NAMES[fx.koLabel.slot] + " 撃墜！", W / 2, H / 2 - 40);
+    ctx.globalAlpha = 1;
   }
 
   drawHUD(m);
