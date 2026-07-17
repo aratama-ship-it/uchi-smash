@@ -1,0 +1,1270 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ウチスマ！β</title>
+<style>
+  html, body {
+    margin: 0; padding: 0;
+    background: #14141e;
+    height: 100%;
+    overflow: hidden;
+    font-family: -apple-system, "Hiragino Kaku Gothic ProN", sans-serif;
+  }
+  #wrap {
+    position: fixed; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+  }
+  canvas {
+    background: #1a1a28;
+    max-width: 100%; max-height: 100%;
+    image-rendering: auto;
+  }
+  /* オンライン対戦メニュー */
+  #online {
+    position: fixed; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(0,0,0,0.6);
+    z-index: 10;
+  }
+  #online[hidden] { display: none; }
+  #online .panel {
+    background: #1c1c30; color: #fff;
+    border: 2px solid #5a5a8a; border-radius: 14px;
+    padding: 28px 34px; width: 420px; max-width: 90vw;
+    text-align: center;
+  }
+  #online h2 { margin: 0 0 6px; font-size: 22px; }
+  #online .sub { color: #aab; font-size: 13px; margin-bottom: 18px; }
+  #online button {
+    font-size: 16px; font-weight: bold;
+    padding: 10px 18px; margin: 6px 4px;
+    border: none; border-radius: 8px; cursor: pointer;
+    background: #3f6fd8; color: #fff;
+  }
+  #online button.secondary { background: #444460; }
+  #online button:disabled { opacity: 0.5; cursor: default; }
+  #online input {
+    font-size: 20px; text-align: center; text-transform: uppercase;
+    width: 120px; padding: 8px; border-radius: 8px;
+    border: 1px solid #666; background: #12121f; color: #fff;
+    letter-spacing: 4px;
+  }
+  #ol-code-view { font-size: 40px; font-weight: bold; letter-spacing: 10px; color: #ffd34d; margin: 10px 0 4px; }
+  #ol-share { font-size: 12px; color: #9ab; word-break: break-all; margin-bottom: 8px; user-select: all; }
+  #ol-status { min-height: 22px; color: #ffb0b0; font-size: 14px; margin-top: 10px; }
+  .ol-note { font-size: 12px; color: #889; margin-top: 12px; line-height: 1.6; }
+</style>
+</head>
+<body>
+<div id="wrap"><canvas id="game" width="1280" height="720"></canvas></div>
+
+<div id="online" hidden>
+  <div class="panel">
+    <h2>オンライン対戦（2人・β）</h2>
+    <div class="sub">ホストがP1（赤）、参加側がP2（青）になります</div>
+    <div id="ol-idle">
+      <button id="btn-host">部屋を作る（ホスト）</button>
+      <div style="margin:12px 0 6px;color:#889">─ または ─</div>
+      <input id="join-code" placeholder="コード" maxlength="4">
+      <button id="btn-join">部屋に入る</button>
+    </div>
+    <div id="ol-room" hidden>
+      <div id="ol-code-view"></div>
+      <div id="ol-share"></div>
+      <div id="ol-room-msg" style="font-size:15px;color:#cde"></div>
+      <button id="btn-start" hidden>対戦開始！</button>
+    </div>
+    <div id="ol-status"></div>
+    <button id="btn-close" class="secondary">閉じる（切断してローカルへ）</button>
+    <div class="ol-note">※ 通信はP2P（PeerJS）。まれに接続できないネット環境があります。<br>コードを電話・LINEなどで相手に伝えてください。</div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/peerjs/1.5.4/peerjs.min.js"></script>
+<script>
+"use strict";
+/* =====================================================================
+ * ウチスマ！β — 身内向けスマブラ風 2D対戦ゲーム
+ *
+ * 設計方針（オンライン化を見据えた焼き込み）:
+ *  1. 最大4人をアーキテクチャに固定
+ *  2. 「入力ソース」抽象化: キーボード2系統 + ゲームパッド + (将来)ネットワーク
+ *     すべて同じ InputSample {left,right,up,down,jump,attack,start} を返す
+ *  3. シミュレーションは決定論的:
+ *     stepMatch(state, samples[]) は「状態 + 今フレームの全員の入力」だけで
+ *     次の状態が決まる。乱数・時刻・描画に依存しない。
+ *     → 将来のオンライン化(入力同期方式)でこの関数をそのまま使える
+ *  4. 描画・パーティクル・画面揺れは sim が返すイベントから生成（非決定でOK）
+ * ===================================================================== */
+
+/* ============================ 定数 ============================ */
+const W = 1280, H = 720;
+const TICK_MS = 1000 / 60;
+const MAX_PLAYERS = 4;
+
+const PHYS = {
+  gravity: 0.55,
+  fastFallGravity: 1.0,
+  maxFall: 12,
+  maxFastFall: 17,
+  groundAccel: 1.0,
+  maxRun: 5.5,
+  friction: 0.82,
+  airAccel: 0.55,
+  maxAir: 5.0,
+  airDrag: 0.985,
+  jumpVel: -12.5,
+  doubleJumpVel: -11.5,
+  airJumps: 1,
+};
+
+const ATTACK = {
+  total: 20,       // 全体フレーム
+  activeFrom: 16,  // attackTimer がこの値以下で判定発生（4F始動）
+  activeTo: 10,    // この値まで持続（7F持続）
+  range: 46,       // 前方リーチ
+  height: 40,
+  damage: 8,
+  kbBase: 3.2,
+  kbScale: 0.105,  // % 1につき加算
+  angleDeg: 42,
+  hitstopFrames: 6,
+};
+
+const PLAYER_W = 36, PLAYER_H = 48;
+const STOCKS = 3;
+const RESPAWN_INVULN = 150;
+const COUNTDOWN_TICKS = 180;
+
+const BLAST = { left: -250, right: W + 250, top: -350, bottom: H + 330 };
+
+// ステージ: 全て上からのみ乗れる（メイン台は下からすり抜け可・降下は不可）
+// ⚠️ 段差の設計基準: 単発ジャンプの最高到達点は約134px（離散積分の実測値）。
+//    1段の間隔は105pxにして余裕を持たせる（560→455→350）
+const PLATFORMS = [
+  { x: 190, y: 560, w: 900, droppable: false, main: true },
+  { x: 300, y: 455, w: 180, droppable: true },
+  { x: 800, y: 455, w: 180, droppable: true },
+  { x: 550, y: 350, w: 180, droppable: true },
+];
+
+const SPAWNS = [
+  { x: 390, y: 455 },  // P1: 左足場
+  { x: 890, y: 455 },  // P2: 右足場
+  { x: 420, y: 560 },  // P3: メイン左
+  { x: 860, y: 560 },  // P4: メイン右
+];
+
+const COLORS   = ["#e74c3c", "#3498db", "#f1c40f", "#2ecc71"];
+const COLORS_D = ["#a93226", "#21618c", "#b7950b", "#1e8449"];
+const NAMES    = ["P1", "P2", "P3", "P4"];
+
+/* ======================= 入力レイヤー ======================= */
+// 押下中キーの集合（ブラウザイベント → ここに集約）
+const keys = new Set();
+const USED_CODES = new Set([
+  "KeyW","KeyA","KeyS","KeyD","KeyF","KeyG","KeyH","KeyO",
+  "ArrowUp","ArrowDown","ArrowLeft","ArrowRight","Comma","Period",
+  "Enter","Escape","Space",
+]);
+window.addEventListener("keydown", e => {
+  if (USED_CODES.has(e.code)) e.preventDefault();
+  if (!e.repeat) keys.add(e.code);
+});
+window.addEventListener("keyup", e => keys.delete(e.code));
+window.addEventListener("blur", () => keys.clear());
+
+const NEUTRAL = Object.freeze({ left:false,right:false,up:false,down:false,jump:false,attack:false,start:false });
+
+// キーボード2系統のマッピング
+const KB_MAPS = [
+  { left:"KeyA", right:"KeyD", up:"KeyW", down:"KeyS", jump:"KeyW", attack:"KeyF" },
+  { left:"ArrowLeft", right:"ArrowRight", up:"ArrowUp", down:"ArrowDown", jump:"ArrowUp", attack:"Comma" },
+];
+
+// 入力ソース: sample() が InputSample を返す。将来 NetworkSource を足すだけでオンライン化できる
+function makeKeyboardSource(mapIdx) {
+  const m = KB_MAPS[mapIdx];
+  return {
+    id: "kb" + mapIdx,
+    label: mapIdx === 0 ? "キーボード左 (WASD+F)" : "キーボード右 (矢印+ , )",
+    sample() {
+      return {
+        left: keys.has(m.left), right: keys.has(m.right),
+        up: keys.has(m.up), down: keys.has(m.down),
+        jump: keys.has(m.jump), attack: keys.has(m.attack),
+        start: keys.has("Enter"),
+      };
+    },
+  };
+}
+
+function makeGamepadSource(index) {
+  return {
+    id: "pad" + index,
+    label: "パッド" + (index + 1),
+    sample() {
+      const gp = navigator.getGamepads()[index];
+      if (!gp) return NEUTRAL;
+      const ax = gp.axes[0] || 0;
+      const btn = i => !!(gp.buttons[i] && gp.buttons[i].pressed);
+      return {
+        left:  ax < -0.4 || btn(14),
+        right: ax >  0.4 || btn(15),
+        up:    (gp.axes[1] || 0) < -0.5 || btn(12),
+        down:  (gp.axes[1] || 0) >  0.5 || btn(13),
+        jump:  btn(0) || btn(1),          // A/B (×/○)
+        attack: btn(2) || btn(3),         // X/Y (□/△)
+        start: btn(9),
+      };
+    },
+  };
+}
+
+/* ==================== シミュレーション ==================== */
+
+function makePlayer(slotIdx) {
+  const sp = SPAWNS[slotIdx];
+  return {
+    slot: slotIdx,
+    x: sp.x, y: sp.y - 40,       // y は足元
+    vx: 0, vy: 0,
+    facing: sp.x < W / 2 ? 1 : -1,
+    onGround: false,
+    airJumps: PHYS.airJumps,
+    dropTimer: 0,                 // すり抜け降下中の無視時間
+    damage: 0,
+    stocks: STOCKS,
+    alive: true,
+    invuln: 90,
+    hitstun: 0,
+    attackTimer: 0,
+    attackVictims: [],
+    hitFlash: 0,
+    prev: NEUTRAL,                // 前フレーム入力（エッジ検出用・状態の一部として保持）
+  };
+}
+
+function makeMatchState(slotIndices) {
+  return {
+    tick: 0,
+    countdown: COUNTDOWN_TICKS,
+    hitstop: 0,
+    ending: false,
+    endTimer: 0,
+    finished: false,
+    winnerSlot: null,
+    players: slotIndices.map(makePlayer),
+  };
+}
+
+function rectsOverlap(ax, ay, aw, ah, bx, by, bw, bh) {
+  return ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by;
+}
+
+// 1tick 進める。決定論的（state と samples のみに依存）
+function stepMatch(state, samples) {
+  const events = [];
+  state.tick++;
+
+  if (state.hitstop > 0) { state.hitstop--; return events; }
+
+  const inCountdown = state.countdown > 0;
+  if (inCountdown) {
+    state.countdown--;
+    if (state.countdown === 0) events.push({ type: "go" });
+  }
+
+  const ps = state.players;
+
+  // --- 各プレイヤーの入力・移動 ---
+  for (let i = 0; i < ps.length; i++) {
+    const p = ps[i];
+    if (!p.alive) continue;
+    const cur = (inCountdown || state.ending) ? NEUTRAL : samples[i];
+    const prev = p.prev;
+    const canAct = p.hitstun === 0;
+
+    // タイマー類
+    if (p.hitstun > 0) p.hitstun--;
+    if (p.attackTimer > 0) p.attackTimer--;
+    if (p.invuln > 0) p.invuln--;
+    if (p.dropTimer > 0) p.dropTimer--;
+    if (p.hitFlash > 0) p.hitFlash--;
+
+    const dir = canAct ? ((cur.right ? 1 : 0) - (cur.left ? 1 : 0)) : 0;
+    if (dir !== 0) p.facing = dir;
+
+    // 水平移動
+    if (p.onGround) {
+      if (dir !== 0) {
+        if (p.vx * dir < PHYS.maxRun) {
+          p.vx += PHYS.groundAccel * dir;
+          if (p.vx * dir > PHYS.maxRun) p.vx = PHYS.maxRun * dir;
+        }
+      } else {
+        p.vx *= PHYS.friction;
+        if (Math.abs(p.vx) < 0.05) p.vx = 0;
+      }
+    } else {
+      if (dir !== 0) {
+        if (p.vx * dir < PHYS.maxAir) {
+          p.vx += PHYS.airAccel * dir;
+          if (p.vx * dir > PHYS.maxAir) p.vx = PHYS.maxAir * dir;
+        }
+      } else {
+        p.vx *= PHYS.airDrag;
+      }
+    }
+
+    // ジャンプ（エッジ）
+    const jumpEdge = cur.jump && !prev.jump;
+    if (jumpEdge && canAct) {
+      if (p.onGround) {
+        p.vy = PHYS.jumpVel;
+        p.onGround = false;
+      } else if (p.airJumps > 0) {
+        p.vy = PHYS.doubleJumpVel;
+        p.airJumps--;
+      }
+    }
+
+    // すり抜け降下（薄い足場の上で下エッジ）
+    const downEdge = cur.down && !prev.down;
+    if (downEdge && canAct && p.onGround) {
+      const plat = platformUnder(p);
+      if (plat && plat.droppable) {
+        p.onGround = false;
+        p.dropTimer = 10;
+        p.y += 2;
+      }
+    }
+
+    // 重力（空中で下入力＝急降下）
+    if (!p.onGround) {
+      const fast = cur.down && p.vy > 0;
+      p.vy += fast ? PHYS.fastFallGravity : PHYS.gravity;
+      const cap = fast ? PHYS.maxFastFall : PHYS.maxFall;
+      if (p.vy > cap) p.vy = cap;
+    }
+
+    // 攻撃開始
+    const attackEdge = cur.attack && !prev.attack;
+    if (attackEdge && canAct && p.attackTimer === 0) {
+      p.attackTimer = ATTACK.total;
+      p.attackVictims = [];
+    }
+
+    // 位置の積分 + 足場着地
+    const prevY = p.y;
+    p.x += p.vx;
+    p.y += p.vy;
+
+    if (p.vy >= 0) {
+      let landed = false;
+      for (const plat of PLATFORMS) {
+        if (plat.droppable && p.dropTimer > 0) continue;
+        if (p.x + PLAYER_W / 2 <= plat.x || p.x - PLAYER_W / 2 >= plat.x + plat.w) continue;
+        if (prevY <= plat.y && p.y >= plat.y) {
+          p.y = plat.y;
+          p.vy = 0;
+          landed = true;
+          break;
+        }
+      }
+      if (landed) {
+        if (!p.onGround) events.push({ type: "land", x: p.x, y: p.y });
+        p.onGround = true;
+        p.airJumps = PHYS.airJumps;
+      } else {
+        p.onGround = false;
+      }
+    } else {
+      p.onGround = false;
+    }
+
+    p.prev = cur;
+  }
+
+  // --- 攻撃判定 ---
+  for (let i = 0; i < ps.length; i++) {
+    const a = ps[i];
+    if (!a.alive) continue;
+    if (a.attackTimer > ATTACK.activeFrom || a.attackTimer < ATTACK.activeTo || a.attackTimer === 0) continue;
+    const hx = a.facing === 1 ? a.x + PLAYER_W / 2 - 6 : a.x - PLAYER_W / 2 - ATTACK.range + 6;
+    const hy = a.y - PLAYER_H / 2 - ATTACK.height / 2 - 4;
+    for (let j = 0; j < ps.length; j++) {
+      if (i === j) continue;
+      const v = ps[j];
+      if (!v.alive || v.invuln > 0 || a.attackVictims.includes(j)) continue;
+      if (rectsOverlap(hx, hy, ATTACK.range, ATTACK.height,
+                       v.x - PLAYER_W / 2, v.y - PLAYER_H, PLAYER_W, PLAYER_H)) {
+        a.attackVictims.push(j);
+        v.damage += ATTACK.damage;
+        const kb = ATTACK.kbBase + v.damage * ATTACK.kbScale;
+        const rad = ATTACK.angleDeg * Math.PI / 180;
+        v.vx = Math.cos(rad) * kb * a.facing;
+        v.vy = -Math.sin(rad) * kb;
+        v.hitstun = Math.floor(4 + kb * 2.0);
+        v.onGround = false;
+        v.hitFlash = 8;
+        state.hitstop = ATTACK.hitstopFrames;
+        events.push({ type: "hit", x: (a.x + v.x) / 2, y: v.y - PLAYER_H / 2, dir: a.facing, dmg: v.damage });
+      }
+    }
+  }
+
+  // --- 場外KO ---
+  for (const p of ps) {
+    if (!p.alive) continue;
+    if (p.x < BLAST.left || p.x > BLAST.right || p.y < BLAST.top || p.y > BLAST.bottom) {
+      p.stocks--;
+      events.push({ type: "ko", slot: p.slot, x: Math.max(40, Math.min(W - 40, p.x)), y: Math.max(40, Math.min(H - 40, p.y)) });
+      if (p.stocks > 0) {
+        const sp = SPAWNS[p.slot];
+        p.x = sp.x; p.y = sp.y - 120;
+        p.vx = 0; p.vy = 0;
+        p.damage = 0;
+        p.hitstun = 0; p.attackTimer = 0;
+        p.airJumps = PHYS.airJumps;
+        p.invuln = RESPAWN_INVULN;
+      } else {
+        p.alive = false;
+      }
+    }
+  }
+
+  // --- 決着判定 ---
+  if (!state.ending) {
+    const alive = ps.filter(p => p.alive);
+    if (alive.length <= 1) {
+      state.ending = true;
+      state.endTimer = 70;
+      state.winnerSlot = alive.length === 1 ? alive[0].slot : null;
+      events.push({ type: "finish" });
+    }
+  } else if (state.endTimer > 0) {
+    state.endTimer--;
+    if (state.endTimer === 0) state.finished = true;
+  }
+
+  return events;
+}
+
+function platformUnder(p) {
+  for (const plat of PLATFORMS) {
+    if (p.y === plat.y &&
+        p.x + PLAYER_W / 2 > plat.x && p.x - PLAYER_W / 2 < plat.x + plat.w) {
+      return plat;
+    }
+  }
+  return null;
+}
+
+/* ==================== アプリ状態（ロビー等） ==================== */
+
+const APP = {
+  phase: "lobby",           // lobby | match | result
+  mode: "local",            // local | online
+  slots: [null, null, null, null],   // {source} を格納
+  match: null,
+  lobbyPrev: new Map(),     // sourceId -> 前フレームsample（参加検出用）
+  resultInfo: null,
+};
+window.APP = APP;  // デバッグ用に公開
+
+/* ==================== オンライン対戦（2人・入力同期lockstep） ====================
+ * 方式: delay-based lockstep
+ *  - 両クライアントが同一の決定論的sim(stepMatch)を実行する
+ *  - 送るのは毎tickの入力(1バイト)だけ。tick Tの実行には両者の入力[T]が必須
+ *  - 自分の入力は「tick T実行時に T+DELAY 分を生成して送信」→ DELAY tick先で反映
+ *  - 相手の入力が未着ならそのtickは待つ(stall)。届き次第追いつく
+ * 接続: PeerJS(P2P)。ホストが部屋コードを発行、参加側がコードで接続 */
+const NET = {
+  peer: null, conn: null, isHost: false, code: null,
+  status: "idle",   // idle | starting | hosting | joining | connected
+  msg: "",
+  gen: 0,           // 試合世代（前試合の残留inputを弾く）
+  DELAY: 4,         // 入力遅延tick（60fpsで約67ms）
+  buffers: [[], []],
+  stall: 0,
+  resultPrev: false,
+};
+
+function encodeSample(s) {
+  return (s.left?1:0)|(s.right?2:0)|(s.up?4:0)|(s.down?8:0)|(s.jump?16:0)|(s.attack?32:0);
+}
+function decodeSample(b) {
+  return { left:!!(b&1), right:!!(b&2), up:!!(b&4), down:!!(b&8), jump:!!(b&16), attack:!!(b&32), start:false };
+}
+
+// オンライン時は手元の全デバイス（キーボード両系統+パッド）をOR合成して使う
+const KB_SRC = [makeKeyboardSource(0), makeKeyboardSource(1)];
+function sampleLocalMerged() {
+  const out = { left:false, right:false, up:false, down:false, jump:false, attack:false, start:false };
+  const srcs = [KB_SRC[0].sample(), KB_SRC[1].sample()];
+  const pads = navigator.getGamepads();
+  for (let i = 0; i < pads.length; i++) if (pads[i]) srcs.push(makeGamepadSource(i).sample());
+  for (const s of srcs) for (const k in out) out[k] = out[k] || s[k];
+  return out;
+}
+
+function netResetBuffers() {
+  NET.buffers = [[], []];
+  for (let t = 0; t < NET.DELAY; t++) { NET.buffers[0][t] = NEUTRAL; NET.buffers[1][t] = NEUTRAL; }
+}
+
+const CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+function makeCode() {
+  let s = "";
+  for (let i = 0; i < 4; i++) s += CODE_CHARS[Math.floor(Math.random() * CODE_CHARS.length)];
+  return s;
+}
+const peerIdFor = code => "uchisuma-" + code;
+
+function netHost() {
+  netCleanup();
+  NET.isHost = true; NET.code = makeCode();
+  NET.status = "starting"; NET.msg = "サーバー接続中…";
+  refreshOnlineUI();
+  const peer = new Peer(peerIdFor(NET.code));
+  NET.peer = peer;
+  peer.on("open", () => { NET.status = "hosting"; NET.msg = ""; refreshOnlineUI(); });
+  peer.on("connection", conn => {
+    if (NET.conn) { conn.close(); return; }  // 2人まで
+    netBindConn(conn);
+  });
+  peer.on("error", e => { NET.status = "idle"; NET.msg = "エラー: " + e.type; refreshOnlineUI(); });
+}
+
+function netJoin(code) {
+  if (!code || code.length !== 4) { NET.msg = "4文字のコードを入れてください"; refreshOnlineUI(); return; }
+  netCleanup();
+  NET.isHost = false; NET.code = code;
+  NET.status = "joining"; NET.msg = "接続中…";
+  refreshOnlineUI();
+  const peer = new Peer();
+  NET.peer = peer;
+  peer.on("open", () => {
+    netBindConn(peer.connect(peerIdFor(code), { reliable: true, serialization: "json" }));
+  });
+  peer.on("error", e => { NET.status = "idle"; NET.msg = "エラー: " + e.type + "（コード間違い？）"; refreshOnlineUI(); });
+}
+
+function netBindConn(conn) {
+  NET.conn = conn;
+  conn.on("open", () => { NET.status = "connected"; NET.msg = ""; refreshOnlineUI(); });
+  conn.on("data", netOnData);
+  conn.on("close", () => {
+    NET.conn = null;
+    const wasPlaying = APP.mode === "online" && (APP.phase === "match" || APP.phase === "result");
+    NET.status = (NET.isHost && NET.peer) ? "hosting" : "idle";
+    NET.msg = "相手との接続が切れました";
+    if (wasPlaying) {
+      APP.match = null; APP.mode = "local"; APP.phase = "lobby";
+      openOnlineMenu();
+    }
+    refreshOnlineUI();
+  });
+}
+
+function netOnData(d) {
+  if (!d || !d.y) return;
+  if (d.y === "i") {
+    if (d.g === NET.gen) NET.buffers[NET.isHost ? 1 : 0][d.t] = decodeSample(d.b);
+  } else if (d.y === "start") {
+    NET.gen = d.g;
+    startOnlineMatch();
+  } else if (d.y === "leave") {
+    APP.match = null; APP.mode = "local"; APP.phase = "lobby";
+    NET.msg = "相手が退出しました";
+    openOnlineMenu();
+  }
+}
+
+function netHostStart() {
+  if (!(NET.status === "connected" && NET.isHost && NET.conn && NET.conn.open)) return;
+  NET.gen++;
+  NET.conn.send({ y: "start", g: NET.gen });
+  startOnlineMatch();
+}
+
+function startOnlineMatch() {
+  netResetBuffers();
+  NET.stall = 0; NET.resultPrev = true;
+  APP.match = makeMatchState([0, 1]);   // ホスト=P1(赤), 参加側=P2(青)
+  APP.mode = "online"; APP.phase = "match";
+  document.getElementById("online").hidden = true;
+}
+
+function netLeaveToMenu() {
+  if (NET.conn && NET.conn.open) NET.conn.send({ y: "leave" });
+  APP.match = null; APP.mode = "local"; APP.phase = "lobby";
+  openOnlineMenu();
+}
+
+function netCleanup() {
+  if (NET.conn) { try { NET.conn.close(); } catch (e) {} NET.conn = null; }
+  if (NET.peer) { try { NET.peer.destroy(); } catch (e) {} NET.peer = null; }
+  NET.status = "idle"; NET.msg = "";
+}
+
+// 1tick分のオンライン処理: 入力生成→送信→両者の入力が揃っていればsimを1歩進める
+function updateOnlineMatch() {
+  const m = APP.match;
+  if (!m) return;
+  const my = NET.isHost ? 0 : 1;
+
+  const genTick = m.tick + NET.DELAY;
+  if (!NET.buffers[my][genTick]) {
+    const s = sampleLocalMerged();
+    NET.buffers[my][genTick] = s;
+    if (NET.conn && NET.conn.open) NET.conn.send({ y: "i", g: NET.gen, t: genTick, b: encodeSample(s) });
+  }
+
+  const ia = NET.buffers[0][m.tick], ib = NET.buffers[1][m.tick];
+  if (ia && ib) {
+    NET.stall = 0;
+    handleEvents(stepMatch(m, [ia, ib]));
+  } else {
+    NET.stall++;
+  }
+
+  if (m.finished) {
+    APP.resultInfo = { winnerSlot: m.winnerSlot };
+    APP.phase = "result";
+    NET.resultPrev = true;
+  }
+  if (keys.has("Escape")) {
+    keys.delete("Escape");
+    netLeaveToMenu();
+  }
+}
+
+/* --- オンラインメニューUI（DOMオーバーレイ） --- */
+const $ol = id => document.getElementById(id);
+
+function openOnlineMenu() {
+  $ol("online").hidden = false;
+  refreshOnlineUI();
+}
+
+function refreshOnlineUI() {
+  const idle = $ol("ol-idle"), room = $ol("ol-room");
+  const codeView = $ol("ol-code-view"), share = $ol("ol-share");
+  const roomMsg = $ol("ol-room-msg"), btnStart = $ol("btn-start");
+  idle.hidden = !(NET.status === "idle" || NET.status === "starting" || NET.status === "joining");
+  room.hidden = !(NET.status === "hosting" || NET.status === "connected");
+  $ol("btn-host").disabled = $ol("btn-join").disabled = (NET.status === "starting" || NET.status === "joining");
+  if (!room.hidden) {
+    codeView.textContent = NET.code || "";
+    share.textContent = NET.isHost ? (location.origin + location.pathname + "?room=" + NET.code) : "";
+    if (NET.status === "hosting") {
+      roomMsg.textContent = "友だちの参加を待っています… 上のコードかURLを伝えてください";
+      btnStart.hidden = true;
+    } else if (NET.status === "connected") {
+      roomMsg.textContent = NET.isHost ? "接続完了！開始できます" : "接続完了！ホストの開始を待っています…";
+      btnStart.hidden = !NET.isHost;
+    }
+  }
+  $ol("ol-status").textContent = NET.msg || "";
+}
+
+$ol("btn-host").addEventListener("click", () => {
+  if (typeof Peer === "undefined") { NET.msg = "通信ライブラリを読み込めませんでした（要インターネット接続）"; refreshOnlineUI(); return; }
+  netHost();
+});
+$ol("btn-join").addEventListener("click", () => {
+  if (typeof Peer === "undefined") { NET.msg = "通信ライブラリを読み込めませんでした（要インターネット接続）"; refreshOnlineUI(); return; }
+  netJoin($ol("join-code").value.trim().toUpperCase());
+});
+$ol("btn-start").addEventListener("click", netHostStart);
+$ol("btn-close").addEventListener("click", () => {
+  netCleanup();
+  $ol("online").hidden = true;
+  if (APP.mode === "online") { APP.match = null; APP.mode = "local"; APP.phase = "lobby"; }
+});
+
+// ロビーで O キー → オンラインメニュー
+window.addEventListener("keydown", e => {
+  if (e.code === "KeyO" && APP.phase === "lobby" && $ol("online").hidden) openOnlineMenu();
+});
+
+// ?room=XXXX 付きURLで開いたら自動で参加を試みる
+(function () {
+  const room = new URLSearchParams(location.search).get("room");
+  if (room && typeof Peer !== "undefined") {
+    openOnlineMenu();
+    $ol("join-code").value = room.toUpperCase();
+    netJoin(room.toUpperCase());
+  }
+})();
+
+function allCandidateSources() {
+  const list = [makeKeyboardSource(0), makeKeyboardSource(1)];
+  const pads = navigator.getGamepads();
+  for (let i = 0; i < pads.length; i++) {
+    if (pads[i]) list.push(makeGamepadSource(i));
+  }
+  return list;
+}
+
+function claimedIds() {
+  return APP.slots.filter(Boolean).map(s => s.source.id);
+}
+
+function updateLobby() {
+  // 注意: 全ソースの prev を先に更新しきってから遷移する
+  // （ループ途中で抜けると未更新の prev が偽エッジを生む）
+  const claimed = claimedIds();
+  let wantStart = false;
+  for (const src of allCandidateSources()) {
+    const cur = src.sample();
+    const prev = APP.lobbyPrev.get(src.id) || NEUTRAL;
+    APP.lobbyPrev.set(src.id, cur);
+    const attackEdge = cur.attack && !prev.attack;
+    if (attackEdge && !claimed.includes(src.id)) {
+      const free = APP.slots.findIndex(s => s === null);
+      if (free !== -1) {
+        APP.slots[free] = { source: src };
+        claimed.push(src.id);
+      }
+    }
+    if (cur.start && !prev.start) wantStart = true;  // Enter or パッドStart
+  }
+  if (wantStart && APP.slots.filter(Boolean).length >= 2) startMatch();
+}
+
+function startMatch() {
+  const slotIndices = [];
+  APP.slots.forEach((s, i) => { if (s) slotIndices.push(i); });
+  APP.match = makeMatchState(slotIndices);
+  APP.phase = "match";
+}
+
+function updateMatch() {
+  if (APP.mode === "online") { updateOnlineMatch(); return; }
+  const m = APP.match;
+  const samples = m.players.map(p => APP.slots[p.slot].source.sample());
+  const events = stepMatch(m, samples);
+  handleEvents(events);
+
+  if (m.finished) {
+    APP.resultInfo = { winnerSlot: m.winnerSlot };
+    APP.phase = "result";
+    APP.lobbyPrev.clear();
+  }
+  if (keys.has("Escape")) {
+    APP.phase = "lobby";
+    APP.match = null;
+    APP.lobbyPrev.clear();
+    keys.delete("Escape");
+  }
+}
+
+function updateResult() {
+  if (APP.mode === "online") {
+    // ホスト: Enterで再戦（startを送信）。参加側: startメッセージ待ち。Esc: 退出
+    const enter = keys.has("Enter");
+    if (enter && !NET.resultPrev && NET.isHost) netHostStart();
+    NET.resultPrev = enter;
+    if (keys.has("Escape")) {
+      keys.delete("Escape");
+      netLeaveToMenu();
+    }
+    return;
+  }
+  let back = false;
+  for (const src of allCandidateSources()) {
+    const cur = src.sample();
+    const prev = APP.lobbyPrev.get(src.id) || NEUTRAL;
+    APP.lobbyPrev.set(src.id, cur);
+    if (cur.start && !prev.start) back = true;
+  }
+  if (back) {
+    APP.phase = "lobby";
+    APP.match = null;
+  }
+}
+
+/* ==================== 演出（非決定でOKな層） ==================== */
+
+const fx = { particles: [], shake: 0, koFlash: 0 };
+
+function handleEvents(events) {
+  for (const ev of events) {
+    if (ev.type === "hit") {
+      fx.shake = Math.min(10, 4 + ev.dmg * 0.03);
+      for (let k = 0; k < 10; k++) {
+        fx.particles.push({
+          x: ev.x, y: ev.y,
+          vx: (Math.random() * 6 + 2) * ev.dir + (Math.random() - 0.5) * 4,
+          vy: (Math.random() - 0.7) * 8,
+          life: 18 + Math.random() * 10,
+          size: 3 + Math.random() * 3,
+          color: "#fff",
+        });
+      }
+    } else if (ev.type === "ko") {
+      fx.shake = 16;
+      fx.koFlash = 12;
+      for (let k = 0; k < 28; k++) {
+        const ang = Math.random() * Math.PI * 2;
+        const sp = 3 + Math.random() * 9;
+        fx.particles.push({
+          x: ev.x, y: ev.y,
+          vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp,
+          life: 24 + Math.random() * 16,
+          size: 4 + Math.random() * 4,
+          color: COLORS[ev.slot],
+        });
+      }
+    } else if (ev.type === "land") {
+      for (let k = 0; k < 4; k++) {
+        fx.particles.push({
+          x: ev.x + (Math.random() - 0.5) * 24, y: ev.y,
+          vx: (Math.random() - 0.5) * 3, vy: -Math.random() * 1.5,
+          life: 10 + Math.random() * 6,
+          size: 2 + Math.random() * 2,
+          color: "#8a8aa0",
+        });
+      }
+    }
+  }
+}
+
+function updateFx() {
+  fx.shake *= 0.85;
+  if (fx.koFlash > 0) fx.koFlash--;
+  for (let i = fx.particles.length - 1; i >= 0; i--) {
+    const pt = fx.particles[i];
+    pt.x += pt.vx; pt.y += pt.vy;
+    pt.vy += 0.3;
+    pt.life--;
+    if (pt.life <= 0) fx.particles.splice(i, 1);
+  }
+}
+
+/* ==================== 描画 ==================== */
+
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+
+function drawBackground() {
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, "#232343");
+  g.addColorStop(0.7, "#31315a");
+  g.addColorStop(1, "#3d3d6b");
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+  // 遠景の山
+  ctx.fillStyle = "rgba(30,30,60,0.8)";
+  ctx.beginPath();
+  ctx.moveTo(0, 620); ctx.lineTo(250, 380); ctx.lineTo(520, 600);
+  ctx.lineTo(760, 340); ctx.lineTo(1060, 610); ctx.lineTo(1280, 460);
+  ctx.lineTo(1280, 720); ctx.lineTo(0, 720);
+  ctx.fill();
+}
+
+function drawStage() {
+  for (const plat of PLATFORMS) {
+    if (plat.main) {
+      ctx.fillStyle = "#4a3728";
+      ctx.fillRect(plat.x, plat.y, plat.w, 130);
+      ctx.fillStyle = "#6dbb52";
+      ctx.fillRect(plat.x, plat.y, plat.w, 14);
+      ctx.fillStyle = "#59a041";
+      ctx.fillRect(plat.x, plat.y + 14, plat.w, 5);
+    } else {
+      ctx.fillStyle = "#8a7a9a";
+      ctx.fillRect(plat.x, plat.y, plat.w, 12);
+      ctx.fillStyle = "#a99cc0";
+      ctx.fillRect(plat.x, plat.y, plat.w, 4);
+    }
+  }
+}
+
+function drawPlayer(p) {
+  if (!p.alive) return;
+  const bx = p.x - PLAYER_W / 2;
+  const by = p.y - PLAYER_H;
+
+  // リスポーン無敵は点滅
+  if (p.invuln > 0 && Math.floor(p.invuln / 4) % 2 === 0 && p.invuln > 30) {
+    ctx.globalAlpha = 0.35;
+  }
+
+  // 体
+  ctx.fillStyle = p.hitFlash > 0 ? "#ffffff" : COLORS[p.slot];
+  ctx.strokeStyle = COLORS_D[p.slot];
+  ctx.lineWidth = 3;
+  roundRect(bx, by, PLAYER_W, PLAYER_H, 8);
+  ctx.fill();
+  ctx.stroke();
+
+  // 目（向いてる方向）
+  ctx.fillStyle = "#fff";
+  const eyeX = p.x + p.facing * 6;
+  ctx.beginPath();
+  ctx.arc(eyeX - 4, by + 14, 4.5, 0, Math.PI * 2);
+  ctx.arc(eyeX + 6, by + 14, 4.5, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = "#222";
+  ctx.beginPath();
+  ctx.arc(eyeX - 4 + p.facing * 1.5, by + 14, 2, 0, Math.PI * 2);
+  ctx.arc(eyeX + 6 + p.facing * 1.5, by + 14, 2, 0, Math.PI * 2);
+  ctx.fill();
+
+  // 攻撃スイング
+  if (p.attackTimer <= ATTACK.activeFrom && p.attackTimer >= ATTACK.activeTo && p.attackTimer > 0) {
+    const cx = p.facing === 1 ? p.x + PLAYER_W / 2 : p.x - PLAYER_W / 2;
+    const cy = p.y - PLAYER_H / 2 - 4;
+    const prog = (ATTACK.activeFrom - p.attackTimer) / (ATTACK.activeFrom - ATTACK.activeTo);
+    ctx.strokeStyle = "rgba(255,255,255," + (0.9 - prog * 0.5) + ")";
+    ctx.lineWidth = 7;
+    ctx.beginPath();
+    const a0 = p.facing === 1 ? -1.2 : Math.PI + 1.2;
+    const a1 = p.facing === 1 ? 1.0 : Math.PI - 1.0;
+    ctx.arc(cx, cy, ATTACK.range - 4, a0, a1, p.facing !== 1);
+    ctx.stroke();
+  }
+
+  // 頭上の名前
+  ctx.globalAlpha = Math.min(ctx.globalAlpha, 0.9);
+  ctx.fillStyle = "#fff";
+  ctx.font = "bold 13px sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText(NAMES[p.slot], p.x, by - 8);
+  ctx.globalAlpha = 1;
+}
+
+function roundRect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+function damageColor(d) {
+  if (d < 40) return "#ffffff";
+  if (d < 80) return "#ffd34d";
+  if (d < 120) return "#ff8c42";
+  return "#ff4040";
+}
+
+function drawHUD(m) {
+  const n = m.players.length;
+  const panelW = 190, gap = 26;
+  const totalW = n * panelW + (n - 1) * gap;
+  let x = (W - totalW) / 2;
+  for (const p of m.players) {
+    ctx.fillStyle = "rgba(10,10,20,0.65)";
+    roundRect(x, 632, panelW, 74, 10);
+    ctx.fill();
+    ctx.strokeStyle = COLORS[p.slot];
+    ctx.lineWidth = 3;
+    roundRect(x, 632, panelW, 74, 10);
+    ctx.stroke();
+
+    ctx.fillStyle = COLORS[p.slot];
+    ctx.font = "bold 18px sans-serif";
+    ctx.textAlign = "left";
+    let nameLabel = NAMES[p.slot];
+    if (APP.mode === "online") nameLabel += (p.slot === (NET.isHost ? 0 : 1)) ? " あなた" : " 相手";
+    ctx.fillText(nameLabel, x + 14, 658);
+
+    // ダメージ%
+    ctx.textAlign = "right";
+    if (p.alive) {
+      ctx.fillStyle = damageColor(p.damage);
+      ctx.font = "bold 30px sans-serif";
+      ctx.fillText(Math.floor(p.damage) + "%", x + panelW - 14, 665);
+    } else {
+      ctx.fillStyle = "#888";
+      ctx.font = "bold 20px sans-serif";
+      ctx.fillText("KO", x + panelW - 14, 662);
+    }
+
+    // ストック
+    for (let s = 0; s < STOCKS; s++) {
+      ctx.beginPath();
+      ctx.arc(x + 20 + s * 20, 686, 7, 0, Math.PI * 2);
+      ctx.fillStyle = s < p.stocks ? COLORS[p.slot] : "rgba(255,255,255,0.15)";
+      ctx.fill();
+    }
+    x += panelW + gap;
+  }
+}
+
+function controlLinesFor(sourceId) {
+  if (sourceId === "kb0") return ["移動: A / D", "ジャンプ: W", "急降下/すり抜け: S", "攻撃: F"];
+  if (sourceId === "kb1") return ["移動: ← / →", "ジャンプ: ↑", "急降下/すり抜け: ↓", "攻撃: , (カンマ)"];
+  return ["移動: スティック/十字", "ジャンプ: A (×)", "急降下/すり抜け: 下", "攻撃: X (□)"];
+}
+
+// カード表示用の内容（ローカル: 入力ソース別 / オンライン: 自分・相手）
+function cardInfoFor(p) {
+  if (APP.mode === "online") {
+    const my = NET.isHost ? 0 : 1;
+    if (p.slot === my) {
+      return { label: "あなた", lines: ["移動: A/D または ←/→", "ジャンプ: W / ↑", "急降下/すり抜け: S / ↓", "攻撃: F / , （パッドも可）"] };
+    }
+    return { label: "相手（オンライン）", lines: ["リモートプレイヤー", "", "", ""] };
+  }
+  const src = APP.slots[p.slot].source;
+  return { label: src.label, lines: controlLinesFor(src.id) };
+}
+
+// 参加中プレイヤーそれぞれの操作方法カード（カウントダウン中に表示）
+function drawControlCards(m, topY) {
+  const n = m.players.length;
+  const cardW = 272, cardH = 168, gap = 20;
+  const totalW = n * cardW + (n - 1) * gap;
+  let x = (W - totalW) / 2;
+  for (const p of m.players) {
+    const info = cardInfoFor(p);
+    ctx.fillStyle = "rgba(12,12,26,0.88)";
+    roundRect(x, topY, cardW, cardH, 12);
+    ctx.fill();
+    ctx.strokeStyle = COLORS[p.slot];
+    ctx.lineWidth = 3;
+    roundRect(x, topY, cardW, cardH, 12);
+    ctx.stroke();
+
+    ctx.textAlign = "left";
+    ctx.fillStyle = COLORS[p.slot];
+    ctx.font = "bold 20px sans-serif";
+    ctx.fillText(NAMES[p.slot], x + 16, topY + 30);
+    ctx.fillStyle = "rgba(255,255,255,0.55)";
+    ctx.font = "12px sans-serif";
+    ctx.fillText(info.label, x + 60, topY + 30);
+
+    ctx.fillStyle = "#fff";
+    ctx.font = "15px sans-serif";
+    info.lines.forEach((t, i) => {
+      ctx.fillText(t, x + 16, topY + 62 + i * 26);
+    });
+    x += cardW + gap;
+  }
+}
+
+function drawMatch() {
+  ctx.save();
+  if (fx.shake > 0.5) {
+    ctx.translate((Math.random() - 0.5) * fx.shake, (Math.random() - 0.5) * fx.shake);
+  }
+  drawBackground();
+  drawStage();
+  const m = APP.match;
+  for (const p of m.players) drawPlayer(p);
+
+  // パーティクル
+  for (const pt of fx.particles) {
+    ctx.globalAlpha = Math.min(1, pt.life / 12);
+    ctx.fillStyle = pt.color;
+    ctx.fillRect(pt.x - pt.size / 2, pt.y - pt.size / 2, pt.size, pt.size);
+  }
+  ctx.globalAlpha = 1;
+  ctx.restore();
+
+  if (fx.koFlash > 0) {
+    ctx.fillStyle = "rgba(255,255,255," + fx.koFlash / 30 + ")";
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  drawHUD(m);
+
+  // 試合中: H長押しで操作確認、右上に常時ヒント
+  if (m.countdown === 0 && !m.ending) {
+    ctx.fillStyle = "rgba(255,255,255,0.45)";
+    ctx.font = "13px sans-serif";
+    ctx.textAlign = "right";
+    ctx.fillText(APP.mode === "online" ? "H長押し: 操作確認 ／ Esc: 退出" : "H長押し: 操作確認 ／ Esc: ロビーへ", W - 16, 24);
+    if (keys.has("KeyH")) {
+      ctx.fillStyle = "rgba(0,0,0,0.45)";
+      ctx.fillRect(0, 0, W, H);
+      drawControlCards(m, 200);
+    }
+  }
+
+  // オンライン: 相手の入力待ちが続いたら表示
+  if (APP.mode === "online" && NET.stall > 30) {
+    ctx.fillStyle = "rgba(0,0,0,0.55)";
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = "#fff";
+    ctx.font = "bold 34px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("相手の通信待ち…", W / 2, H / 2);
+  }
+
+  // カウントダウン（+ 各プレイヤーの操作方法カード）
+  if (m.countdown > 0) {
+    const sec = Math.ceil(m.countdown / 60);
+    ctx.fillStyle = "rgba(0,0,0,0.45)";
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = "#fff";
+    ctx.font = "bold 120px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText(String(sec), W / 2, 170);
+    drawControlCards(m, 260);
+  } else if (m.countdown === 0 && m.tick < COUNTDOWN_TICKS + 50 && !m.ending) {
+    ctx.fillStyle = "#ffd34d";
+    ctx.font = "bold 110px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("GO!", W / 2, H / 2 + 30);
+  }
+
+  if (m.ending) {
+    ctx.fillStyle = "#fff";
+    ctx.font = "bold 90px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("決着！", W / 2, H / 2 + 20);
+  }
+}
+
+function drawLobby() {
+  drawBackground();
+  drawStage();
+
+  ctx.textAlign = "center";
+  ctx.fillStyle = "#fff";
+  ctx.font = "bold 64px sans-serif";
+  ctx.fillText("ウチスマ！", W / 2, 120);
+  ctx.font = "bold 22px sans-serif";
+  ctx.fillStyle = "#ffd34d";
+  ctx.fillText("β版 — 身内スマッシュ", W / 2, 158);
+
+  // スロット表示
+  const slotW = 250, gap = 24;
+  const totalW = MAX_PLAYERS * slotW + (MAX_PLAYERS - 1) * gap;
+  let x = (W - totalW) / 2;
+  for (let i = 0; i < MAX_PLAYERS; i++) {
+    const s = APP.slots[i];
+    ctx.fillStyle = s ? "rgba(20,20,40,0.85)" : "rgba(20,20,40,0.45)";
+    roundRect(x, 210, slotW, 120, 12);
+    ctx.fill();
+    ctx.strokeStyle = s ? COLORS[i] : "rgba(255,255,255,0.2)";
+    ctx.lineWidth = 3;
+    roundRect(x, 210, slotW, 120, 12);
+    ctx.stroke();
+
+    ctx.fillStyle = s ? COLORS[i] : "rgba(255,255,255,0.4)";
+    ctx.font = "bold 26px sans-serif";
+    ctx.fillText(NAMES[i], x + slotW / 2, 252);
+    ctx.font = "15px sans-serif";
+    ctx.fillStyle = s ? "#fff" : "rgba(255,255,255,0.4)";
+    ctx.fillText(s ? s.source.label : "待機中…", x + slotW / 2, 285);
+    if (s) {
+      ctx.fillStyle = "#7f7";
+      ctx.font = "bold 14px sans-serif";
+      ctx.fillText("参加OK!", x + slotW / 2, 312);
+    }
+    x += slotW + gap;
+  }
+
+  ctx.fillStyle = "#fff";
+  ctx.font = "17px sans-serif";
+  const lines = [
+    "【参加方法】 攻撃ボタンを押すと参加",
+    "キーボード左: WASD移動 / W=ジャンプ / S=急降下・すり抜け / F=攻撃",
+    "キーボード右: 矢印移動 / ↑=ジャンプ / ↓=急降下・すり抜け / ,(カンマ)=攻撃",
+    "ゲームパッド: スティック移動 / A(×)=ジャンプ / X(□)=攻撃",
+  ];
+  lines.forEach((t, i) => ctx.fillText(t, W / 2, 390 + i * 30));
+
+  const joined = APP.slots.filter(Boolean).length;
+  ctx.font = "bold 26px sans-serif";
+  if (joined >= 2) {
+    if (Math.floor(performance.now() / 400) % 2 === 0) {
+      ctx.fillStyle = "#ffd34d";
+      ctx.fillText("Enter / Start で開始！", W / 2, 540);
+    }
+  } else {
+    ctx.fillStyle = "rgba(255,255,255,0.5)";
+    ctx.fillText("2人以上そろうと開始できます", W / 2, 540);
+  }
+
+  ctx.font = "bold 20px sans-serif";
+  ctx.fillStyle = "#8fd3ff";
+  ctx.fillText("O キー: オンライン対戦（2人・β）", W / 2, 590);
+
+  const pads = navigator.getGamepads();
+  let padCount = 0;
+  for (let i = 0; i < pads.length; i++) if (pads[i]) padCount++;
+  ctx.font = "14px sans-serif";
+  ctx.fillStyle = "rgba(255,255,255,0.45)";
+  ctx.fillText("接続中のゲームパッド: " + padCount + "台（ボタンを押すと認識されます）", W / 2, 700);
+}
+
+function drawResult() {
+  drawBackground();
+  drawStage();
+  ctx.fillStyle = "rgba(0,0,0,0.55)";
+  ctx.fillRect(0, 0, W, H);
+  ctx.textAlign = "center";
+  const ws = APP.resultInfo.winnerSlot;
+  if (ws !== null) {
+    ctx.fillStyle = COLORS[ws];
+    ctx.font = "bold 96px sans-serif";
+    ctx.fillText(NAMES[ws] + " の勝ち！", W / 2, H / 2 - 30);
+  } else {
+    ctx.fillStyle = "#fff";
+    ctx.font = "bold 96px sans-serif";
+    ctx.fillText("引き分け！", W / 2, H / 2 - 30);
+  }
+  ctx.fillStyle = "#fff";
+  ctx.font = "bold 26px sans-serif";
+  if (APP.mode === "online") {
+    ctx.fillText(NET.isHost ? "Enter: 再戦 ／ Esc: 退出" : "ホストの再戦待ち… ／ Esc: 退出", W / 2, H / 2 + 60);
+  } else {
+    ctx.fillText("Enter / Start でロビーに戻る", W / 2, H / 2 + 60);
+  }
+}
+
+/* ==================== メインループ ==================== */
+
+function runTick() {
+  if (APP.phase === "lobby") updateLobby();
+  else if (APP.phase === "match") updateMatch();
+  else if (APP.phase === "result") updateResult();
+  updateFx();
+}
+
+function renderNow() {
+  if (APP.phase === "lobby") drawLobby();
+  else if (APP.phase === "match") drawMatch();
+  else if (APP.phase === "result") drawResult();
+}
+
+let last = performance.now();
+let acc = 0;
+
+function frame(now) {
+  acc += now - last;
+  last = now;
+  if (acc > 250) acc = 250;   // タブ復帰時の暴走防止
+
+  while (acc >= TICK_MS) {
+    runTick();
+    acc -= TICK_MS;
+  }
+  renderNow();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+// デバッグ/テスト用API（決定論的simを外から直接駆動できる）
+window.UCHI = {
+  APP, keys, runTick, renderNow,
+  makeMatchState, stepMatch, makePlayer,
+  PHYS, ATTACK, PLATFORMS, SPAWNS, BLAST, STOCKS,
+  NET, netHost, netJoin, netHostStart, encodeSample, decodeSample,
+};
+</script>
+</body>
+</html>
