@@ -197,6 +197,7 @@ const BALLOON = {
   fuel: 180,      // 使える総tick（150の1.2倍＝約3秒ぶん）
   lift: 0.55,     // 上昇加速
   maxRise: 3.2,   // 最大上昇速度（プカプカ）
+  giantDrain: 2,  // 巨大化中の燃料消費倍率（重いので燃費2倍）
 };
 
 // 巨大化アイテム: 体が大きくなり、速度1/2・ジャンプ高さ1/2・パワー(ふっとばし)4倍
@@ -984,7 +985,8 @@ function stepMatch(state, samples) {
     // --- 風船（1ストック1回。押している間だけ浮上、燃料を使い切ると割れて復活まで無し）---
     p.ballooning = cur.balloon && canAct && !locked && !p.respawning && p.balloonFuel > 0;
     if (p.ballooning) {
-      p.balloonFuel--;
+      p.balloonFuel -= p.itemType === "giant" ? BALLOON.giantDrain : 1;  // 巨大化中は燃費2倍
+      if (p.balloonFuel < 0) p.balloonFuel = 0;       // 奇数残量から2消費しても確実に0で割れる
       p.onGround = false;                             // 浮き上がる
       p.vy -= BALLOON.lift;                           // プカプカ上昇
       if (p.vy < -BALLOON.maxRise) p.vy = -BALLOON.maxRise;
