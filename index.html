@@ -424,6 +424,7 @@ const NAMES    = ["P1", "P2", "P3", "P4"];
 const keys = new Set();
 const USED_CODES = new Set([
   "KeyW","KeyA","KeyS","KeyD","KeyF","KeyG","KeyH","KeyO","KeyJ","KeyK","KeyC","KeyX",
+  "KeyU","KeyL","Minus","Tab",
   "ArrowUp","ArrowDown","ArrowLeft","ArrowRight","Comma","Period","Slash",
   "Enter","Escape","Space",
 ]);
@@ -445,7 +446,7 @@ const NEUTRAL = Object.freeze({ left:false,right:false,up:false,down:false,jump:
 // キーボード2系統のマッピング
 const KB_MAPS = [
   { left:"KeyA", right:"KeyD", up:"KeyW", down:"KeyS", jump:"KeyW", attack:"KeyF", guard:"KeyG", balloon:"Space" },
-  { left:"ArrowLeft", right:"ArrowRight", up:"ArrowUp", down:"ArrowDown", jump:"ArrowUp", attack:"Comma", guard:"Period", balloon:"Slash" },
+  { left:"KeyH", right:"KeyK", up:"KeyU", down:"KeyJ", jump:"KeyU", attack:"KeyL", guard:"Minus", balloon:"Period" },
 ];
 
 // 入力ソース: sample() が InputSample を返す。将来 NetworkSource を足すだけでオンライン化できる
@@ -453,7 +454,7 @@ function makeKeyboardSource(mapIdx) {
   const m = KB_MAPS[mapIdx];
   return {
     id: "kb" + mapIdx,
-    label: mapIdx === 0 ? "キーボード左 (WASD+F)" : "キーボード右 (矢印+ , )",
+    label: mapIdx === 0 ? "キーボード左 (WASD+F)" : "キーボード右 (HJKU+L)",
     sample() {
       return {
         left: keys.has(m.left), right: keys.has(m.right),
@@ -2637,7 +2638,7 @@ function drawHUD(m) {
 
 function controlLinesFor(sourceId) {
   if (sourceId === "kb0") return ["移動: A / D", "ジャンプ: W / 急降下: S", "攻撃: F（上/下だけ入力で上下攻撃・長押し必殺）", "ガード（卵）: G", "風船: Space"];
-  if (sourceId === "kb1") return ["移動: ← / →", "ジャンプ: ↑ / 急降下: ↓", "攻撃: ,（上/下だけ入力で上下攻撃・長押し必殺）", "ガード（卵）: .（ピリオド）", "風船: /（スラッシュ）"];
+  if (sourceId === "kb1") return ["移動: H(左) / K(右)", "ジャンプ: U(上) / 急降下: J(下)", "攻撃: L（上/下だけ入力で上下攻撃・長押し必殺）", "ガード（卵）: -（ハイフン）", "風船: .（ピリオド）"];
   return ["移動: スティック/十字", "ジャンプ: A(×) / 急降下: 下", "攻撃: X(□)（上/下入力で上下攻撃・長押し必殺）", "ガード（卵）: L/R", "風船: Y(△)"];
 }
 
@@ -2754,13 +2755,13 @@ function drawMatch() {
     ctx.fillText(txt, W / 2, 40);
   }
 
-  // 試合中: H長押しで操作確認、右上に常時ヒント
+  // 試合中: Tab長押しで操作確認、右上に常時ヒント（HはキーボードP2の左移動に使うため）
   if (m.countdown === 0 && !m.ending) {
     ctx.fillStyle = "rgba(255,255,255,0.45)";
     ctx.font = "13px sans-serif";
     ctx.textAlign = "right";
-    ctx.fillText(APP.mode === "online" ? "H長押し: 操作確認 ／ Esc: 退出" : "H長押し: 操作確認 ／ Esc: ロビーへ", W - 16, 24);
-    if (keys.has("KeyH")) {
+    ctx.fillText(APP.mode === "online" ? "Tab長押し: 操作確認 ／ Esc: 退出" : "Tab長押し: 操作確認 ／ Esc: ロビーへ", W - 16, 24);
+    if (keys.has("Tab")) {
       ctx.fillStyle = "rgba(0,0,0,0.45)";
       ctx.fillRect(0, 0, W, H);
       drawControlCards(m, 200);
@@ -2855,7 +2856,7 @@ function drawLobby() {
   const lines = [
     "【参加方法】 攻撃ボタンを押すと参加　／　C=CPU追加・X=CPU削除（1人でも遊べる）",
     "キーボード左: WASD移動 / F=攻撃 / G=ガード(卵) / Space=風船",
-    "キーボード右: 矢印移動 / ,=攻撃 / .=ガード(卵) / /=風船",
+    "キーボード右: HJKU移動(H左J下K右U上) / L=攻撃 / -=ガード(卵) / .=風船",
     "★攻撃は上/下だけ入力で上下攻撃。2秒長押しで必殺技（ガードを一撃で割る）",
     "★風船=Space長押しで浮上（落下防止）。1ストック1回・使い切ると割れる。卵も使い切ると割れる",
     "★アイテムが空から落下！ リーチ延長／移動＆ジャンプ1.5倍／長距離ビーム の3種",
