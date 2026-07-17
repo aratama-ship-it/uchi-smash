@@ -182,6 +182,14 @@ const ITEM = {
 };
 const ITEM_TYPES = ["reach", "speed"];
 
+// 風船（Space）: 1ストックにつき1回。押している間だけ少しずつ浮上し落下を防ぐ。
+//   燃料を使い切ると割れて復活まで使えない。浮上中も横移動は可能。
+const BALLOON = {
+  fuel: 150,      // 使える総tick（約2.5秒ぶん）
+  lift: 0.55,     // 上昇加速
+  maxRise: 3.2,   // 最大上昇速度（プカプカ）
+};
+
 const BLAST = { left: -250, right: W + 250, top: -350, bottom: H + 330 };
 
 // ============================ ステージ ============================
@@ -255,8 +263,8 @@ const STAGES = [
     ],
     spawns: [ {x:360,y:585}, {x:920,y:585}, {x:500,y:585}, {x:780,y:585} ],
     walls: [
-      { x: 236, w: 26, height: 150, side: "left" },
-      { x: 1018, w: 26, height: 150, side: "right" },
+      { x: 232, w: 60, height: 150, side: "left" },
+      { x: 968, w: 60, height: 150, side: "right" },
     ],
     wallSpeed: 0.007,   // 位相の毎tick変化（三角波 0..1、約2.4秒で上下反転）
   },
@@ -271,7 +279,7 @@ const NAMES    = ["P1", "P2", "P3", "P4"];
 const keys = new Set();
 const USED_CODES = new Set([
   "KeyW","KeyA","KeyS","KeyD","KeyF","KeyG","KeyH","KeyO","KeyJ","KeyK",
-  "ArrowUp","ArrowDown","ArrowLeft","ArrowRight","Comma","Period",
+  "ArrowUp","ArrowDown","ArrowLeft","ArrowRight","Comma","Period","Slash",
   "Enter","Escape","Space",
 ]);
 window.addEventListener("keydown", e => {
@@ -281,12 +289,12 @@ window.addEventListener("keydown", e => {
 window.addEventListener("keyup", e => keys.delete(e.code));
 window.addEventListener("blur", () => keys.clear());
 
-const NEUTRAL = Object.freeze({ left:false,right:false,up:false,down:false,jump:false,attack:false,guard:false,start:false });
+const NEUTRAL = Object.freeze({ left:false,right:false,up:false,down:false,jump:false,attack:false,guard:false,balloon:false,start:false });
 
 // キーボード2系統のマッピング
 const KB_MAPS = [
-  { left:"KeyA", right:"KeyD", up:"KeyW", down:"KeyS", jump:"KeyW", attack:"KeyF", guard:"KeyG" },
-  { left:"ArrowLeft", right:"ArrowRight", up:"ArrowUp", down:"ArrowDown", jump:"ArrowUp", attack:"Comma", guard:"Period" },
+  { left:"KeyA", right:"KeyD", up:"KeyW", down:"KeyS", jump:"KeyW", attack:"KeyF", guard:"KeyG", balloon:"Space" },
+  { left:"ArrowLeft", right:"ArrowRight", up:"ArrowUp", down:"ArrowDown", jump:"ArrowUp", attack:"Comma", guard:"Period", balloon:"Slash" },
 ];
 
 // 入力ソース: sample() が InputSample を返す。将来 NetworkSource を足すだけでオンライン化できる
@@ -300,7 +308,7 @@ function makeKeyboardSource(mapIdx) {
         left: keys.has(m.left), right: keys.has(m.right),
         up: keys.has(m.up), down: keys.has(m.down),
         jump: keys.has(m.jump), attack: keys.has(m.attack),
-        guard: keys.has(m.guard),
+        guard: keys.has(m.guard), balloon: keys.has(m.balloon),
         start: keys.has("Enter"),
       };
     },
@@ -322,7 +330,8 @@ function makeGamepadSource(index) {
         up:    (gp.axes[1] || 0) < -0.5 || btn(12),
         down:  (gp.axes[1] || 0) >  0.5 || btn(13),
         jump:  btn(0) || btn(1),          // A/B (×/○)
-        attack: btn(2) || btn(3),         // X/Y (□/△)
+        attack: btn(2),                   // X (□)
+        balloon: btn(3),                  // Y (△) = 風船
         guard: btn(4) || btn(5) || btn(6) || btn(7),  // L/R (ショルダー/トリガー)
         start: btn(9),
       };
@@ -357,6 +366,9 @@ function makePlayer(slotIdx, stage) {
     itemType: null,               // 所持中アイテム効果 "reach" | "speed" | null
     itemTimer: 0,                 // 効果の残り時間tick
     itemGetFlash: 0,
+    balloonFuel: BALLOON.fuel,    // 風船の残り燃料（0で割れて復活まで使えない）
+    ballooning: false,
+    attackDir: "fwd",             // 攻撃の向き "fwd" | "up" | "down"
     hitFlash: 0,
     prev: NEUTRAL,                // 前フレーム入力（エッジ検出用・状態の一部として保持）
   };
@@ -572,8 +584,18 @@ function stepMatch(state, samples) {
       }
     }
 
-    // 重力（空中で下入力＝急降下）
-    if (!p.onGround) {
+    // --- 風船（1ストック1回。押している間だけ浮上、燃料を使い切ると割れて復活まで無し）---
+    p.ballooning = cur.balloon && canAct && !locked && p.balloonFuel > 0;
+    if (p.ballooning) {
+      p.balloonFuel--;
+      p.onGround = false;                             // 浮き上がる
+      p.vy -= BALLOON.lift;                           // プカプカ上昇
+      if (p.vy < -BALLOON.maxRise) p.vy = -BALLOON.maxRise;
+      if (p.balloonFuel === 0) { p.ballooning = false; events.push({ type: "balloon-pop", x: p.x, y: p.y - PLAYER_H }); }
+    }
+
+    // 重力（風船中はスキップ。空中で下入力＝急降下）
+    if (!p.onGround && !p.ballooning) {
       const fast = cur.down && p.vy > 0;
       p.vy += fast ? PHYS.fastFallGravity : PHYS.gravity;
       const cap = fast ? PHYS.maxFastFall : PHYS.maxFall;
@@ -583,12 +605,15 @@ function stepMatch(state, samples) {
     // --- 攻撃 / 必殺技チャージ ---
     // 攻撃ボタン押しっぱなしでチャージ。2秒(SPECIAL_CHARGE)で必殺技が自動発動。
     // 2秒未満で離すと通常攻撃。ガード中・攻撃硬直中はチャージしない。
+    // 攻撃方向: 上下だけ入力しているときは上/下攻撃、それ以外は正面(左右)。
+    const atkDir = ((cur.up || cur.down) && !cur.left && !cur.right) ? (cur.up ? "up" : "down") : "fwd";
     if (canAct && !locked && p.attackTimer === 0) {
       if (cur.attack) {
         p.chargeTimer++;
         if (p.chargeTimer >= SPECIAL_CHARGE) {
           p.attackTimer = SPECIAL.total;
           p.attackIsSpecial = true;
+          p.attackDir = atkDir;
           p.attackVictims = [];
           p.chargeTimer = 0;
           events.push({ type: "special", x: p.x, y: p.y - PLAYER_H / 2, slot: p.slot });
@@ -597,6 +622,7 @@ function stepMatch(state, samples) {
         if (p.chargeTimer > 0) {       // 離した＝通常攻撃
           p.attackTimer = ATTACK.total;
           p.attackIsSpecial = false;
+          p.attackDir = atkDir;
           p.attackVictims = [];
         }
         p.chargeTimer = 0;
@@ -660,13 +686,24 @@ function stepMatch(state, samples) {
     const atk = a.attackIsSpecial ? SPECIAL : ATTACK;
     if (a.attackTimer > atk.activeFrom || a.attackTimer < atk.activeTo || a.attackTimer === 0) continue;
     const range = atk.range * (a.itemType === "reach" ? ITEM.reachMult : 1);  // reachアイテムでリーチ延長
-    const hx = a.facing === 1 ? a.x + PLAYER_W / 2 - 6 : a.x - PLAYER_W / 2 - range + 6;
-    const hy = a.y - PLAYER_H / 2 - atk.height / 2 - 4;
+    // 攻撃向き別のヒットボックス（fwd=前方 / up=頭上 / down=足元）
+    let hx, hy, hw, hh;
+    if (a.attackDir === "up") {
+      hw = PLAYER_W + 20; hh = range;
+      hx = a.x - hw / 2; hy = a.y - PLAYER_H - range - 4;   // 頭上（頭より上に隙間）
+    } else if (a.attackDir === "down") {
+      hw = PLAYER_W + 20; hh = range;
+      hx = a.x - hw / 2; hy = a.y + 4;                      // 足元（足より下）
+    } else {
+      hw = range; hh = atk.height;
+      hx = a.facing === 1 ? a.x + PLAYER_W / 2 - 6 : a.x - PLAYER_W / 2 - range + 6;
+      hy = a.y - PLAYER_H / 2 - atk.height / 2 - 4;
+    }
     for (let j = 0; j < ps.length; j++) {
       if (i === j) continue;
       const v = ps[j];
       if (!v.alive || v.invuln > 0 || a.attackVictims.includes(j)) continue;
-      if (!rectsOverlap(hx, hy, range, atk.height,
+      if (!rectsOverlap(hx, hy, hw, hh,
                         v.x - PLAYER_W / 2, v.y - PLAYER_H, PLAYER_W, PLAYER_H)) continue;
       a.attackVictims.push(j);
 
@@ -778,6 +815,7 @@ function stepMatch(state, samples) {
         p.chargeTimer = 0;
         p.guardHp = GUARD.max; p.guarding = false; p.guardBreakFlash = 0;  // 卵は復活で全回復
         p.itemType = null; p.itemTimer = 0;                                // アイテム効果もリセット
+        p.balloonFuel = BALLOON.fuel; p.ballooning = false;                // 風船も復活で回復
         p.airJumps = PHYS.airJumps;
         p.invuln = RESPAWN_INVULN;
       } else {
@@ -845,31 +883,30 @@ const NET = {
 };
 
 function encodeSample(s) {
-  return (s.left?1:0)|(s.right?2:0)|(s.up?4:0)|(s.down?8:0)|(s.jump?16:0)|(s.attack?32:0)|(s.guard?64:0);
+  return (s.left?1:0)|(s.right?2:0)|(s.up?4:0)|(s.down?8:0)|(s.jump?16:0)|(s.attack?32:0)|(s.guard?64:0)|(s.balloon?128:0);
 }
 function decodeSample(b) {
-  return { left:!!(b&1), right:!!(b&2), up:!!(b&4), down:!!(b&8), jump:!!(b&16), attack:!!(b&32), guard:!!(b&64), start:false };
+  return { left:!!(b&1), right:!!(b&2), up:!!(b&4), down:!!(b&8), jump:!!(b&16), attack:!!(b&32), guard:!!(b&64), balloon:!!(b&128), start:false };
 }
 
-// オンライン時のキー配置（1人が片手で移動WASD/矢印、もう片手でJ/K）
+// オンライン時のキー配置（1人が片手で移動WASD/矢印、もう片手でJ/K/Space）
 //   移動: WASD または 矢印（従来通り） / ジャンプ: W・↑ / 急降下: S・↓
-//   攻撃: J（長押し2秒で必殺技） / 防御(卵ガード): K
+//   攻撃: J（長押し2秒で必殺技） / 防御(卵ガード): K / 風船: Space
 //   ゲームパッドも併用可
 function sampleLocalMerged() {
   const k = keys;
-  const gpAttack = () => { const ps = navigator.getGamepads(); for (let i=0;i<ps.length;i++){ const g=ps[i]; if(g&&(g.buttons[2]&&g.buttons[2].pressed||g.buttons[3]&&g.buttons[3].pressed)) return true; } return false; };
-  const gpGuard  = () => { const ps = navigator.getGamepads(); for (let i=0;i<ps.length;i++){ const g=ps[i]; if(g&&[4,5,6,7].some(b=>g.buttons[b]&&g.buttons[b].pressed)) return true; } return false; };
+  const gpBtn = (list) => { const ps=navigator.getGamepads(); for(let i=0;i<ps.length;i++){ const g=ps[i]; if(g&&list.some(b=>g.buttons[b]&&g.buttons[b].pressed)) return true; } return false; };
   const gpAxis = (ax, lo) => { const ps=navigator.getGamepads(); for(let i=0;i<ps.length;i++){ const g=ps[i]; if(!g)continue; const v=g.axes[ax]||0; if(lo?v<-0.4:v>0.4) return true; const dpad = ax===0?(lo?14:15):(lo?12:13); if(g.buttons[dpad]&&g.buttons[dpad].pressed) return true; } return false; };
-  const gpJump = () => { const ps=navigator.getGamepads(); for(let i=0;i<ps.length;i++){ const g=ps[i]; if(g&&(g.buttons[0]&&g.buttons[0].pressed||g.buttons[1]&&g.buttons[1].pressed)) return true; } return false; };
-  const up = k.has("KeyW") || k.has("ArrowUp") || gpJump();
+  const up = k.has("KeyW") || k.has("ArrowUp") || gpBtn([0,1]);
   return {
     left:  k.has("KeyA") || k.has("ArrowLeft")  || gpAxis(0, true),
     right: k.has("KeyD") || k.has("ArrowRight") || gpAxis(0, false),
     up,
     down:  k.has("KeyS") || k.has("ArrowDown")  || gpAxis(1, false),
     jump:  up,
-    attack: k.has("KeyJ") || gpAttack(),   // オンライン攻撃 = J
-    guard:  k.has("KeyK") || gpGuard(),    // オンライン防御 = K
+    attack: k.has("KeyJ") || gpBtn([2]),        // オンライン攻撃 = J
+    guard:  k.has("KeyK") || gpBtn([4,5,6,7]),  // オンライン防御 = K
+    balloon: k.has("Space") || gpBtn([3]),      // オンライン風船 = Space
     start: k.has("Enter"),
   };
 }
@@ -1267,6 +1304,16 @@ function handleEvents(events) {
           life: 16 + Math.random() * 10, size: 3 + Math.random() * 3, color: col,
         });
       }
+    } else if (ev.type === "balloon-pop") {
+      for (let k = 0; k < 12; k++) {   // 風船が割れる
+        const ang = Math.random() * Math.PI * 2;
+        const sp = 2 + Math.random() * 5;
+        fx.particles.push({
+          x: ev.x, y: ev.y,
+          vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp,
+          life: 12 + Math.random() * 8, size: 2 + Math.random() * 3, color: "#ffd0e8",
+        });
+      }
     }
   }
 }
@@ -1442,11 +1489,9 @@ function drawPlayer(p) {
   ctx.arc(eyeX + 6 + p.facing * 1.5, by + 14, 2, 0, Math.PI * 2);
   ctx.fill();
 
-  // 攻撃スイング（通常/必殺で色・大きさが変わる、reachアイテムでリーチ延長）
+  // 攻撃スイング（通常/必殺で色・大きさ、reach延長、向き別 fwd/up/down）
   const atk = p.attackIsSpecial ? SPECIAL : ATTACK;
   if (p.attackTimer <= atk.activeFrom && p.attackTimer >= atk.activeTo && p.attackTimer > 0) {
-    const cx = p.facing === 1 ? p.x + PLAYER_W / 2 : p.x - PLAYER_W / 2;
-    const cy = p.y - PLAYER_H / 2 - 4;
     const prog = (atk.activeFrom - p.attackTimer) / (atk.activeFrom - atk.activeTo);
     const hasReach = p.itemType === "reach";
     const drawRange = atk.range * (hasReach ? ITEM.reachMult : 1);
@@ -1461,10 +1506,35 @@ function drawPlayer(p) {
       ctx.lineWidth = 7;
     }
     ctx.beginPath();
-    const a0 = p.facing === 1 ? -1.3 : Math.PI + 1.3;
-    const a1 = p.facing === 1 ? 1.1 : Math.PI - 1.1;
-    ctx.arc(cx, cy, drawRange - 4, a0, a1, p.facing !== 1);
+    if (p.attackDir === "up") {
+      const cx = p.x, cy = p.y - PLAYER_H + 4;
+      ctx.arc(cx, cy, drawRange - 4, Math.PI + 0.3, Math.PI * 2 - 0.3, false);
+    } else if (p.attackDir === "down") {
+      const cx = p.x, cy = p.y - 4;
+      ctx.arc(cx, cy, drawRange - 4, 0.3, Math.PI - 0.3, false);
+    } else {
+      const cx = p.facing === 1 ? p.x + PLAYER_W / 2 : p.x - PLAYER_W / 2;
+      const cy = p.y - PLAYER_H / 2 - 4;
+      const a0 = p.facing === 1 ? -1.3 : Math.PI + 1.3;
+      const a1 = p.facing === 1 ? 1.1 : Math.PI - 1.1;
+      ctx.arc(cx, cy, drawRange - 4, a0, a1, p.facing !== 1);
+    }
     ctx.stroke();
+  }
+
+  // 風船（浮上中: 背中の上に風船＋糸。残り燃料でしぼむ）
+  if (p.ballooning && p.balloonFuel > 0) {
+    const frac = p.balloonFuel / BALLOON.fuel;
+    const bx = p.x - p.facing * 8, byTop = by - 22 - 14 * frac;
+    ctx.strokeStyle = "rgba(255,255,255,0.7)"; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(bx, by + 2); ctx.lineTo(bx, byTop + 12); ctx.stroke();
+    ctx.fillStyle = COLORS[p.slot];
+    ctx.strokeStyle = "#fff"; ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.ellipse(bx, byTop, 13 * (0.6 + 0.4 * frac), 16 * (0.6 + 0.4 * frac), 0, 0, Math.PI * 2);
+    ctx.fill(); ctx.stroke();
+    ctx.fillStyle = "rgba(255,255,255,0.55)";
+    ctx.beginPath(); ctx.ellipse(bx - 4, byTop - 5, 3, 4, 0, 0, Math.PI * 2); ctx.fill();
   }
 
   // 必殺技チャージ中のオーラ
@@ -1604,28 +1674,39 @@ function drawHUD(m) {
       ctx.fill();
     }
 
-    // ガードの卵（残量ゲージ）
-    const gframe = p.guardHp / GUARD.max;
-    const egx = x + panelW - 60, egy = 686, egw = 44, egh = 9;
-    ctx.fillStyle = "rgba(255,255,255,0.12)";
-    roundRect(egx, egy - egh / 2, egw, egh, 4); ctx.fill();
-    if (p.guardHp > 0) {
-      ctx.fillStyle = gframe > 0.35 ? "#bfe8ff" : "#ff8c6b";
-      roundRect(egx, egy - egh / 2, egw * gframe, egh, 4); ctx.fill();
-    }
-    ctx.fillStyle = "rgba(255,255,255,0.4)";
+    // ガードの卵＋風船の残量ゲージ（右側に上下2本）
+    const egx = x + panelW - 60, egw = 44, egh = 8;
     ctx.font = "10px sans-serif";
     ctx.textAlign = "right";
-    ctx.fillText("卵", egx - 4, egy + 4);
+    // 卵
+    const gframe = p.guardHp / GUARD.max, egy1 = 678;
+    ctx.fillStyle = "rgba(255,255,255,0.12)";
+    roundRect(egx, egy1 - egh / 2, egw, egh, 4); ctx.fill();
+    if (p.guardHp > 0) {
+      ctx.fillStyle = gframe > 0.35 ? "#bfe8ff" : "#ff8c6b";
+      roundRect(egx, egy1 - egh / 2, egw * gframe, egh, 4); ctx.fill();
+    }
+    ctx.fillStyle = "rgba(255,255,255,0.4)";
+    ctx.fillText("卵", egx - 4, egy1 + 4);
+    // 風船
+    const bframe = p.balloonFuel / BALLOON.fuel, egy2 = 694;
+    ctx.fillStyle = "rgba(255,255,255,0.12)";
+    roundRect(egx, egy2 - egh / 2, egw, egh, 4); ctx.fill();
+    if (p.balloonFuel > 0) {
+      ctx.fillStyle = bframe > 0.3 ? "#ffd0e8" : "#ff8c6b";
+      roundRect(egx, egy2 - egh / 2, egw * bframe, egh, 4); ctx.fill();
+    }
+    ctx.fillStyle = "rgba(255,255,255,0.4)";
+    ctx.fillText("風船", egx - 4, egy2 + 4);
 
     x += panelW + gap;
   }
 }
 
 function controlLinesFor(sourceId) {
-  if (sourceId === "kb0") return ["移動: A / D", "ジャンプ: W", "急降下/すり抜け: S", "攻撃: F（長押し2秒で必殺技）", "ガード（卵）: G"];
-  if (sourceId === "kb1") return ["移動: ← / →", "ジャンプ: ↑", "急降下/すり抜け: ↓", "攻撃: ,（長押し2秒で必殺技）", "ガード（卵）: .（ピリオド）"];
-  return ["移動: スティック/十字", "ジャンプ: A (×)", "急降下/すり抜け: 下", "攻撃: X（長押し2秒で必殺技）", "ガード（卵）: L / R"];
+  if (sourceId === "kb0") return ["移動: A / D", "ジャンプ: W / 急降下: S", "攻撃: F（上/下だけ入力で上下攻撃・長押し必殺）", "ガード（卵）: G", "風船: Space"];
+  if (sourceId === "kb1") return ["移動: ← / →", "ジャンプ: ↑ / 急降下: ↓", "攻撃: ,（上/下だけ入力で上下攻撃・長押し必殺）", "ガード（卵）: .（ピリオド）", "風船: /（スラッシュ）"];
+  return ["移動: スティック/十字", "ジャンプ: A(×) / 急降下: 下", "攻撃: X(□)（上/下入力で上下攻撃・長押し必殺）", "ガード（卵）: L/R", "風船: Y(△)"];
 }
 
 // カード表示用の内容（ローカル: 入力ソース別 / オンライン: 自分・相手）
@@ -1633,7 +1714,7 @@ function cardInfoFor(p) {
   if (APP.mode === "online") {
     const my = NET.isHost ? 0 : 1;
     if (p.slot === my) {
-      return { label: "あなた", lines: ["移動: A/D または ←/→", "ジャンプ: W / ↑", "急降下/すり抜け: S / ↓", "攻撃: J（長押し2秒で必殺技）", "ガード（卵）: K"] };
+      return { label: "あなた", lines: ["移動: A/D または ←/→（W・↑ジャンプ / S・↓急降下）", "攻撃: J（上/下だけ入力で上下攻撃・長押し必殺）", "ガード（卵）: K", "風船: Space（浮上・落下防止）"] };
     }
     return { label: "相手（オンライン）", lines: ["リモートプレイヤー", "", "", "", ""] };
   }
@@ -1802,10 +1883,10 @@ function drawLobby() {
   ctx.font = "17px sans-serif";
   const lines = [
     "【参加方法】 攻撃ボタンを押すと参加",
-    "キーボード左: WASD移動 / W=ジャンプ / S=急降下 / F=攻撃 / G=ガード(卵)",
-    "キーボード右: 矢印移動 / ↑=ジャンプ / ↓=急降下 / ,=攻撃 / .=ガード(卵)",
-    "ゲームパッド: 移動 / A=ジャンプ / X=攻撃 / L・R=ガード",
-    "★攻撃を2秒長押しで必殺技（ガードを一撃で割る）。卵は使い切ると割れて復活まで無し",
+    "キーボード左: WASD移動 / F=攻撃 / G=ガード(卵) / Space=風船",
+    "キーボード右: 矢印移動 / ,=攻撃 / .=ガード(卵) / /=風船",
+    "★攻撃は上/下だけ入力で上下攻撃。2秒長押しで必殺技（ガードを一撃で割る）",
+    "★風船=Space長押しで浮上（落下防止）。1ストック1回・使い切ると割れる。卵も使い切ると割れる",
     "★アイテムが空から落下！先に触れた人がゲット（🟠リーチ延長5秒／🔵移動＆ジャンプ1.5倍10秒）",
   ];
   lines.forEach((t, i) => ctx.fillText(t, W / 2, 380 + i * 26));
@@ -1907,7 +1988,7 @@ requestAnimationFrame(frame);
 window.UCHI = {
   APP, keys, runTick, renderNow,
   makeMatchState, stepMatch, makePlayer,
-  PHYS, ATTACK, SPECIAL, GUARD, STAGES, BLAST, STOCKS, ITEM, rngNext,
+  PHYS, ATTACK, SPECIAL, GUARD, STAGES, BLAST, STOCKS, ITEM, BALLOON, rngNext,
   NET, netHost, netJoin, netHostStart, encodeSample, decodeSample,
 };
 </script>
