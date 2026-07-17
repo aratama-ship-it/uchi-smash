@@ -205,6 +205,15 @@ const MOB = {
   kbBase: 5, kbScale: 0.10,
 };
 
+// 45度ふっとばしの係数（√2/2）。Math.cos/sinを避け決定論を担保
+const KB45 = 0.7071067811865476;
+
+// 新ギミック定数（すべて決定論的に動作）
+const CRUMBLE = { crackTicks: 42, goneTicks: 160 };            // 乗って割れるまで / 消えて復活まで
+const PENDULUM = { damage: 13, kbBase: 6, kbScale: 0.11, r: 20 };  // 振り子（当たると弾く）
+const LAVA = { damage: 10, kbBase: 6, kbScale: 0.09 };         // 溶岩（触れると上へ跳ね返す）
+const WARP_CD = 30;                                            // ワープ後の再ワープ禁止tick
+
 const BLAST = { left: -250, right: W + 250, top: -350, bottom: H + 330 };
 
 // ============================ ステージ ============================
@@ -254,6 +263,7 @@ const STAGES = [
     // move: {axis:'x'|'y', range:振れ幅px, speed:px/tick, dir:初速の向き}
     // ⚠️ 決定論のため床移動は毎tickの整数加算(off+=vel)＝三角波。Math.sinは使わない
     name: "うごく床",
+    mob: true, mobX: 640,
     theme: { sky:["#241a2e","#3a2450","#5a3a7a"], mountain:"rgba(45,30,65,0.7)",
              dirt:"#3e3450", grass:"#8a6ad0", grass2:"#6a4ab0", plat:"#b088e0", platTop:"#cbb0f0" },
     platforms: [
@@ -282,6 +292,106 @@ const STAGES = [
       { x: 968, w: 60, height: 150, side: "right" },
     ],
     wallSpeed: 0.007,   // 位相の毎tick変化（三角波 0..1、約2.4秒で上下反転）
+  },
+  {
+    // 空中島群: メイン地面なし。小さな足場が点在。落ちたら即場外の上級ステージ
+    name: "そらの島",
+    theme: { sky:["#182838","#243c58","#356084"], mountain:"rgba(20,45,70,0.6)",
+             dirt:"#5a6a48", grass:"#8fc860", grass2:"#6fa848", plat:"#7a9a6a", platTop:"#a0c088" },
+    platforms: [
+      { x: 150, y: 520, w: 180, droppable: true },
+      { x: 430, y: 470, w: 160, droppable: true },
+      { x: 690, y: 470, w: 160, droppable: true },
+      { x: 970, y: 520, w: 180, droppable: true },
+      { x: 550, y: 340, w: 180, droppable: true },
+    ],
+    spawns: [ {x:240,y:520}, {x:1060,y:520}, {x:510,y:470}, {x:770,y:470} ],
+  },
+  {
+    // ながれ場: 地面が外側へ流れるコンベア。踏ん張らないと端へ流されて落ちる
+    name: "ながれ場",
+    theme: { sky:["#2a2418","#4a3e22","#6a5a30"], mountain:"rgba(50,42,25,0.7)",
+             dirt:"#4a4030", grass:"#c0a850", grass2:"#a08838", plat:"#9a8a6a", platTop:"#c0b088" },
+    platforms: [
+      { x: 180, y: 560, w: 460, droppable: false, main: true, conveyor: -2.0 },  // 左半分: 左へ流れる
+      { x: 640, y: 560, w: 460, droppable: false, main: true, conveyor: 2.0 },   // 右半分: 右へ流れる
+      { x: 330, y: 440, w: 160, droppable: true },   // 安全な浮き足場
+      { x: 790, y: 440, w: 160, droppable: true },
+    ],
+    spawns: [ {x:420,y:560}, {x:860,y:560}, {x:540,y:560}, {x:740,y:560} ],
+  },
+  {
+    // エレベーター: 左右の地面＋中央の大きな床が上下する。乗り継ぎのタイミングゲー
+    name: "エレベーター",
+    theme: { sky:["#1e2028","#30343e","#454b58"], mountain:"rgba(28,30,38,0.7)",
+             dirt:"#3a3e46", grass:"#7a8290", grass2:"#5e6672", plat:"#8a94a6", platTop:"#b0bccc" },
+    platforms: [
+      { x: 130, y: 560, w: 320, droppable: false, main: true },
+      { x: 830, y: 560, w: 320, droppable: false, main: true },
+      { x: 500, y: 500, w: 280, droppable: true, move: { axis: "y", range: 120, speed: 1.4, dir: 1 } },
+    ],
+    spawns: [ {x:290,y:560}, {x:990,y:560}, {x:230,y:560}, {x:1050,y:560} ],
+  },
+  {
+    // くずれ足場: 浮き足場は乗ると数秒でヒビ→割れて落ちる。同じ所に居座れない
+    name: "くずれ足場",
+    theme: { sky:["#241c28","#3e2e42","#5a4460"], mountain:"rgba(40,30,45,0.7)",
+             dirt:"#4a3a3a", grass:"#a86868", grass2:"#884e4e", plat:"#a08080", platTop:"#c8a0a0" },
+    platforms: [
+      { x: 260, y: 580, w: 760, droppable: false, main: true },
+      { x: 200, y: 450, w: 150, droppable: true, crumble: true },
+      { x: 430, y: 390, w: 150, droppable: true, crumble: true },
+      { x: 700, y: 390, w: 150, droppable: true, crumble: true },
+      { x: 930, y: 450, w: 150, droppable: true, crumble: true },
+      { x: 555, y: 300, w: 150, droppable: true, crumble: true },
+    ],
+    spawns: [ {x:380,y:580}, {x:900,y:580}, {x:520,y:580}, {x:760,y:580} ],
+  },
+  {
+    // 振り子と溶岩: 中央は溶岩の谷、その上を振り子が薙ぎ払う。左右の足場で戦う
+    name: "振り子と溶岩",
+    theme: { sky:["#2a1518","#4a2020","#6a2e28"], mountain:"rgba(45,20,20,0.7)",
+             dirt:"#3e2e28", grass:"#8a5040", grass2:"#6e3e30", plat:"#9a7060", platTop:"#c09080" },
+    platforms: [
+      { x: 120, y: 560, w: 380, droppable: false, main: true },
+      { x: 780, y: 560, w: 380, droppable: false, main: true },
+      { x: 520, y: 430, w: 240, droppable: true },   // 中央上の橋
+    ],
+    spawns: [ {x:280,y:560}, {x:1000,y:560}, {x:340,y:560}, {x:940,y:560} ],
+    lava: [ { x: 500, y: 596, w: 280, h: 90 } ],
+    pendulums: [ { pivotX: 640, pivotY: 120, len: 270, amp: 190, speed: 2.2, dir: 1, r: 22 } ],
+  },
+  {
+    // ワープ広場: 左右のワープ口で瞬間移動できる。横の場外は普通に残るので注意
+    name: "ワープ広場",
+    theme: { sky:["#161e2e","#22304e","#324a72"], mountain:"rgba(20,30,55,0.7)",
+             dirt:"#3a3450", grass:"#6a6ac0", grass2:"#4e4ea0", plat:"#8a8ac0", platTop:"#b0b0e0" },
+    platforms: [
+      { x: 180, y: 560, w: 920, droppable: false, main: true },
+      { x: 360, y: 430, w: 160, droppable: true },
+      { x: 760, y: 430, w: 160, droppable: true },
+    ],
+    spawns: [ {x:360,y:560}, {x:920,y:560}, {x:520,y:560}, {x:760,y:560} ],
+    warps: [
+      { x: 246, y: 466, w: 48, h: 88, link: 1 },   // 左
+      { x: 986, y: 466, w: 48, h: 88, link: 0 },   // 右（左右ワープ）
+    ],
+  },
+  {
+    // サーカステント: 中央トランポリンで高く跳ね、細いロープ足場を渡る。トラペーズ(振り子)注意
+    name: "サーカステント",
+    theme: { sky:["#2a1626","#4a2038","#6a2e4a"], mountain:"rgba(45,20,35,0.6)",
+             dirt:"#5a3040", grass:"#d86a86", grass2:"#b8506a", plat:"#c88aa0", platTop:"#e8b0c0" },
+    platforms: [
+      { x: 220, y: 590, w: 220, droppable: false, main: true },
+      { x: 840, y: 590, w: 220, droppable: false, main: true },
+      { x: 510, y: 604, w: 260, droppable: false, bounce: 15.5 },   // 中央トランポリン
+      { x: 380, y: 420, w: 160, droppable: true },
+      { x: 740, y: 420, w: 160, droppable: true },
+      { x: 560, y: 300, w: 160, droppable: true },
+    ],
+    spawns: [ {x:330,y:590}, {x:930,y:590}, {x:460,y:420}, {x:820,y:420} ],
+    pendulums: [ { pivotX: 640, pivotY: 100, len: 205, amp: 150, speed: 2.0, dir: 1, r: 18 } ],
   },
 ];
 
@@ -476,6 +586,7 @@ function makePlayer(slotIdx, stage) {
     balloonFuel: BALLOON.fuel,    // 風船の残り燃料（0で割れて復活まで使えない）
     ballooning: false,
     attackDir: "fwd",             // 攻撃の向き "fwd" | "up" | "down"
+    warpCd: 0,                    // ワープ後クールダウン
     hitFlash: 0,
     prev: NEUTRAL,                // 前フレーム入力（エッジ検出用・状態の一部として保持）
   };
@@ -495,6 +606,9 @@ function makeMatchState(slotIndices, stageIndex) {
       c.moveAxis = pl.move.axis; c.moveRange = pl.move.range;
       c.off = 0; c.vel = pl.move.speed * (pl.move.dir || 1);
     }
+    if (pl.conveyor) c.conveyor = pl.conveyor;   // 毎tick押す量(+右/-左)
+    if (pl.bounce) c.bounce = pl.bounce;         // トランポリン: 着地で上へ跳ねる
+    if (pl.crumble) { c.crumble = true; c.crumbleState = "solid"; c.crumbleTimer = 0; }
     return c;
   });
   // 地面の高さ（動く壁の基準）
@@ -520,8 +634,15 @@ function makeMatchState(slotIndices, stageIndex) {
     walls,                        // 動く壁（ライブ）
     wallPhase: 0,                 // 0..1 の位相（三角波）
     wallVel: stage.wallSpeed || 0,
-    // ドスン風モブ（うごく床=index3 のみ登場）
-    mob: idx === 3 ? { x: 640, y: groundY - MOB.size, vy: 0, state: "rise", timer: 0, victims: [] } : null,
+    // ドスン風モブ（stage.mob フラグのあるステージのみ）
+    mob: stage.mob ? { x: stage.mobX || 640, y: groundY - MOB.size, vy: 0, state: "rise", timer: 0, victims: [] } : null,
+    // 振り子（振れる球のハザード）
+    pendulums: (stage.pendulums || []).map(pd => ({
+      pivotX: pd.pivotX, pivotY: pd.pivotY, len: pd.len, amp: pd.amp, r: pd.r || PENDULUM.r,
+      off: pd.start || 0, vel: pd.speed * (pd.dir || 1), x: pd.pivotX, y: pd.pivotY + pd.len,
+    })),
+    lava: (stage.lava || []).map(l => ({ x: l.x, y: l.y, w: l.w, h: l.h })),
+    warps: (stage.warps || []).map(w => ({ x: w.x, y: w.y, w: w.w, h: w.h, link: w.link })),
     rng: seed,                    // xorshift32 の状態
     items: [],                    // 落下中/設置中のアイテム
     itemTimer: ITEM.firstSpawn,   // 次の出現までのtick
@@ -560,6 +681,83 @@ function updateMob(state, events) {
       p.chargeTimer = 0; p.attackTimer = 0; p.attackIsSpecial = false;
       state.hitstop = 6;
       events.push({ type: "mob-hit", x: p.x, y: p.y - PLAYER_H / 2, dir, dmg: p.damage });
+    }
+  }
+}
+
+// 崩れる床を1tick更新（乗るとcrack→gone→復活）
+function updateCrumble(state) {
+  for (const plat of state.platforms) {
+    if (!plat.crumble) continue;
+    if (plat.crumbleState === "crack") { if (--plat.crumbleTimer <= 0) { plat.crumbleState = "gone"; plat.crumbleTimer = CRUMBLE.goneTicks; } }
+    else if (plat.crumbleState === "gone") { if (--plat.crumbleTimer <= 0) { plat.crumbleState = "solid"; } }
+  }
+}
+
+// 振り子（球）を1tick更新。offを三角波で振る＋arc高さはsqrtで決定論的に算出。当たると弾く
+function updatePendulums(state, events) {
+  for (const pd of state.pendulums) {
+    pd.off += pd.vel;
+    if (pd.off > pd.amp) { pd.off = pd.amp; pd.vel = -pd.vel; }
+    else if (pd.off < -pd.amp) { pd.off = -pd.amp; pd.vel = -pd.vel; }
+    pd.x = pd.pivotX + pd.off;
+    const inside = pd.len * pd.len - pd.off * pd.off;
+    pd.y = pd.pivotY + Math.sqrt(inside > 0 ? inside : 0);
+    for (const p of state.players) {
+      if (!p.alive || p.invuln > 0) continue;
+      const dxp = p.x - pd.x, dyp = (p.y - PLAYER_H / 2) - pd.y;
+      const rr = pd.r + PLAYER_W * 0.4;
+      if (dxp * dxp + dyp * dyp < rr * rr) {
+        const dir = p.x >= pd.x ? 1 : -1;
+        p.damage += PENDULUM.damage;
+        const kb = PENDULUM.kbBase + p.damage * PENDULUM.kbScale;
+        p.vx = KB45 * kb * dir; p.vy = -KB45 * kb;
+        p.hitstun = Math.floor(6 + kb * 2);
+        p.onGround = false; p.hitFlash = 8; p.invuln = 18;
+        p.chargeTimer = 0; p.attackTimer = 0; p.attackIsSpecial = false;
+        state.hitstop = 5;
+        events.push({ type: "mob-hit", x: p.x, y: p.y - PLAYER_H / 2, dir, dmg: p.damage });
+      }
+    }
+  }
+}
+
+// 溶岩: 触れたプレイヤーを上へ跳ね返す（KOではなくダメージ＋ノックバック）
+function updateLava(state, events) {
+  for (const lv of state.lava) {
+    for (const p of state.players) {
+      if (!p.alive || p.invuln > 0) continue;
+      if (rectsOverlap(lv.x, lv.y, lv.w, lv.h, p.x - PLAYER_W / 2, p.y - PLAYER_H, PLAYER_W, PLAYER_H)) {
+        p.damage += LAVA.damage;
+        const kb = LAVA.kbBase + p.damage * LAVA.kbScale;
+        p.vx = (p.x >= lv.x + lv.w / 2 ? 1 : -1) * kb * 0.5;
+        p.vy = -kb;
+        p.hitstun = Math.floor(5 + kb * 1.5);
+        p.onGround = false; p.hitFlash = 8; p.invuln = 22;
+        state.hitstop = 4;
+        events.push({ type: "lava-hit", x: p.x, y: p.y - PLAYER_H / 2, dmg: p.damage });
+      }
+    }
+  }
+}
+
+// ワープ: 入口に触れたら対のワープへ瞬間移動（左右の場外は普通に残る）
+function updateWarps(state, events) {
+  for (const p of state.players) {
+    if (!p.alive) continue;
+    if (p.warpCd > 0) { p.warpCd--; continue; }
+    const cx = p.x, cy = p.y - PLAYER_H / 2;
+    for (let i = 0; i < state.warps.length; i++) {
+      const w = state.warps[i];
+      if (cx > w.x && cx < w.x + w.w && cy > w.y && cy < w.y + w.h) {
+        const dest = state.warps[w.link];
+        p.x = dest.x + dest.w / 2;
+        p.y = dest.y + dest.h - 2;
+        p.vy = Math.min(p.vy, 0);
+        p.warpCd = WARP_CD;
+        events.push({ type: "warp", x: dest.x + dest.w / 2, y: dest.y + dest.h / 2 });
+        break;
+      }
     }
   }
 }
@@ -636,6 +834,7 @@ function stepMatch(state, samples) {
   // 2) 床を動かす（決定論的）
   updateMovingPlatforms(state);
   updateWalls(state);
+  updateCrumble(state);
   // 3) 乗っているプレイヤーを床と一緒に運ぶ。
   //    縦方向は床top(plat.y)へスナップ＝floatズレで着地判定が外れて落ちるのを防ぐ。
   for (let i = 0; i < ps.length; i++) {
@@ -781,14 +980,20 @@ function stepMatch(state, samples) {
     p.y += p.vy;
 
     if (p.vy >= 0) {
-      let landed = false;
+      let landed = false, bounced = false;
       for (const plat of state.platforms) {
         if (plat.droppable && p.dropTimer > 0) continue;
+        if (plat.crumbleState === "gone") continue;   // 崩れて消えた床は乗れない
         if (p.x + PLAYER_W / 2 <= plat.x || p.x - PLAYER_W / 2 >= plat.x + plat.w) continue;
         if (prevY <= plat.y && p.y >= plat.y) {
           p.y = plat.y;
-          p.vy = 0;
-          landed = true;
+          if (plat.bounce) {                           // トランポリン: 上へ跳ねる
+            p.vy = -plat.bounce; bounced = true; p.airJumps = PHYS.airJumps;
+            events.push({ type: "bounce", x: p.x, y: plat.y });
+          } else {
+            p.vy = 0; landed = true;
+            if (plat.crumble && plat.crumbleState === "solid") { plat.crumbleState = "crack"; plat.crumbleTimer = CRUMBLE.crackTicks; }
+          }
           break;
         }
       }
@@ -804,6 +1009,15 @@ function stepMatch(state, samples) {
     }
 
     p.prev = cur;
+  }
+
+  // --- コンベア: 乗っているプレイヤーを流す ---
+  for (const p of ps) {
+    if (!p.alive || !p.onGround) continue;
+    for (const plat of state.platforms) {
+      if (!plat.conveyor) continue;
+      if (Math.abs(p.y - plat.y) < 2 && p.x > plat.x && p.x < plat.x + plat.w) { p.x += plat.conveyor; break; }
+    }
   }
 
   // --- 動く壁との当たり判定（横方向に押し出す）---
@@ -948,8 +1162,13 @@ function stepMatch(state, samples) {
     }
   }
 
-  // --- ドスン風モブ（うごく床のみ）---
-  if (!inCountdown && !state.ending) updateMob(state, events);
+  // --- ハザード類（うごく床のモブ / 振り子 / 溶岩 / ワープ）---
+  if (!inCountdown && !state.ending) {
+    updateMob(state, events);
+    if (state.pendulums.length) updatePendulums(state, events);
+    if (state.lava.length) updateLava(state, events);
+    if (state.warps.length) updateWarps(state, events);
+  }
 
   // --- 場外KO ---
   for (const p of ps) {
@@ -967,6 +1186,7 @@ function stepMatch(state, samples) {
         p.guardHp = GUARD.max; p.guarding = false; p.guardBreakFlash = 0;  // 卵は復活で全回復
         p.itemType = null; p.itemTimer = 0;                                // アイテム効果もリセット
         p.balloonFuel = BALLOON.fuel; p.ballooning = false;                // 風船も復活で回復
+        p.warpCd = 0;
         p.airJumps = PHYS.airJumps;
         p.invuln = RESPAWN_INVULN;
       } else {
@@ -1576,6 +1796,20 @@ function handleEvents(events) {
           life: 16 + Math.random() * 8, size: 3 + Math.random() * 3, color: "#fff",
         });
       }
+    } else if (ev.type === "lava-hit") {
+      fx.shake = 8;
+      for (let k = 0; k < 14; k++) {
+        fx.particles.push({ x: ev.x, y: ev.y, vx: (Math.random() - 0.5) * 7, vy: -(Math.random() * 7 + 2), life: 16 + Math.random() * 10, size: 2 + Math.random() * 3, color: Math.random() < 0.5 ? "#ff7a2a" : "#ffd34d" });
+      }
+    } else if (ev.type === "warp") {
+      for (let k = 0; k < 14; k++) {
+        const ang = Math.random() * Math.PI * 2, sp = 1 + Math.random() * 5;
+        fx.particles.push({ x: ev.x, y: ev.y, vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp, life: 14 + Math.random() * 8, size: 2 + Math.random() * 2, color: "#8fe3ff" });
+      }
+    } else if (ev.type === "bounce") {
+      for (let k = 0; k < 6; k++) {
+        fx.particles.push({ x: ev.x + (Math.random() - 0.5) * 40, y: ev.y, vx: (Math.random() - 0.5) * 4, vy: -Math.random() * 3, life: 10 + Math.random() * 6, size: 2 + Math.random() * 2, color: "#ff86b8" });
+      }
     }
   }
 }
@@ -1616,7 +1850,12 @@ function drawBackground(stage) {
 
 function drawStage(platforms, theme) {
   const th = theme;
+  const now = performance.now();
   for (const plat of platforms) {
+    if (plat.crumbleState === "gone") continue;   // 崩れて消えた床は描かない
+    // 崩れかけは揺れる
+    let sx = 0;
+    if (plat.crumbleState === "crack") sx = Math.sin(now / 40 + plat.x) * 1.6;
     if (plat.main) {
       ctx.fillStyle = th.dirt;
       ctx.fillRect(plat.x, plat.y, plat.w, H - plat.y);
@@ -1624,19 +1863,101 @@ function drawStage(platforms, theme) {
       ctx.fillRect(plat.x, plat.y, plat.w, 14);
       ctx.fillStyle = th.grass2;
       ctx.fillRect(plat.x, plat.y + 14, plat.w, 5);
+      // コンベアの矢印
+      if (plat.conveyor) drawConveyorArrows(plat);
+    } else if (plat.bounce) {
+      // トランポリン（バネの見た目）
+      ctx.fillStyle = "#c0447a";
+      ctx.fillRect(plat.x, plat.y, plat.w, 8);
+      ctx.strokeStyle = "#ff86b8"; ctx.lineWidth = 3;
+      ctx.beginPath();
+      for (let bx = plat.x + 8; bx < plat.x + plat.w - 4; bx += 14) { ctx.moveTo(bx, plat.y + 8); ctx.lineTo(bx + 7, plat.y + 18); ctx.lineTo(bx + 14, plat.y + 8); }
+      ctx.stroke();
     } else {
-      // 動く床は少し目立たせる（縁取り＋矢印なし・厚め）
       const moving = plat.moveAxis !== undefined;
-      ctx.fillStyle = th.plat;
-      ctx.fillRect(plat.x, plat.y, plat.w, moving ? 14 : 12);
+      const cracking = plat.crumbleState === "crack";
+      ctx.save();
+      ctx.translate(sx, 0);
+      ctx.fillStyle = cracking ? "#b08a6a" : th.plat;
+      ctx.fillRect(plat.x, plat.y, plat.w, moving || plat.crumble ? 14 : 12);
       ctx.fillStyle = th.platTop;
       ctx.fillRect(plat.x, plat.y, plat.w, 4);
-      if (moving) {
-        ctx.strokeStyle = "rgba(255,255,255,0.35)";
-        ctx.lineWidth = 2;
-        ctx.strokeRect(plat.x, plat.y, plat.w, 14);
+      if (moving) { ctx.strokeStyle = "rgba(255,255,255,0.35)"; ctx.lineWidth = 2; ctx.strokeRect(plat.x, plat.y, plat.w, 14); }
+      if (cracking) {   // ヒビ
+        ctx.strokeStyle = "rgba(0,0,0,0.5)"; ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(plat.x + plat.w * 0.35, plat.y); ctx.lineTo(plat.x + plat.w * 0.4, plat.y + 14);
+        ctx.moveTo(plat.x + plat.w * 0.65, plat.y); ctx.lineTo(plat.x + plat.w * 0.6, plat.y + 14);
+        ctx.stroke();
       }
+      ctx.restore();
     }
+  }
+}
+
+function drawConveyorArrows(plat) {
+  const dir = plat.conveyor > 0 ? 1 : -1;
+  ctx.strokeStyle = "rgba(255,220,80,0.85)"; ctx.lineWidth = 3; ctx.lineCap = "round";
+  const cy = plat.y + 8;
+  for (let ax = plat.x + 30; ax < plat.x + plat.w - 20; ax += 60) {
+    ctx.beginPath();
+    ctx.moveTo(ax, cy); ctx.lineTo(ax + dir * 16, cy);
+    ctx.moveTo(ax + dir * 16, cy); ctx.lineTo(ax + dir * 8, cy - 6);
+    ctx.moveTo(ax + dir * 16, cy); ctx.lineTo(ax + dir * 8, cy + 6);
+    ctx.stroke();
+  }
+  ctx.lineCap = "butt";
+}
+
+// 溶岩ゾーン
+function drawLavaZones(lava) {
+  const now = performance.now();
+  for (const lv of lava) {
+    ctx.fillStyle = "#d63a1e";
+    ctx.fillRect(lv.x, lv.y, lv.w, lv.h);
+    ctx.fillStyle = "#ff7a2a";
+    ctx.beginPath();
+    ctx.moveTo(lv.x, lv.y + 4);
+    for (let x = lv.x; x <= lv.x + lv.w; x += 16) ctx.lineTo(x, lv.y + 3 + Math.sin(now / 200 + x / 20) * 3);
+    ctx.lineTo(lv.x + lv.w, lv.y + 12); ctx.lineTo(lv.x, lv.y + 12); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = "rgba(255,220,120,0.7)";
+    for (let k = 0; k < lv.w; k += 40) { const bx = lv.x + 20 + k, by = lv.y + 8 + ((now / 6 + k * 7) % (lv.h - 10)); ctx.fillRect(bx, lv.y + lv.h - (by - lv.y) % lv.h, 3, 3); }
+  }
+}
+
+// ワープ口
+function drawWarps(warps) {
+  const now = performance.now();
+  const cols = ["#42d9ff", "#c86bff", "#ffd34d", "#3ee657"];
+  for (let i = 0; i < warps.length; i++) {
+    const w = warps[i], c = cols[Math.floor(i / 2) % cols.length];
+    const cx = w.x + w.w / 2, cy = w.y + w.h / 2;
+    ctx.save();
+    ctx.strokeStyle = c; ctx.lineWidth = 3;
+    for (let r = 0; r < 3; r++) {
+      const rr = 1 - ((now / 700 + r / 3) % 1);
+      ctx.globalAlpha = rr * 0.8;
+      ctx.beginPath();
+      ctx.ellipse(cx, cy, (w.w / 2) * rr, (w.h / 2) * rr, 0, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = c; ctx.lineWidth = 2.5;
+    ctx.beginPath(); ctx.ellipse(cx, cy, w.w / 2, w.h / 2, 0, 0, Math.PI * 2); ctx.stroke();
+    ctx.restore();
+  }
+}
+
+// 振り子（球）
+function drawPendulums(pendulums) {
+  for (const pd of pendulums) {
+    ctx.strokeStyle = "rgba(220,220,235,0.7)"; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(pd.pivotX, pd.pivotY); ctx.lineTo(pd.x, pd.y); ctx.stroke();
+    ctx.fillStyle = "#3f4550"; ctx.beginPath(); ctx.arc(pd.pivotX, pd.pivotY, 5, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "#8a3040"; ctx.strokeStyle = "#d0556a"; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(pd.x, pd.y, pd.r, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = "rgba(255,255,255,0.5)";
+    ctx.beginPath(); ctx.arc(pd.x - pd.r * 0.35, pd.y - pd.r * 0.35, pd.r * 0.28, 0, Math.PI * 2); ctx.fill();
   }
 }
 
@@ -2093,10 +2414,13 @@ function drawMatch() {
   }
   drawBackground(m.stage);
   drawStage(m.platforms, m.stage.theme);
+  if (m.lava.length) drawLavaZones(m.lava);
+  if (m.warps.length) drawWarps(m.warps);
   if (m.walls.length) drawWalls(m.walls, m.groundY, m.stage.theme);
   for (const it of m.items) drawItem(it);
   for (const p of m.players) drawPlayer(p);
   if (m.mob) drawMob(m.mob);
+  if (m.pendulums.length) drawPendulums(m.pendulums);
 
   // パーティクル
   for (const pt of fx.particles) {
@@ -2327,6 +2651,7 @@ window.UCHI = {
   APP, keys, runTick, renderNow,
   makeMatchState, stepMatch, makePlayer,
   PHYS, ATTACK, SPECIAL, GUARD, STAGES, BLAST, STOCKS, ITEM, BALLOON, MOB, rngNext,
+  CRUMBLE, PENDULUM, LAVA, WARP_CD, PLAYER_W, PLAYER_H,
   NET, netHost, netJoin, netHostStart, encodeSample, decodeSample,
   makeCpuSource, cpuThink,
 };
