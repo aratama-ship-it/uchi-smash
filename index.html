@@ -74,6 +74,11 @@
       <div id="ol-code-view"></div>
       <div id="ol-share"></div>
       <div id="ol-room-msg" style="font-size:15px;color:#cde"></div>
+      <div id="ol-stage" hidden style="margin:12px 0 6px;">
+        <button id="ol-stage-prev" class="secondary" style="padding:6px 12px;">◀</button>
+        <span id="ol-stage-name" style="display:inline-block;min-width:150px;font-weight:bold;color:#ffd34d;"></span>
+        <button id="ol-stage-next" class="secondary" style="padding:6px 12px;">▶</button>
+      </div>
       <button id="btn-start" hidden>対戦開始！</button>
     </div>
     <div id="ol-status"></div>
@@ -163,21 +168,69 @@ const COUNTDOWN_TICKS = 180;
 
 const BLAST = { left: -250, right: W + 250, top: -350, bottom: H + 330 };
 
-// ステージ: 全て上からのみ乗れる（メイン台は下からすり抜け可・降下は不可）
-// ⚠️ 段差の設計基準: 単発ジャンプの最高到達点は約134px（離散積分の実測値）。
-//    1段の間隔は105pxにして余裕を持たせる（560→455→350）
-const PLATFORMS = [
-  { x: 190, y: 560, w: 900, droppable: false, main: true },
-  { x: 300, y: 455, w: 180, droppable: true },
-  { x: 800, y: 455, w: 180, droppable: true },
-  { x: 550, y: 350, w: 180, droppable: true },
-];
-
-const SPAWNS = [
-  { x: 390, y: 455 },  // P1: 左足場
-  { x: 890, y: 455 },  // P2: 右足場
-  { x: 420, y: 560 },  // P3: メイン左
-  { x: 860, y: 560 },  // P4: メイン右
+// ============================ ステージ ============================
+// platforms: 全て上からのみ乗れる（droppable=薄い足場で下からすり抜け・降下可、
+//            main=分厚い地面）。spawns: 4人ぶんの初期位置（足元y）。
+// theme: 背景/地面/足場の配色。
+// ⚠️ 段差の設計基準: 単発ジャンプ最高到達点≈134px。隣接足場の縦間隔は≤110pxに。
+const STAGES = [
+  {
+    name: "ひろば",
+    theme: { sky:["#232343","#31315a","#3d3d6b"], mountain:"rgba(30,30,60,0.8)",
+             dirt:"#4a3728", grass:"#6dbb52", grass2:"#59a041", plat:"#8a7a9a", platTop:"#a99cc0" },
+    platforms: [
+      { x: 190, y: 560, w: 900, droppable: false, main: true },
+      { x: 300, y: 455, w: 180, droppable: true },
+      { x: 800, y: 455, w: 180, droppable: true },
+      { x: 550, y: 350, w: 180, droppable: true },
+    ],
+    spawns: [ {x:390,y:455}, {x:890,y:455}, {x:420,y:560}, {x:860,y:560} ],
+  },
+  {
+    name: "しゅうてん（平地）",
+    theme: { sky:["#2a1c3a","#4a2a52","#7a3a5a"], mountain:"rgba(40,20,50,0.7)",
+             dirt:"#3a2a44", grass:"#c86ba0", grass2:"#a5508a", plat:"#7a6a9a", platTop:"#9a8aba" },
+    platforms: [
+      { x: 240, y: 560, w: 800, droppable: false, main: true },
+    ],
+    spawns: [ {x:400,y:560}, {x:880,y:560}, {x:520,y:560}, {x:760,y:560} ],
+  },
+  {
+    name: "せんじょう",
+    theme: { sky:["#1c3320","#2a5232","#3a6b42"], mountain:"rgba(20,50,30,0.7)",
+             dirt:"#3a4a2a", grass:"#7ac850", grass2:"#5aa540", plat:"#6a9a7a", platTop:"#8abaa0" },
+    platforms: [
+      { x: 290, y: 580, w: 700, droppable: false, main: true },
+      { x: 360, y: 470, w: 160, droppable: true },
+      { x: 760, y: 470, w: 160, droppable: true },
+      { x: 560, y: 375, w: 160, droppable: true },
+    ],
+    spawns: [ {x:440,y:470}, {x:840,y:470}, {x:480,y:580}, {x:800,y:580} ],
+  },
+  {
+    name: "ふたご島",
+    theme: { sky:["#16283a","#1e4a6a","#2a6a8a"], mountain:"rgba(20,60,90,0.6)",
+             dirt:"#6a5a3a", grass:"#d8c088", grass2:"#b8a068", plat:"#5a8a9a", platTop:"#7aaaba" },
+    platforms: [
+      { x: 130, y: 555, w: 400, droppable: false, main: true },
+      { x: 750, y: 555, w: 400, droppable: false, main: true },
+      { x: 520, y: 410, w: 240, droppable: true },
+    ],
+    spawns: [ {x:300,y:555}, {x:950,y:555}, {x:600,y:410}, {x:680,y:410} ],
+  },
+  {
+    name: "とう（縦長）",
+    theme: { sky:["#2a2438","#3a3050","#4a4068"], mountain:"rgba(35,30,55,0.75)",
+             dirt:"#4a4048", grass:"#9a8ab0", grass2:"#7a6a90", plat:"#8a7a9a", platTop:"#aa9aba" },
+    platforms: [
+      { x: 300, y: 600, w: 680, droppable: false, main: true },
+      { x: 360, y: 500, w: 220, droppable: true },   // 左（横重なり十分）
+      { x: 700, y: 500, w: 220, droppable: true },   // 右
+      { x: 480, y: 400, w: 320, droppable: true },   // 中央（左右と100px重なる）
+      { x: 520, y: 300, w: 240, droppable: true },   // 頂上
+    ],
+    spawns: [ {x:470,y:500}, {x:810,y:500}, {x:440,y:600}, {x:840,y:600} ],
+  },
 ];
 
 const COLORS   = ["#e74c3c", "#3498db", "#f1c40f", "#2ecc71"];
@@ -250,8 +303,8 @@ function makeGamepadSource(index) {
 
 /* ==================== シミュレーション ==================== */
 
-function makePlayer(slotIdx) {
-  const sp = SPAWNS[slotIdx];
+function makePlayer(slotIdx, stage) {
+  const sp = stage.spawns[slotIdx];
   return {
     slot: slotIdx,
     x: sp.x, y: sp.y - 40,       // y は足元
@@ -277,7 +330,9 @@ function makePlayer(slotIdx) {
   };
 }
 
-function makeMatchState(slotIndices) {
+function makeMatchState(slotIndices, stageIndex) {
+  const idx = (stageIndex | 0) % STAGES.length;
+  const stage = STAGES[idx];
   return {
     tick: 0,
     countdown: COUNTDOWN_TICKS,
@@ -286,7 +341,9 @@ function makeMatchState(slotIndices) {
     endTimer: 0,
     finished: false,
     winnerSlot: null,
-    players: slotIndices.map(makePlayer),
+    stageIndex: idx,
+    stage,
+    players: slotIndices.map(s => makePlayer(s, stage)),
   };
 }
 
@@ -381,7 +438,7 @@ function stepMatch(state, samples) {
     // すり抜け降下（薄い足場の上で下エッジ）
     const downEdge = cur.down && !prev.down;
     if (downEdge && canAct && !locked && p.onGround) {
-      const plat = platformUnder(p);
+      const plat = platformUnder(p, state.stage.platforms);
       if (plat && plat.droppable) {
         p.onGround = false;
         p.dropTimer = 10;
@@ -429,7 +486,7 @@ function stepMatch(state, samples) {
 
     if (p.vy >= 0) {
       let landed = false;
-      for (const plat of PLATFORMS) {
+      for (const plat of state.stage.platforms) {
         if (plat.droppable && p.dropTimer > 0) continue;
         if (p.x + PLAYER_W / 2 <= plat.x || p.x - PLAYER_W / 2 >= plat.x + plat.w) continue;
         if (prevY <= plat.y && p.y >= plat.y) {
@@ -514,7 +571,7 @@ function stepMatch(state, samples) {
       p.stocks--;
       events.push({ type: "ko", slot: p.slot, x: Math.max(40, Math.min(W - 40, p.x)), y: Math.max(40, Math.min(H - 40, p.y)) });
       if (p.stocks > 0) {
-        const sp = SPAWNS[p.slot];
+        const sp = state.stage.spawns[p.slot];
         p.x = sp.x; p.y = sp.y - 120;
         p.vx = 0; p.vy = 0;
         p.damage = 0;
@@ -546,8 +603,8 @@ function stepMatch(state, samples) {
   return events;
 }
 
-function platformUnder(p) {
-  for (const plat of PLATFORMS) {
+function platformUnder(p, platforms) {
+  for (const plat of platforms) {
     if (p.y === plat.y &&
         p.x + PLAYER_W / 2 > plat.x && p.x - PLAYER_W / 2 < plat.x + plat.w) {
       return plat;
@@ -563,6 +620,7 @@ const APP = {
   mode: "local",            // local | online
   slots: [null, null, null, null],   // {source} を格納
   match: null,
+  stageIndex: 0,            // ロビーで選択中のステージ
   lobbyPrev: new Map(),     // sourceId -> 前フレームsample（参加検出用）
   resultInfo: null,
 };
@@ -669,7 +727,7 @@ function netOnData(d) {
     if (d.g === NET.gen) NET.buffers[NET.isHost ? 1 : 0][d.t] = decodeSample(d.b);
   } else if (d.y === "start") {
     NET.gen = d.g;
-    startOnlineMatch();
+    startOnlineMatch(d.st | 0);   // ホストが選んだステージで開始
   } else if (d.y === "leave") {
     APP.match = null; APP.mode = "local"; APP.phase = "lobby";
     NET.msg = "相手が退出しました";
@@ -680,14 +738,14 @@ function netOnData(d) {
 function netHostStart() {
   if (!(NET.status === "connected" && NET.isHost && NET.conn && NET.conn.open)) return;
   NET.gen++;
-  NET.conn.send({ y: "start", g: NET.gen });
-  startOnlineMatch();
+  NET.conn.send({ y: "start", g: NET.gen, st: APP.stageIndex });
+  startOnlineMatch(APP.stageIndex);
 }
 
-function startOnlineMatch() {
+function startOnlineMatch(stageIndex) {
   netResetBuffers();
   NET.stall = 0; NET.resultPrev = true;
-  APP.match = makeMatchState([0, 1]);   // ホスト=P1(赤), 参加側=P2(青)
+  APP.match = makeMatchState([0, 1], stageIndex);   // ホスト=P1(赤), 参加側=P2(青)
   APP.mode = "online"; APP.phase = "match";
   document.getElementById("online").hidden = true;
 }
@@ -758,12 +816,23 @@ function refreshOnlineUI() {
       roomMsg.textContent = "友だちの参加を待っています… 上のコードかURLを伝えてください";
       btnStart.hidden = true;
     } else if (NET.status === "connected") {
-      roomMsg.textContent = NET.isHost ? "接続完了！開始できます" : "接続完了！ホストの開始を待っています…";
+      roomMsg.textContent = NET.isHost ? "接続完了！ステージを選んで開始！" : "接続完了！ホストの開始を待っています…";
       btnStart.hidden = !NET.isHost;
     }
+    // ステージ選択はホストのみ（接続後）
+    const stageBox = $ol("ol-stage");
+    stageBox.hidden = !(NET.isHost && NET.status === "connected");
+    $ol("ol-stage-name").textContent = STAGES[APP.stageIndex].name;
   }
   $ol("ol-status").textContent = NET.msg || "";
 }
+
+function olChangeStage(delta) {
+  APP.stageIndex = ((APP.stageIndex + delta) % STAGES.length + STAGES.length) % STAGES.length;
+  refreshOnlineUI();
+}
+$ol("ol-stage-prev").addEventListener("click", () => olChangeStage(-1));
+$ol("ol-stage-next").addEventListener("click", () => olChangeStage(1));
 
 $ol("btn-host").addEventListener("click", () => {
   if (typeof Peer === "undefined") { NET.msg = "通信ライブラリを読み込めませんでした（要インターネット接続）"; refreshOnlineUI(); return; }
@@ -812,7 +881,7 @@ function updateLobby() {
   // 注意: 全ソースの prev を先に更新しきってから遷移する
   // （ループ途中で抜けると未更新の prev が偽エッジを生む）
   const claimed = claimedIds();
-  let wantStart = false;
+  let wantStart = false, stageDelta = 0;
   for (const src of allCandidateSources()) {
     const cur = src.sample();
     const prev = APP.lobbyPrev.get(src.id) || NEUTRAL;
@@ -825,7 +894,13 @@ function updateLobby() {
         claimed.push(src.id);
       }
     }
+    // 左右入力でステージ選択（誰の入力でもOK）
+    if (cur.left && !prev.left) stageDelta--;
+    if (cur.right && !prev.right) stageDelta++;
     if (cur.start && !prev.start) wantStart = true;  // Enter or パッドStart
+  }
+  if (stageDelta !== 0) {
+    APP.stageIndex = ((APP.stageIndex + stageDelta) % STAGES.length + STAGES.length) % STAGES.length;
   }
   if (wantStart && APP.slots.filter(Boolean).length >= 2) startMatch();
 }
@@ -833,7 +908,7 @@ function updateLobby() {
 function startMatch() {
   const slotIndices = [];
   APP.slots.forEach((s, i) => { if (s) slotIndices.push(i); });
-  APP.match = makeMatchState(slotIndices);
+  APP.match = makeMatchState(slotIndices, APP.stageIndex);
   APP.phase = "match";
 }
 
@@ -981,15 +1056,16 @@ function updateFx() {
 const canvas = document.getElementById("game");
 const ctx = canvas.getContext("2d");
 
-function drawBackground() {
+function drawBackground(stage) {
+  const th = (stage || STAGES[0]).theme;
   const g = ctx.createLinearGradient(0, 0, 0, H);
-  g.addColorStop(0, "#232343");
-  g.addColorStop(0.7, "#31315a");
-  g.addColorStop(1, "#3d3d6b");
+  g.addColorStop(0, th.sky[0]);
+  g.addColorStop(0.7, th.sky[1]);
+  g.addColorStop(1, th.sky[2]);
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, W, H);
   // 遠景の山
-  ctx.fillStyle = "rgba(30,30,60,0.8)";
+  ctx.fillStyle = th.mountain;
   ctx.beginPath();
   ctx.moveTo(0, 620); ctx.lineTo(250, 380); ctx.lineTo(520, 600);
   ctx.lineTo(760, 340); ctx.lineTo(1060, 610); ctx.lineTo(1280, 460);
@@ -997,19 +1073,21 @@ function drawBackground() {
   ctx.fill();
 }
 
-function drawStage() {
-  for (const plat of PLATFORMS) {
+function drawStage(stage) {
+  const s = stage || STAGES[0];
+  const th = s.theme;
+  for (const plat of s.platforms) {
     if (plat.main) {
-      ctx.fillStyle = "#4a3728";
-      ctx.fillRect(plat.x, plat.y, plat.w, 130);
-      ctx.fillStyle = "#6dbb52";
+      ctx.fillStyle = th.dirt;
+      ctx.fillRect(plat.x, plat.y, plat.w, H - plat.y);
+      ctx.fillStyle = th.grass;
       ctx.fillRect(plat.x, plat.y, plat.w, 14);
-      ctx.fillStyle = "#59a041";
+      ctx.fillStyle = th.grass2;
       ctx.fillRect(plat.x, plat.y + 14, plat.w, 5);
     } else {
-      ctx.fillStyle = "#8a7a9a";
+      ctx.fillStyle = th.plat;
       ctx.fillRect(plat.x, plat.y, plat.w, 12);
-      ctx.fillStyle = "#a99cc0";
+      ctx.fillStyle = th.platTop;
       ctx.fillRect(plat.x, plat.y, plat.w, 4);
     }
   }
@@ -1245,13 +1323,13 @@ function drawControlCards(m, topY) {
 }
 
 function drawMatch() {
+  const m = APP.match;
   ctx.save();
   if (fx.shake > 0.5) {
     ctx.translate((Math.random() - 0.5) * fx.shake, (Math.random() - 0.5) * fx.shake);
   }
-  drawBackground();
-  drawStage();
-  const m = APP.match;
+  drawBackground(m.stage);
+  drawStage(m.stage);
   for (const p of m.players) drawPlayer(p);
 
   // パーティクル
@@ -1293,15 +1371,18 @@ function drawMatch() {
     ctx.fillText("相手の通信待ち…", W / 2, H / 2);
   }
 
-  // カウントダウン（+ 各プレイヤーの操作方法カード）
+  // カウントダウン（+ ステージ名 + 各プレイヤーの操作方法カード）
   if (m.countdown > 0) {
     const sec = Math.ceil(m.countdown / 60);
     ctx.fillStyle = "rgba(0,0,0,0.45)";
     ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = "#ffd34d";
+    ctx.font = "bold 26px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("STAGE: " + m.stage.name, W / 2, 68);
     ctx.fillStyle = "#fff";
     ctx.font = "bold 120px sans-serif";
-    ctx.textAlign = "center";
-    ctx.fillText(String(sec), W / 2, 170);
+    ctx.fillText(String(sec), W / 2, 180);
     drawControlCards(m, 260);
   } else if (m.countdown === 0 && m.tick < COUNTDOWN_TICKS + 50 && !m.ending) {
     ctx.fillStyle = "#ffd34d";
@@ -1319,8 +1400,9 @@ function drawMatch() {
 }
 
 function drawLobby() {
-  drawBackground();
-  drawStage();
+  const selStage = STAGES[APP.stageIndex];
+  drawBackground(selStage);
+  drawStage(selStage);   // 選択中ステージを背景にプレビュー
 
   ctx.textAlign = "center";
   ctx.fillStyle = "#fff";
@@ -1381,9 +1463,17 @@ function drawLobby() {
     ctx.fillText("2人以上そろうと開始できます", W / 2, 540);
   }
 
+  // ステージ選択（左右キーで変更）
+  ctx.font = "bold 22px sans-serif";
+  ctx.fillStyle = "#fff";
+  ctx.fillText("◀  ステージ: " + selStage.name + "  （" + (APP.stageIndex + 1) + "/" + STAGES.length + "）  ▶", W / 2, 588);
+  ctx.font = "13px sans-serif";
+  ctx.fillStyle = "rgba(255,255,255,0.5)";
+  ctx.fillText("← → （移動キー左右）でステージ変更", W / 2, 610);
+
   ctx.font = "bold 20px sans-serif";
   ctx.fillStyle = "#8fd3ff";
-  ctx.fillText("O キー: オンライン対戦（2人・β）", W / 2, 590);
+  ctx.fillText("O キー: オンライン対戦（2人・β）", W / 2, 640);
 
   const pads = navigator.getGamepads();
   let padCount = 0;
@@ -1394,8 +1484,9 @@ function drawLobby() {
 }
 
 function drawResult() {
-  drawBackground();
-  drawStage();
+  const rStage = APP.match ? APP.match.stage : STAGES[APP.stageIndex];
+  drawBackground(rStage);
+  drawStage(rStage);
   ctx.fillStyle = "rgba(0,0,0,0.55)";
   ctx.fillRect(0, 0, W, H);
   ctx.textAlign = "center";
@@ -1454,7 +1545,7 @@ requestAnimationFrame(frame);
 window.UCHI = {
   APP, keys, runTick, renderNow,
   makeMatchState, stepMatch, makePlayer,
-  PHYS, ATTACK, PLATFORMS, SPAWNS, BLAST, STOCKS,
+  PHYS, ATTACK, SPECIAL, GUARD, STAGES, BLAST, STOCKS,
   NET, netHost, netJoin, netHostStart, encodeSample, decodeSample,
 };
 </script>
