@@ -293,7 +293,7 @@ const NAMES    = ["P1", "P2", "P3", "P4"];
 // 押下中キーの集合（ブラウザイベント → ここに集約）
 const keys = new Set();
 const USED_CODES = new Set([
-  "KeyW","KeyA","KeyS","KeyD","KeyF","KeyG","KeyH","KeyO","KeyJ","KeyK",
+  "KeyW","KeyA","KeyS","KeyD","KeyF","KeyG","KeyH","KeyO","KeyJ","KeyK","KeyC","KeyX",
   "ArrowUp","ArrowDown","ArrowLeft","ArrowRight","Comma","Period","Slash",
   "Enter","Escape","Space",
 ]);
@@ -352,6 +352,74 @@ function makeGamepadSource(index) {
       };
     },
   };
+}
+
+// CPU（AI）入力ソース。ローカル専用。sample(slot, match) で盤面を見て入力を決める
+let cpuCounter = 0;
+function makeCpuSource() {
+  return {
+    id: "cpu" + (cpuCounter++),
+    label: "CPU",
+    isCpu: true,
+    st: { jumpCd: 0, atkCd: 0, atkHold: 0, guardCd: 0 },
+    sample(slot, m) { return m ? cpuThink(this, slot, m) : NEUTRAL; },
+  };
+}
+
+// シンプルなCPU思考: 最寄りの相手を追って接近攻撃、崖外なら中央へ戻って復帰
+function cpuThink(src, slot, m) {
+  const st = src.st;
+  if (st.jumpCd > 0) st.jumpCd--;
+  if (st.atkCd > 0) st.atkCd--;
+  if (st.guardCd > 0) st.guardCd--;
+  const inp = { left:false, right:false, up:false, down:false, jump:false, attack:false, guard:false, balloon:false, start:false };
+  const me = m.players.find(p => p.slot === slot);
+  if (!me || !me.alive) return inp;
+
+  // 最寄りの生存相手
+  let tgt = null, best = 1e9;
+  for (const p of m.players) {
+    if (p.slot === slot || !p.alive) continue;
+    const d = Math.abs(p.x - me.x) + Math.abs(p.y - me.y) * 0.6;
+    if (d < best) { best = d; tgt = p; }
+  }
+
+  const g = m.groundY;
+  const overGround = m.platforms.some(pl => pl.main && me.x > pl.x - 20 && me.x < pl.x + pl.w + 20);
+  const needRecover = !me.onGround && me.y > 220 && (me.y > g + 30 || !overGround);
+
+  // --- 復帰: 崖外/落下中は中央へ戻ってジャンプ・風船 ---
+  if (needRecover) {
+    if (me.x < W / 2) inp.right = true; else inp.left = true;
+    if (me.airJumps > 0 && st.jumpCd <= 0) { inp.jump = true; st.jumpCd = 14; }
+    if (me.y > g + 100 && me.balloonFuel > 0) inp.balloon = true;   // 深いときは風船
+    return inp;
+  }
+
+  if (!tgt) return inp;
+  const dx = tgt.x - me.x, dy = tgt.y - me.y;
+
+  // 端に寄りすぎたら自滅しないよう内側へ
+  const edge = 150;
+  if (me.onGround && me.x < edge && dx < 0) { /* 左端で左に行かない */ }
+  else if (me.onGround && me.x > W - edge && dx > 0) { /* 右端で右に行かない */ }
+  else if (Math.abs(dx) > 46) { if (dx > 0) inp.right = true; else inp.left = true; }
+
+  // 相手が上にいればジャンプ
+  if (dy < -55 && st.jumpCd <= 0) {
+    if (me.onGround) { inp.jump = true; st.jumpCd = 24; }
+    else if (me.airJumps > 0 && me.vy > 0) { inp.jump = true; st.jumpCd = 24; }
+  }
+
+  // 接近したら攻撃（数tick押して離す＝通常攻撃）。上にいれば上攻撃
+  const near = Math.abs(dx) < 56 && Math.abs(dy) < 55;
+  if (st.atkHold > 0) { inp.attack = true; st.atkHold--; if (dy < -30) { inp.up = true; inp.left = false; inp.right = false; } }
+  else if (near && st.atkCd <= 0) { st.atkHold = 3; st.atkCd = 40; inp.attack = true; st.atkHold--; if (dy < -30) { inp.up = true; inp.left = false; inp.right = false; } }
+  // 相手の攻撃が近いとたまにガード（決定論的に tick で判断）
+  else if (best < 80 && tgt.attackTimer > 0 && me.onGround && st.guardCd <= 0 && ((m.tick + slot * 13) % 20 < 8)) {
+    inp.guard = true; st.guardCd = 30; inp.left = false; inp.right = false;
+  }
+  return inp;
 }
 
 /* ==================== シミュレーション ==================== */
@@ -1279,6 +1347,18 @@ function updateLobby() {
   if (stageDelta !== 0) {
     APP.stageIndex = ((APP.stageIndex + stageDelta) % STAGES.length + STAGES.length) % STAGES.length;
   }
+  // C=CPU追加 / X=CPU削除（エッジ検出）
+  if (keys.has("KeyC") && !APP._prevC) {
+    const free = APP.slots.findIndex(s => s === null);
+    if (free !== -1) APP.slots[free] = { source: makeCpuSource(), cpu: true };
+  }
+  APP._prevC = keys.has("KeyC");
+  if (keys.has("KeyX") && !APP._prevX) {
+    for (let i = APP.slots.length - 1; i >= 0; i--) {
+      if (APP.slots[i] && APP.slots[i].cpu) { APP.slots[i] = null; break; }
+    }
+  }
+  APP._prevX = keys.has("KeyX");
   if (wantStart && APP.slots.filter(Boolean).length >= 2) startMatch();
 }
 
@@ -1292,7 +1372,7 @@ function startMatch() {
 function updateMatch() {
   if (APP.mode === "online") { updateOnlineMatch(); return; }
   const m = APP.match;
-  const samples = m.players.map(p => APP.slots[p.slot].source.sample());
+  const samples = m.players.map(p => APP.slots[p.slot].source.sample(p.slot, m));
   const events = stepMatch(m, samples);
   handleEvents(events);
 
@@ -2089,11 +2169,11 @@ function drawLobby() {
     ctx.fillText(NAMES[i], x + slotW / 2, 252);
     ctx.font = "15px sans-serif";
     ctx.fillStyle = s ? "#fff" : "rgba(255,255,255,0.4)";
-    ctx.fillText(s ? s.source.label : "待機中…", x + slotW / 2, 285);
+    ctx.fillText(s ? (s.cpu ? "CPU（コンピュータ）" : s.source.label) : "待機中…", x + slotW / 2, 285);
     if (s) {
-      ctx.fillStyle = "#7f7";
+      ctx.fillStyle = s.cpu ? "#8fd3ff" : "#7f7";
       ctx.font = "bold 14px sans-serif";
-      ctx.fillText("参加OK!", x + slotW / 2, 312);
+      ctx.fillText(s.cpu ? "CPU" : "参加OK!", x + slotW / 2, 312);
     }
     x += slotW + gap;
   }
@@ -2101,12 +2181,12 @@ function drawLobby() {
   ctx.fillStyle = "#fff";
   ctx.font = "17px sans-serif";
   const lines = [
-    "【参加方法】 攻撃ボタンを押すと参加",
+    "【参加方法】 攻撃ボタンを押すと参加　／　C=CPU追加・X=CPU削除（1人でも遊べる）",
     "キーボード左: WASD移動 / F=攻撃 / G=ガード(卵) / Space=風船",
     "キーボード右: 矢印移動 / ,=攻撃 / .=ガード(卵) / /=風船",
     "★攻撃は上/下だけ入力で上下攻撃。2秒長押しで必殺技（ガードを一撃で割る）",
     "★風船=Space長押しで浮上（落下防止）。1ストック1回・使い切ると割れる。卵も使い切ると割れる",
-    "★アイテムが空から落下！先に触れた人がゲット（🟠リーチ延長5秒／🔵移動＆ジャンプ1.5倍10秒）",
+    "★アイテムが空から落下！ リーチ延長／移動＆ジャンプ1.5倍／長距離ビーム の3種",
   ];
   lines.forEach((t, i) => ctx.fillText(t, W / 2, 380 + i * 26));
 
@@ -2209,6 +2289,7 @@ window.UCHI = {
   makeMatchState, stepMatch, makePlayer,
   PHYS, ATTACK, SPECIAL, GUARD, STAGES, BLAST, STOCKS, ITEM, BALLOON, MOB, rngNext,
   NET, netHost, netJoin, netHostStart, encodeSample, decodeSample,
+  makeCpuSource, cpuThink,
 };
 </script>
 </body>
