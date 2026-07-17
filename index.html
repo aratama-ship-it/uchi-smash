@@ -166,6 +166,22 @@ const STOCKS = 3;
 const RESPAWN_INVULN = 150;
 const COUNTDOWN_TICKS = 180;
 
+// アイテム: 空からステージ上へ落下。先にタッチした人が取得、効果は10秒。
+//   reach = 攻撃(波動)のリーチ延長 / speed = 移動速度1.5倍
+//   ⚠️ 落下位置・種類・タイミングは決定論的PRNG(state.rng)で決める→オンライン同期維持
+const ITEM = {
+  duration: 600,        // 効果時間（10秒）
+  spawnInterval: 480,   // 出現間隔（8秒ごと）
+  firstSpawn: 240,      // 最初の出現（4秒後）
+  maxOnField: 2,        // 同時に落ちている上限
+  radius: 18,
+  gravity: 0.3,
+  maxFall: 6,
+  reachMult: 1.8,       // reach効果: リーチ倍率
+  speedMult: 1.5,       // speed効果: 移動速度倍率
+};
+const ITEM_TYPES = ["reach", "speed"];
+
 const BLAST = { left: -250, right: W + 250, top: -350, bottom: H + 330 };
 
 // ============================ ステージ ============================
@@ -325,6 +341,9 @@ function makePlayer(slotIdx, stage) {
     guardHp: GUARD.max,           // 卵の残量（0で使い切り＝復活まで使えない）
     guarding: false,
     guardBreakFlash: 0,
+    itemType: null,               // 所持中アイテム効果 "reach" | "speed" | null
+    itemTimer: 0,                 // 効果の残り時間tick
+    itemGetFlash: 0,
     hitFlash: 0,
     prev: NEUTRAL,                // 前フレーム入力（エッジ検出用・状態の一部として保持）
   };
@@ -333,6 +352,9 @@ function makePlayer(slotIdx, stage) {
 function makeMatchState(slotIndices, stageIndex) {
   const idx = (stageIndex | 0) % STAGES.length;
   const stage = STAGES[idx];
+  // 決定論PRNGの種（両クライアントで同一）。0は不可なので必ず非0に。
+  let seed = ((idx + 1) * 2654435761) | 0;
+  if (seed === 0) seed = 1;
   return {
     tick: 0,
     countdown: COUNTDOWN_TICKS,
@@ -343,8 +365,21 @@ function makeMatchState(slotIndices, stageIndex) {
     winnerSlot: null,
     stageIndex: idx,
     stage,
+    rng: seed,                    // xorshift32 の状態
+    items: [],                    // 落下中/設置中のアイテム
+    itemTimer: ITEM.firstSpawn,   // 次の出現までのtick
     players: slotIndices.map(s => makePlayer(s, stage)),
   };
+}
+
+// 決定論的乱数（xorshift32）。ビット演算のみ＝全環境で同一結果。[0,1) を返す。
+function rngNext(state) {
+  let x = state.rng | 0;
+  x ^= x << 13; x |= 0;
+  x ^= x >>> 17;
+  x ^= x << 5;  x |= 0;
+  state.rng = x;
+  return (x >>> 0) / 4294967296;
 }
 
 function rectsOverlap(ax, ay, aw, ah, bx, by, bw, bh) {
@@ -381,6 +416,8 @@ function stepMatch(state, samples) {
     if (p.dropTimer > 0) p.dropTimer--;
     if (p.hitFlash > 0) p.hitFlash--;
     if (p.guardBreakFlash > 0) p.guardBreakFlash--;
+    if (p.itemGetFlash > 0) p.itemGetFlash--;
+    if (p.itemTimer > 0) { p.itemTimer--; if (p.itemTimer === 0) p.itemType = null; }
 
     // --- ガード（卵型シールド）---
     // 地上・卵が残っている・行動可能なときだけ展開。展開中は移動不可＆時間で縮む。
@@ -401,12 +438,14 @@ function stepMatch(state, samples) {
     const dir = (canAct && !locked) ? ((cur.right ? 1 : 0) - (cur.left ? 1 : 0)) : 0;
     if (dir !== 0) p.facing = dir;
 
-    // 水平移動
+    // 水平移動（speedアイテムで最高速・加速が1.5倍）
+    const spd = p.itemType === "speed" ? ITEM.speedMult : 1;
+    const maxRun = PHYS.maxRun * spd, maxAir = PHYS.maxAir * spd;
     if (p.onGround) {
       if (dir !== 0) {
-        if (p.vx * dir < PHYS.maxRun) {
-          p.vx += PHYS.groundAccel * dir;
-          if (p.vx * dir > PHYS.maxRun) p.vx = PHYS.maxRun * dir;
+        if (p.vx * dir < maxRun) {
+          p.vx += PHYS.groundAccel * spd * dir;
+          if (p.vx * dir > maxRun) p.vx = maxRun * dir;
         }
       } else {
         p.vx *= PHYS.friction;
@@ -414,9 +453,9 @@ function stepMatch(state, samples) {
       }
     } else {
       if (dir !== 0) {
-        if (p.vx * dir < PHYS.maxAir) {
-          p.vx += PHYS.airAccel * dir;
-          if (p.vx * dir > PHYS.maxAir) p.vx = PHYS.maxAir * dir;
+        if (p.vx * dir < maxAir) {
+          p.vx += PHYS.airAccel * spd * dir;
+          if (p.vx * dir > maxAir) p.vx = maxAir * dir;
         }
       } else {
         p.vx *= PHYS.airDrag;
@@ -516,13 +555,14 @@ function stepMatch(state, samples) {
     if (!a.alive) continue;
     const atk = a.attackIsSpecial ? SPECIAL : ATTACK;
     if (a.attackTimer > atk.activeFrom || a.attackTimer < atk.activeTo || a.attackTimer === 0) continue;
-    const hx = a.facing === 1 ? a.x + PLAYER_W / 2 - 6 : a.x - PLAYER_W / 2 - atk.range + 6;
+    const range = atk.range * (a.itemType === "reach" ? ITEM.reachMult : 1);  // reachアイテムでリーチ延長
+    const hx = a.facing === 1 ? a.x + PLAYER_W / 2 - 6 : a.x - PLAYER_W / 2 - range + 6;
     const hy = a.y - PLAYER_H / 2 - atk.height / 2 - 4;
     for (let j = 0; j < ps.length; j++) {
       if (i === j) continue;
       const v = ps[j];
       if (!v.alive || v.invuln > 0 || a.attackVictims.includes(j)) continue;
-      if (!rectsOverlap(hx, hy, atk.range, atk.height,
+      if (!rectsOverlap(hx, hy, range, atk.height,
                         v.x - PLAYER_W / 2, v.y - PLAYER_H, PLAYER_W, PLAYER_H)) continue;
       a.attackVictims.push(j);
 
@@ -564,6 +604,61 @@ function stepMatch(state, samples) {
     }
   }
 
+  // --- アイテム（出現・落下・取得）---
+  if (!inCountdown && !state.ending) {
+    // 出現
+    if (state.itemTimer > 0) state.itemTimer--;
+    if (state.itemTimer === 0) {
+      state.itemTimer = ITEM.spawnInterval;
+      if (state.items.length < ITEM.maxOnField) {
+        const type = ITEM_TYPES[rngNext(state) < 0.5 ? 0 : 1];
+        const margin = 160;
+        const x = margin + rngNext(state) * (W - margin * 2);
+        state.items.push({ type, x, y: -30, vy: 0, landed: false });
+        events.push({ type: "item-spawn", x, itemType: type });
+      }
+    }
+    // 落下＋設置
+    for (const it of state.items) {
+      if (!it.landed) {
+        it.vy += ITEM.gravity;
+        if (it.vy > ITEM.maxFall) it.vy = ITEM.maxFall;
+        const prevY = it.y;
+        it.y += it.vy;
+        for (const plat of state.stage.platforms) {
+          if (it.x <= plat.x || it.x >= plat.x + plat.w) continue;
+          if (prevY <= plat.y && it.y >= plat.y) {
+            it.y = plat.y - ITEM.radius; it.vy = 0; it.landed = true;
+            events.push({ type: "item-land", x: it.x, y: it.y });
+            break;
+          }
+        }
+      }
+    }
+    // 取得（落下中でも先に触れた方が取る）＋ ギャップ落下で消滅
+    for (let k = state.items.length - 1; k >= 0; k--) {
+      const it = state.items[k];
+      if (it.y > BLAST.bottom) { state.items.splice(k, 1); continue; }
+      let taken = -1;
+      for (let i = 0; i < ps.length; i++) {
+        const p = ps[i];
+        if (!p.alive) continue;
+        if (rectsOverlap(it.x - ITEM.radius, it.y - ITEM.radius, ITEM.radius * 2, ITEM.radius * 2,
+                         p.x - PLAYER_W / 2, p.y - PLAYER_H, PLAYER_W, PLAYER_H)) {
+          taken = i; break;
+        }
+      }
+      if (taken >= 0) {
+        const p = ps[taken];
+        p.itemType = it.type;
+        p.itemTimer = ITEM.duration;
+        p.itemGetFlash = 24;
+        state.items.splice(k, 1);
+        events.push({ type: "item-get", x: p.x, y: p.y - PLAYER_H, slot: p.slot, itemType: it.type });
+      }
+    }
+  }
+
   // --- 場外KO ---
   for (const p of ps) {
     if (!p.alive) continue;
@@ -578,6 +673,7 @@ function stepMatch(state, samples) {
         p.hitstun = 0; p.attackTimer = 0; p.attackIsSpecial = false;
         p.chargeTimer = 0;
         p.guardHp = GUARD.max; p.guarding = false; p.guardBreakFlash = 0;  // 卵は復活で全回復
+        p.itemType = null; p.itemTimer = 0;                                // アイテム効果もリセット
         p.airJumps = PHYS.airJumps;
         p.invuln = RESPAWN_INVULN;
       } else {
@@ -1035,6 +1131,26 @@ function handleEvents(events) {
           color: Math.random() < 0.5 ? "#fff8e7" : "#ffe08a",
         });
       }
+    } else if (ev.type === "item-land") {
+      for (let k = 0; k < 6; k++) {
+        fx.particles.push({
+          x: ev.x + (Math.random() - 0.5) * 20, y: ev.y + ITEM.radius,
+          vx: (Math.random() - 0.5) * 3, vy: -Math.random() * 2,
+          life: 10 + Math.random() * 6, size: 2 + Math.random() * 2, color: "#ffe08a",
+        });
+      }
+    } else if (ev.type === "item-get") {
+      fx.shake = 4;
+      const col = ev.itemType === "reach" ? "#ff8c42" : "#42d9ff";
+      for (let k = 0; k < 16; k++) {
+        const ang = Math.random() * Math.PI * 2;
+        const sp = 2 + Math.random() * 5;
+        fx.particles.push({
+          x: ev.x, y: ev.y,
+          vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp,
+          life: 16 + Math.random() * 10, size: 3 + Math.random() * 3, color: col,
+        });
+      }
     }
   }
 }
@@ -1093,6 +1209,54 @@ function drawStage(stage) {
   }
 }
 
+const ITEM_STYLE = {
+  reach: { color: "#ff8c42", dark: "#c85a1a", label: "リーチ" },
+  speed: { color: "#42d9ff", dark: "#1a8fc8", label: "スピード" },
+};
+
+// アイテム本体を描画（落下中はふわっと揺れる）
+function drawItem(it) {
+  const st = ITEM_STYLE[it.type];
+  const r = ITEM.radius;
+  const bob = it.landed ? Math.sin(performance.now() / 300 + it.x) * 3 : 0;
+  const cx = it.x, cy = it.y + bob;
+  // 光るカプセル
+  ctx.save();
+  ctx.shadowColor = st.color;
+  ctx.shadowBlur = 14;
+  ctx.fillStyle = st.color;
+  ctx.strokeStyle = "#fff";
+  ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+  ctx.restore();
+  // アイコン
+  ctx.fillStyle = "#fff";
+  ctx.textAlign = "center";
+  if (it.type === "reach") {
+    // 双方向矢印（リーチ）
+    ctx.strokeStyle = "#fff"; ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(cx - 9, cy); ctx.lineTo(cx + 9, cy);
+    ctx.moveTo(cx - 9, cy); ctx.lineTo(cx - 4, cy - 5);
+    ctx.moveTo(cx - 9, cy); ctx.lineTo(cx - 4, cy + 5);
+    ctx.moveTo(cx + 9, cy); ctx.lineTo(cx + 4, cy - 5);
+    ctx.moveTo(cx + 9, cy); ctx.lineTo(cx + 4, cy + 5);
+    ctx.stroke();
+  } else {
+    // 稲妻（スピード）
+    ctx.fillStyle = "#fff";
+    ctx.beginPath();
+    ctx.moveTo(cx + 2, cy - 9); ctx.lineTo(cx - 6, cy + 1);
+    ctx.lineTo(cx - 1, cy + 1); ctx.lineTo(cx - 3, cy + 9);
+    ctx.lineTo(cx + 6, cy - 2); ctx.lineTo(cx + 1, cy - 2);
+    ctx.closePath();
+    ctx.fill();
+  }
+}
+
 function drawPlayer(p) {
   if (!p.alive) return;
   const bx = p.x - PLAYER_W / 2;
@@ -1124,13 +1288,18 @@ function drawPlayer(p) {
   ctx.arc(eyeX + 6 + p.facing * 1.5, by + 14, 2, 0, Math.PI * 2);
   ctx.fill();
 
-  // 攻撃スイング（通常/必殺で色・大きさが変わる）
+  // 攻撃スイング（通常/必殺で色・大きさが変わる、reachアイテムでリーチ延長）
   const atk = p.attackIsSpecial ? SPECIAL : ATTACK;
   if (p.attackTimer <= atk.activeFrom && p.attackTimer >= atk.activeTo && p.attackTimer > 0) {
     const cx = p.facing === 1 ? p.x + PLAYER_W / 2 : p.x - PLAYER_W / 2;
     const cy = p.y - PLAYER_H / 2 - 4;
     const prog = (atk.activeFrom - p.attackTimer) / (atk.activeFrom - atk.activeTo);
-    if (p.attackIsSpecial) {
+    const hasReach = p.itemType === "reach";
+    const drawRange = atk.range * (hasReach ? ITEM.reachMult : 1);
+    if (hasReach) {
+      ctx.strokeStyle = "rgba(255,150,60," + (0.95 - prog * 0.4) + ")";
+      ctx.lineWidth = p.attackIsSpecial ? 15 : 10;
+    } else if (p.attackIsSpecial) {
       ctx.strokeStyle = "rgba(255,180,60," + (0.95 - prog * 0.4) + ")";
       ctx.lineWidth = 13;
     } else {
@@ -1140,7 +1309,7 @@ function drawPlayer(p) {
     ctx.beginPath();
     const a0 = p.facing === 1 ? -1.3 : Math.PI + 1.3;
     const a1 = p.facing === 1 ? 1.1 : Math.PI - 1.1;
-    ctx.arc(cx, cy, atk.range - 4, a0, a1, p.facing !== 1);
+    ctx.arc(cx, cy, drawRange - 4, a0, a1, p.facing !== 1);
     ctx.stroke();
   }
 
@@ -1163,6 +1332,28 @@ function drawPlayer(p) {
     ctx.fillRect(gx, gy, gw * t, 6);
   }
 
+  // アイテム所持中: 足元の光るリング（残り時間で細くなる）＋取得フラッシュ
+  if (p.itemType && p.itemTimer > 0) {
+    const st = ITEM_STYLE[p.itemType];
+    const frac = p.itemTimer / ITEM.duration;
+    ctx.save();
+    ctx.strokeStyle = st.color;
+    ctx.globalAlpha = 0.85;
+    ctx.lineWidth = 3.5;
+    ctx.beginPath();
+    // 足元の弧（残り時間ぶん）
+    ctx.arc(p.x, p.y - 4, PLAYER_W * 0.75, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * frac);
+    ctx.stroke();
+    if (p.itemGetFlash > 0) {
+      ctx.globalAlpha = p.itemGetFlash / 24;
+      ctx.fillStyle = st.color;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y - PLAYER_H / 2, PLAYER_W, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
   // 頭上の名前
   ctx.globalAlpha = Math.min(ctx.globalAlpha, 0.9);
   ctx.fillStyle = "#fff";
@@ -1170,6 +1361,13 @@ function drawPlayer(p) {
   ctx.textAlign = "center";
   ctx.fillText(NAMES[p.slot], p.x, by - 8);
   ctx.globalAlpha = 1;
+  // アイテムアイコン（名前の上）
+  if (p.itemType && p.itemTimer > 0) {
+    const st = ITEM_STYLE[p.itemType];
+    ctx.fillStyle = st.color;
+    ctx.font = "bold 11px sans-serif";
+    ctx.fillText(st.label, p.x, by - 24);
+  }
 
   // ガードの卵（残量ぶんだけ大きさが変わる。半透明の殻）
   if (p.guarding && p.guardHp > 0) {
@@ -1330,6 +1528,7 @@ function drawMatch() {
   }
   drawBackground(m.stage);
   drawStage(m.stage);
+  for (const it of m.items) drawItem(it);
   for (const p of m.players) drawPlayer(p);
 
   // パーティクル
@@ -1448,8 +1647,9 @@ function drawLobby() {
     "キーボード右: 矢印移動 / ↑=ジャンプ / ↓=急降下 / ,=攻撃 / .=ガード(卵)",
     "ゲームパッド: 移動 / A=ジャンプ / X=攻撃 / L・R=ガード",
     "★攻撃を2秒長押しで必殺技（ガードを一撃で割る）。卵は使い切ると割れて復活まで無し",
+    "★アイテムが空から落下！先に触れた人が10秒ゲット（🟠リーチ延長／🔵移動1.5倍）",
   ];
-  lines.forEach((t, i) => ctx.fillText(t, W / 2, 386 + i * 28));
+  lines.forEach((t, i) => ctx.fillText(t, W / 2, 380 + i * 26));
 
   const joined = APP.slots.filter(Boolean).length;
   ctx.font = "bold 26px sans-serif";
@@ -1545,7 +1745,7 @@ requestAnimationFrame(frame);
 window.UCHI = {
   APP, keys, runTick, renderNow,
   makeMatchState, stepMatch, makePlayer,
-  PHYS, ATTACK, SPECIAL, GUARD, STAGES, BLAST, STOCKS,
+  PHYS, ATTACK, SPECIAL, GUARD, STAGES, BLAST, STOCKS, ITEM, rngNext,
   NET, netHost, netJoin, netHostStart, encodeSample, decodeSample,
 };
 </script>
