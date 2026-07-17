@@ -262,15 +262,15 @@ const STAGES = [
   },
 ];
 
-const COLORS   = ["#e74c3c", "#3498db", "#f1c40f", "#2ecc71"];
-const COLORS_D = ["#a93226", "#21618c", "#b7950b", "#1e8449"];
+const COLORS   = ["#e74c3c", "#3ee657", "#f1c40f", "#2ecc71"];  // P2=明るい緑
+const COLORS_D = ["#a93226", "#1fa83b", "#b7950b", "#1e8449"];
 const NAMES    = ["P1", "P2", "P3", "P4"];
 
 /* ======================= 入力レイヤー ======================= */
 // 押下中キーの集合（ブラウザイベント → ここに集約）
 const keys = new Set();
 const USED_CODES = new Set([
-  "KeyW","KeyA","KeyS","KeyD","KeyF","KeyG","KeyH","KeyO",
+  "KeyW","KeyA","KeyS","KeyD","KeyF","KeyG","KeyH","KeyO","KeyJ","KeyK",
   "ArrowUp","ArrowDown","ArrowLeft","ArrowRight","Comma","Period",
   "Enter","Escape","Space",
 ]);
@@ -851,15 +851,27 @@ function decodeSample(b) {
   return { left:!!(b&1), right:!!(b&2), up:!!(b&4), down:!!(b&8), jump:!!(b&16), attack:!!(b&32), guard:!!(b&64), start:false };
 }
 
-// オンライン時は手元の全デバイス（キーボード両系統+パッド）をOR合成して使う
-const KB_SRC = [makeKeyboardSource(0), makeKeyboardSource(1)];
+// オンライン時のキー配置（1人が片手で移動WASD/矢印、もう片手でJ/K）
+//   移動: WASD または 矢印（従来通り） / ジャンプ: W・↑ / 急降下: S・↓
+//   攻撃: J（長押し2秒で必殺技） / 防御(卵ガード): K
+//   ゲームパッドも併用可
 function sampleLocalMerged() {
-  const out = { left:false, right:false, up:false, down:false, jump:false, attack:false, guard:false, start:false };
-  const srcs = [KB_SRC[0].sample(), KB_SRC[1].sample()];
-  const pads = navigator.getGamepads();
-  for (let i = 0; i < pads.length; i++) if (pads[i]) srcs.push(makeGamepadSource(i).sample());
-  for (const s of srcs) for (const k in out) out[k] = out[k] || s[k];
-  return out;
+  const k = keys;
+  const gpAttack = () => { const ps = navigator.getGamepads(); for (let i=0;i<ps.length;i++){ const g=ps[i]; if(g&&(g.buttons[2]&&g.buttons[2].pressed||g.buttons[3]&&g.buttons[3].pressed)) return true; } return false; };
+  const gpGuard  = () => { const ps = navigator.getGamepads(); for (let i=0;i<ps.length;i++){ const g=ps[i]; if(g&&[4,5,6,7].some(b=>g.buttons[b]&&g.buttons[b].pressed)) return true; } return false; };
+  const gpAxis = (ax, lo) => { const ps=navigator.getGamepads(); for(let i=0;i<ps.length;i++){ const g=ps[i]; if(!g)continue; const v=g.axes[ax]||0; if(lo?v<-0.4:v>0.4) return true; const dpad = ax===0?(lo?14:15):(lo?12:13); if(g.buttons[dpad]&&g.buttons[dpad].pressed) return true; } return false; };
+  const gpJump = () => { const ps=navigator.getGamepads(); for(let i=0;i<ps.length;i++){ const g=ps[i]; if(g&&(g.buttons[0]&&g.buttons[0].pressed||g.buttons[1]&&g.buttons[1].pressed)) return true; } return false; };
+  const up = k.has("KeyW") || k.has("ArrowUp") || gpJump();
+  return {
+    left:  k.has("KeyA") || k.has("ArrowLeft")  || gpAxis(0, true),
+    right: k.has("KeyD") || k.has("ArrowRight") || gpAxis(0, false),
+    up,
+    down:  k.has("KeyS") || k.has("ArrowDown")  || gpAxis(1, false),
+    jump:  up,
+    attack: k.has("KeyJ") || gpAttack(),   // オンライン攻撃 = J
+    guard:  k.has("KeyK") || gpGuard(),    // オンライン防御 = K
+    start: k.has("Enter"),
+  };
 }
 
 function netResetBuffers() {
@@ -1621,7 +1633,7 @@ function cardInfoFor(p) {
   if (APP.mode === "online") {
     const my = NET.isHost ? 0 : 1;
     if (p.slot === my) {
-      return { label: "あなた", lines: ["移動: A/D または ←/→", "ジャンプ: W / ↑", "急降下/すり抜け: S / ↓", "攻撃: F / ,（長押し2秒で必殺技）", "ガード（卵）: G / .（パッドL/R）"] };
+      return { label: "あなた", lines: ["移動: A/D または ←/→", "ジャンプ: W / ↑", "急降下/すり抜け: S / ↓", "攻撃: J（長押し2秒で必殺技）", "ガード（卵）: K"] };
     }
     return { label: "相手（オンライン）", lines: ["リモートプレイヤー", "", "", "", ""] };
   }
