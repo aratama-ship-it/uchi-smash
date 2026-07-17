@@ -241,6 +241,25 @@ const STAGES = [
     ],
     spawns: [ {x:360,y:585}, {x:920,y:585}, {x:480,y:585}, {x:800,y:585} ],
   },
+  {
+    // 第4の変化系: メイン地面の両隅に上下する壁。左が上がると右は下がって見えない（逆位相）
+    // 壁が上がっている側は場外に飛ばされにくく、下がっている側が狙い目になる
+    name: "うごく壁",
+    theme: { sky:["#1c2430","#2a3646","#3a4a5e"], mountain:"rgba(25,35,50,0.7)",
+             dirt:"#3a4450", grass:"#6a8098", grass2:"#54687e", plat:"#8a94a6", platTop:"#b0bccc",
+             wall:"#9aa6ba", wallTop:"#cdd8e8" },
+    platforms: [
+      { x: 220, y: 585, w: 840, droppable: false, main: true },
+      { x: 390, y: 460, w: 170, droppable: true },
+      { x: 720, y: 460, w: 170, droppable: true },
+    ],
+    spawns: [ {x:360,y:585}, {x:920,y:585}, {x:500,y:585}, {x:780,y:585} ],
+    walls: [
+      { x: 236, w: 26, height: 150, side: "left" },
+      { x: 1018, w: 26, height: 150, side: "right" },
+    ],
+    wallSpeed: 0.007,   // 位相の毎tick変化（三角波 0..1、約2.4秒で上下反転）
+  },
 ];
 
 const COLORS   = ["#e74c3c", "#3498db", "#f1c40f", "#2ecc71"];
@@ -359,6 +378,14 @@ function makeMatchState(slotIndices, stageIndex) {
     }
     return c;
   });
+  // 地面の高さ（動く壁の基準）
+  const mains = stage.platforms.filter(p => p.main);
+  const groundY = mains.length ? Math.max(...mains.map(p => p.y)) : 585;
+  // 動く壁のライブコピー
+  const walls = (stage.walls || []).map(w => ({
+    x: w.x, w: w.w, height: w.height, side: w.side,
+    top: groundY + 8, bottom: groundY + 40, raise: 0,
+  }));
   return {
     tick: 0,
     countdown: COUNTDOWN_TICKS,
@@ -370,11 +397,30 @@ function makeMatchState(slotIndices, stageIndex) {
     stageIndex: idx,
     stage,
     platforms,                    // ライブな足場（動く床を含む）
+    groundY,                      // 地面の高さ（壁の基準）
+    walls,                        // 動く壁（ライブ）
+    wallPhase: 0,                 // 0..1 の位相（三角波）
+    wallVel: stage.wallSpeed || 0,
     rng: seed,                    // xorshift32 の状態
     items: [],                    // 落下中/設置中のアイテム
     itemTimer: ITEM.firstSpawn,   // 次の出現までのtick
     players: slotIndices.map(s => makePlayer(s, stage)),
   };
+}
+
+// 動く壁を1tick更新（決定論）。位相0..1の三角波。左右は逆位相（left=phase, right=1-phase）
+function updateWalls(state) {
+  if (state.walls.length === 0) return;
+  state.wallPhase += state.wallVel;
+  if (state.wallPhase >= 1) { state.wallPhase = 1; state.wallVel = -state.wallVel; }
+  else if (state.wallPhase <= 0) { state.wallPhase = 0; state.wallVel = -state.wallVel; }
+  const g = state.groundY;
+  for (const w of state.walls) {
+    const raise = w.side === "left" ? state.wallPhase : 1 - state.wallPhase;
+    w.raise = raise;
+    w.top = g + 8 - (w.height + 8) * raise;  // raise=1→g-height(上), raise=0→g+8(地面下＝隠れる)
+    w.bottom = g + 40;
+  }
 }
 
 // 動く床を1tick更新（決定論: off += vel の三角波）。dx/dyに今tickの移動量を記録
@@ -433,6 +479,7 @@ function stepMatch(state, samples) {
   });
   // 2) 床を動かす（決定論的）
   updateMovingPlatforms(state);
+  updateWalls(state);
   // 3) 乗っているプレイヤーを床と一緒に運ぶ。
   //    縦方向は床top(plat.y)へスナップ＝floatズレで着地判定が外れて落ちるのを防ぐ。
   for (let i = 0; i < ps.length; i++) {
@@ -587,6 +634,23 @@ function stepMatch(state, samples) {
     }
 
     p.prev = cur;
+  }
+
+  // --- 動く壁との当たり判定（横方向に押し出す）---
+  if (state.walls.length) {
+    for (const p of ps) {
+      if (!p.alive) continue;
+      for (const w of state.walls) {
+        if (w.raise <= 0.02) continue;  // 下がって隠れている壁は素通り
+        const pl = p.x - PLAYER_W / 2, pr = p.x + PLAYER_W / 2, pt = p.y - PLAYER_H, pb = p.y;
+        if (pr > w.x && pl < w.x + w.w && pb > w.top && pt < w.bottom) {
+          const pushL = pr - w.x;                  // 左へ出る量
+          const pushR = (w.x + w.w) - pl;          // 右へ出る量
+          if (pushL < pushR) { p.x -= pushL; if (p.vx > 0) p.vx = 0; }
+          else { p.x += pushR; if (p.vx < 0) p.vx = 0; }
+        }
+      }
+    }
   }
 
   // --- 攻撃判定 ---
@@ -1255,6 +1319,38 @@ function drawStage(platforms, theme) {
   }
 }
 
+// 動く壁を描画（地面から上に出ている部分だけ。下がりきると見えない）
+function drawWalls(walls, groundY, theme) {
+  for (const w of walls) {
+    if (w.top >= groundY) continue;   // 地面下＝隠れている
+    const h = groundY - w.top;
+    ctx.fillStyle = theme.wall || "#8a94a6";
+    ctx.fillRect(w.x, w.top, w.w, h);
+    ctx.fillStyle = theme.wallTop || "#c0ccdc";
+    ctx.fillRect(w.x, w.top, w.w, 7);
+    ctx.strokeStyle = "rgba(0,0,0,0.28)";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(w.x, w.top, w.w, h);
+    // 上下の矢印ヒント
+    ctx.fillStyle = "rgba(255,255,255,0.5)";
+    ctx.font = "12px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("↕", w.x + w.w / 2, w.top - 6);
+  }
+}
+
+// 静的ステージから壁のプレビュー用スナップショットを作る（ロビー用）
+function wallSnapshot(stage, phase) {
+  if (!stage.walls) return { walls: [], groundY: 585 };
+  const mains = stage.platforms.filter(p => p.main);
+  const g = mains.length ? Math.max(...mains.map(p => p.y)) : 585;
+  const walls = stage.walls.map(w => {
+    const raise = w.side === "left" ? phase : 1 - phase;
+    return { x: w.x, w: w.w, top: g + 8 - (w.height + 8) * raise };
+  });
+  return { walls, groundY: g };
+}
+
 const ITEM_STYLE = {
   reach: { color: "#ff8c42", dark: "#c85a1a", label: "リーチ" },
   speed: { color: "#42d9ff", dark: "#1a8fc8", label: "スピード" },
@@ -1574,6 +1670,7 @@ function drawMatch() {
   }
   drawBackground(m.stage);
   drawStage(m.platforms, m.stage.theme);
+  if (m.walls.length) drawWalls(m.walls, m.groundY, m.stage.theme);
   for (const it of m.items) drawItem(it);
   for (const p of m.players) drawPlayer(p);
 
@@ -1648,6 +1745,10 @@ function drawLobby() {
   const selStage = STAGES[APP.stageIndex];
   drawBackground(selStage);
   drawStage(selStage.platforms, selStage.theme);   // 選択中ステージを背景にプレビュー
+  if (selStage.walls) {                             // 壁は左上・右下のプレビュー
+    const snap = wallSnapshot(selStage, 0.75);
+    drawWalls(snap.walls, snap.groundY, selStage.theme);
+  }
 
   ctx.textAlign = "center";
   ctx.fillStyle = "#fff";
@@ -1734,6 +1835,8 @@ function drawResult() {
   const rPlats = APP.match ? APP.match.platforms : rStage.platforms;
   drawBackground(rStage);
   drawStage(rPlats, rStage.theme);
+  if (APP.match && APP.match.walls.length) drawWalls(APP.match.walls, APP.match.groundY, rStage.theme);
+  else if (!APP.match && rStage.walls) { const s = wallSnapshot(rStage, 0.75); drawWalls(s.walls, s.groundY, rStage.theme); }
   ctx.fillStyle = "rgba(0,0,0,0.55)";
   ctx.fillRect(0, 0, W, H);
   ctx.textAlign = "center";
