@@ -62,8 +62,8 @@
 
 <div id="online" hidden>
   <div class="panel">
-    <h2>オンライン対戦（2人・β）</h2>
-    <div class="sub">ホストがP1（赤）、参加側がP2（青）になります</div>
+    <h2>オンライン対戦（2〜4人・β）</h2>
+    <div class="sub">ホスト=P1、参加した順に P2 / P3 / P4 になります（最大4人）</div>
     <div id="ol-idle">
       <button id="btn-host">部屋を作る（ホスト）</button>
       <div style="margin:12px 0 6px;color:#889">─ または ─</div>
@@ -170,7 +170,7 @@ const COUNTDOWN_TICKS = 180;
 //   reach = 攻撃(波動)のリーチ延長 / speed = 移動速度1.5倍
 //   ⚠️ 落下位置・種類・タイミングは決定論的PRNG(state.rng)で決める→オンライン同期維持
 const ITEM = {
-  duration: { reach: 300, speed: 600 },  // 効果時間: reach=5秒 / speed=10秒
+  duration: { reach: 300, speed: 600, beam: 300 },  // reach=5秒 / speed=10秒 / beam=5秒
   spawnInterval: 480,   // 出現間隔（8秒ごと）
   firstSpawn: 240,      // 最初の出現（4秒後）
   maxOnField: 2,        // 同時に落ちている上限
@@ -179,8 +179,10 @@ const ITEM = {
   maxFall: 6,
   reachMult: 1.8,       // reach効果: リーチ倍率
   speedMult: 1.5,       // speed効果: 移動速度＆ジャンプ力倍率
+  beamRange: 460,       // beam効果: ビームの長さ
+  beamThick: 26,        // beamの太さ
 };
-const ITEM_TYPES = ["reach", "speed"];
+const ITEM_TYPES = ["reach", "speed", "beam"];
 
 // 風船（Space）: 1ストックにつき1回。押している間だけ少しずつ浮上し落下を防ぐ。
 //   燃料を使い切ると割れて復活まで使えない。浮上中も横移動は可能。
@@ -188,6 +190,19 @@ const BALLOON = {
   fuel: 150,      // 使える総tick（約2.5秒ぶん）
   lift: 0.55,     // 上昇加速
   maxRise: 3.2,   // 最大上昇速度（プカプカ）
+};
+
+// ドスン風モブ（ステージ4のみ）: 風船で上昇→上で割れて落下、を繰り返す四角。
+//   触れたプレイヤーを弾き飛ばす（無敵：プレイヤーの攻撃は効かない）
+const MOB = {
+  size: 46,
+  riseSpeed: 2.0,     // 風船での上昇速度
+  fallGravity: 0.8,   // 落下加速（ドスン）
+  maxFall: 15,
+  topY: 300,          // ここまで上がると風船が割れて落下
+  waitTicks: 45,      // 着地後の待ち
+  damage: 14,
+  kbBase: 5, kbScale: 0.10,
 };
 
 const BLAST = { left: -250, right: W + 250, top: -350, bottom: H + 330 };
@@ -413,11 +428,48 @@ function makeMatchState(slotIndices, stageIndex) {
     walls,                        // 動く壁（ライブ）
     wallPhase: 0,                 // 0..1 の位相（三角波）
     wallVel: stage.wallSpeed || 0,
+    // ドスン風モブ（うごく床=index3 のみ登場）
+    mob: idx === 3 ? { x: 640, y: groundY - MOB.size, vy: 0, state: "rise", timer: 0, victims: [] } : null,
     rng: seed,                    // xorshift32 の状態
     items: [],                    // 落下中/設置中のアイテム
     itemTimer: ITEM.firstSpawn,   // 次の出現までのtick
     players: slotIndices.map(s => makePlayer(s, stage)),
   };
+}
+
+// ドスン風モブを1tick更新（決定論）。rise（風船上昇）→ top到達で割れ → fall → 着地 → wait → rise
+function updateMob(state, events) {
+  const m = state.mob;
+  if (!m) return;
+  const g = state.groundY;
+  if (m.state === "rise") {
+    m.y -= MOB.riseSpeed;
+    if (m.y <= MOB.topY) { m.y = MOB.topY; m.state = "fall"; m.vy = 0; events.push({ type: "mob-pop", x: m.x, y: m.y }); }
+  } else if (m.state === "fall") {
+    m.vy += MOB.fallGravity;
+    if (m.vy > MOB.maxFall) m.vy = MOB.maxFall;
+    m.y += m.vy;
+    if (m.y + MOB.size >= g) { m.y = g - MOB.size; m.vy = 0; m.state = "wait"; m.timer = MOB.waitTicks; events.push({ type: "mob-land", x: m.x, y: g }); }
+  } else { // wait
+    if (--m.timer <= 0) { m.state = "rise"; m.victims = []; }
+  }
+  // プレイヤーとの当たり（弾き飛ばす。プレイヤーは無敵化で多段防止）
+  for (const p of state.players) {
+    if (!p.alive || p.invuln > 0) continue;
+    if (rectsOverlap(m.x, m.y, MOB.size, MOB.size, p.x - PLAYER_W / 2, p.y - PLAYER_H, PLAYER_W, PLAYER_H)) {
+      const dir = p.x >= m.x + MOB.size / 2 ? 1 : -1;
+      p.damage += MOB.damage;
+      const kb = MOB.kbBase + p.damage * MOB.kbScale;
+      const rad = 45 * Math.PI / 180;
+      p.vx = Math.cos(rad) * kb * dir;
+      p.vy = -Math.sin(rad) * kb;
+      p.hitstun = Math.floor(6 + kb * 2);
+      p.onGround = false; p.hitFlash = 8; p.invuln = 20;
+      p.chargeTimer = 0; p.attackTimer = 0; p.attackIsSpecial = false;
+      state.hitstop = 6;
+      events.push({ type: "mob-hit", x: p.x, y: p.y - PLAYER_H / 2, dir, dmg: p.damage });
+    }
+  }
 }
 
 // 動く壁を1tick更新（決定論）。位相0..1の三角波。左右は逆位相（left=phase, right=1-phase）
@@ -685,19 +737,23 @@ function stepMatch(state, samples) {
     if (!a.alive) continue;
     const atk = a.attackIsSpecial ? SPECIAL : ATTACK;
     if (a.attackTimer > atk.activeFrom || a.attackTimer < atk.activeTo || a.attackTimer === 0) continue;
-    const range = atk.range * (a.itemType === "reach" ? ITEM.reachMult : 1);  // reachアイテムでリーチ延長
+    // beamアイテム=長距離ビーム / reachアイテム=リーチ延長 / 通常
+    const isBeam = a.itemType === "beam";
+    const len = isBeam ? ITEM.beamRange : atk.range * (a.itemType === "reach" ? ITEM.reachMult : 1);
+    const thickV = isBeam ? ITEM.beamThick : (PLAYER_W + 20);   // 上下攻撃の横幅
+    const thickF = isBeam ? ITEM.beamThick : atk.height;        // 正面攻撃の厚み
     // 攻撃向き別のヒットボックス（fwd=前方 / up=頭上 / down=足元）
     let hx, hy, hw, hh;
     if (a.attackDir === "up") {
-      hw = PLAYER_W + 20; hh = range;
-      hx = a.x - hw / 2; hy = a.y - PLAYER_H - range - 4;   // 頭上（頭より上に隙間）
+      hw = thickV; hh = len;
+      hx = a.x - hw / 2; hy = a.y - PLAYER_H - len - 4;   // 頭上（頭より上に隙間）
     } else if (a.attackDir === "down") {
-      hw = PLAYER_W + 20; hh = range;
-      hx = a.x - hw / 2; hy = a.y + 4;                      // 足元（足より下）
+      hw = thickV; hh = len;
+      hx = a.x - hw / 2; hy = a.y + 4;                    // 足元（足より下）
     } else {
-      hw = range; hh = atk.height;
-      hx = a.facing === 1 ? a.x + PLAYER_W / 2 - 6 : a.x - PLAYER_W / 2 - range + 6;
-      hy = a.y - PLAYER_H / 2 - atk.height / 2 - 4;
+      hw = len; hh = thickF;
+      hx = a.facing === 1 ? a.x + PLAYER_W / 2 - 6 : a.x - PLAYER_W / 2 - len + 6;
+      hy = a.y - PLAYER_H / 2 - thickF / 2 - 4;
     }
     for (let j = 0; j < ps.length; j++) {
       if (i === j) continue;
@@ -752,7 +808,7 @@ function stepMatch(state, samples) {
     if (state.itemTimer === 0) {
       state.itemTimer = ITEM.spawnInterval;
       if (state.items.length < ITEM.maxOnField) {
-        const type = ITEM_TYPES[rngNext(state) < 0.5 ? 0 : 1];
+        const type = ITEM_TYPES[Math.min(ITEM_TYPES.length - 1, Math.floor(rngNext(state) * ITEM_TYPES.length))];
         const margin = 160;
         const x = margin + rngNext(state) * (W - margin * 2);
         state.items.push({ type, x, y: -30, vy: 0, landed: false });
@@ -799,6 +855,9 @@ function stepMatch(state, samples) {
       }
     }
   }
+
+  // --- ドスン風モブ（うごく床のみ）---
+  if (!inCountdown && !state.ending) updateMob(state, events);
 
   // --- 場外KO ---
   for (const p of ps) {
@@ -871,13 +930,22 @@ window.APP = APP;  // デバッグ用に公開
  *  - 自分の入力は「tick T実行時に T+DELAY 分を生成して送信」→ DELAY tick先で反映
  *  - 相手の入力が未着ならそのtickは待つ(stall)。届き次第追いつく
  * 接続: PeerJS(P2P)。ホストが部屋コードを発行、参加側がコードで接続 */
+// 星型トポロジー（最大4人）: ホスト=player0、参加者=1..3。
+//   ・各クライアントは自分の入力だけ生成し、tick T+DELAY 分をホストへ送る
+//   ・ホストは全員の入力を集約し、各参加者へ他プレイヤーの入力を中継（broadcast）
+//   ・全員の入力[T]が揃ったら決定論simを1歩進める（揃うまでstall）
 const NET = {
-  peer: null, conn: null, isHost: false, code: null,
+  peer: null, isHost: false, code: null,
+  hostConn: null,          // 参加側: ホストへの接続
+  conns: [],               // ホスト側: [{conn, idx}]
+  myIndex: 0,              // このクライアントのプレイヤー番号
+  numPlayers: 2,
+  dropped: new Set(),      // 途中退出したプレイヤー番号（以降NEUTRAL扱い）
   status: "idle",   // idle | starting | hosting | joining | connected
   msg: "",
   gen: 0,           // 試合世代（前試合の残留inputを弾く）
   DELAY: 4,         // 入力遅延tick（60fpsで約67ms）
-  buffers: [[], []],
+  buffers: [],      // [player][tick] の入力バッファ
   stall: 0,
   resultPrev: false,
 };
@@ -911,9 +979,12 @@ function sampleLocalMerged() {
   };
 }
 
-function netResetBuffers() {
-  NET.buffers = [[], []];
-  for (let t = 0; t < NET.DELAY; t++) { NET.buffers[0][t] = NEUTRAL; NET.buffers[1][t] = NEUTRAL; }
+function netResetBuffers(n) {
+  NET.buffers = [];
+  for (let i = 0; i < n; i++) {
+    NET.buffers[i] = [];
+    for (let t = 0; t < NET.DELAY; t++) NET.buffers[i][t] = NEUTRAL;
+  }
 }
 
 const CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -924,17 +995,28 @@ function makeCode() {
 }
 const peerIdFor = code => "uchisuma-" + code;
 
+function connectedCount() { return 1 + NET.conns.length; }  // ホスト含む人数
+
 function netHost() {
   netCleanup();
-  NET.isHost = true; NET.code = makeCode();
+  NET.isHost = true; NET.myIndex = 0; NET.code = makeCode();
+  NET.conns = []; NET.dropped = new Set();
   NET.status = "starting"; NET.msg = "サーバー接続中…";
   refreshOnlineUI();
   const peer = new Peer(peerIdFor(NET.code));
   NET.peer = peer;
   peer.on("open", () => { NET.status = "hosting"; NET.msg = ""; refreshOnlineUI(); });
   peer.on("connection", conn => {
-    if (NET.conn) { conn.close(); return; }  // 2人まで
-    netBindConn(conn);
+    if (NET.conns.length >= 3 || APP.phase === "match") { conn.close(); return; }  // 満員/試合中は拒否
+    const idx = NET.conns.length + 1;   // 参加順に 1,2,3
+    const entry = { conn, idx };
+    NET.conns.push(entry);
+    conn.on("open", () => {
+      conn.send({ y: "welcome", idx });
+      NET.status = "connected"; NET.msg = ""; refreshOnlineUI();
+    });
+    conn.on("data", d => netHostOnData(d, entry));
+    conn.on("close", () => netHostConnClosed(entry));
   });
   peer.on("error", e => { NET.status = "idle"; NET.msg = "エラー: " + e.type; refreshOnlineUI(); });
 }
@@ -942,92 +1024,132 @@ function netHost() {
 function netJoin(code) {
   if (!code || code.length !== 4) { NET.msg = "4文字のコードを入れてください"; refreshOnlineUI(); return; }
   netCleanup();
-  NET.isHost = false; NET.code = code;
+  NET.isHost = false; NET.myIndex = 1; NET.code = code;
+  NET.conns = []; NET.dropped = new Set();
   NET.status = "joining"; NET.msg = "接続中…";
   refreshOnlineUI();
   const peer = new Peer();
   NET.peer = peer;
   peer.on("open", () => {
-    netBindConn(peer.connect(peerIdFor(code), { reliable: true, serialization: "json" }));
+    const conn = peer.connect(peerIdFor(code), { reliable: true, serialization: "json" });
+    NET.hostConn = conn;
+    conn.on("open", () => { NET.status = "connected"; NET.msg = ""; refreshOnlineUI(); });
+    conn.on("data", netGuestOnData);
+    conn.on("close", () => {
+      NET.hostConn = null;
+      NET.status = "idle"; NET.msg = "ホストとの接続が切れました";
+      if (APP.mode === "online") { APP.match = null; APP.mode = "local"; APP.phase = "lobby"; openOnlineMenu(); }
+      refreshOnlineUI();
+    });
   });
   peer.on("error", e => { NET.status = "idle"; NET.msg = "エラー: " + e.type + "（コード間違い？）"; refreshOnlineUI(); });
 }
 
-function netBindConn(conn) {
-  NET.conn = conn;
-  conn.on("open", () => { NET.status = "connected"; NET.msg = ""; refreshOnlineUI(); });
-  conn.on("data", netOnData);
-  conn.on("close", () => {
-    NET.conn = null;
-    const wasPlaying = APP.mode === "online" && (APP.phase === "match" || APP.phase === "result");
-    NET.status = (NET.isHost && NET.peer) ? "hosting" : "idle";
-    NET.msg = "相手との接続が切れました";
-    if (wasPlaying) {
-      APP.match = null; APP.mode = "local"; APP.phase = "lobby";
-      openOnlineMenu();
-    }
-    refreshOnlineUI();
-  });
-}
-
-function netOnData(d) {
+// ホスト: 参加者からのデータ受信
+function netHostOnData(d, entry) {
   if (!d || !d.y) return;
   if (d.y === "i") {
-    if (d.g === NET.gen) NET.buffers[NET.isHost ? 1 : 0][d.t] = decodeSample(d.b);
+    if (d.g !== NET.gen) return;
+    NET.buffers[d.p] && (NET.buffers[d.p][d.t] = decodeSample(d.b));
+    // 他の参加者へ中継
+    for (const e of NET.conns) if (e !== entry && e.conn.open) e.conn.send(d);
+  }
+}
+
+function netHostConnClosed(entry) {
+  const i = NET.conns.indexOf(entry);
+  if (i >= 0) NET.conns.splice(i, 1);
+  if (APP.phase === "match" || APP.phase === "result") {
+    // 試合中の退出: そのプレイヤーは以降NEUTRAL扱い、他へも通知
+    NET.dropped.add(entry.idx);
+    for (const e of NET.conns) if (e.conn.open) e.conn.send({ y: "drop", p: entry.idx });
+    NET.msg = "P" + (entry.idx + 1) + " が退出しました";
+  } else {
+    NET.status = NET.peer ? "hosting" : "idle";
+  }
+  refreshOnlineUI();
+}
+
+// 参加者: ホストからのデータ受信
+function netGuestOnData(d) {
+  if (!d || !d.y) return;
+  if (d.y === "welcome") {
+    NET.myIndex = d.idx;
+  } else if (d.y === "i") {
+    if (d.g === NET.gen && NET.buffers[d.p]) NET.buffers[d.p][d.t] = decodeSample(d.b);
   } else if (d.y === "start") {
     NET.gen = d.g;
-    startOnlineMatch(d.st | 0);   // ホストが選んだステージで開始
-  } else if (d.y === "leave") {
-    APP.match = null; APP.mode = "local"; APP.phase = "lobby";
-    NET.msg = "相手が退出しました";
-    openOnlineMenu();
+    startOnlineMatch(d.st | 0, d.n | 0);
+  } else if (d.y === "drop") {
+    NET.dropped.add(d.p);
+    NET.msg = "P" + (d.p + 1) + " が退出しました";
   }
 }
 
 function netHostStart() {
-  if (!(NET.status === "connected" && NET.isHost && NET.conn && NET.conn.open)) return;
+  if (!(NET.isHost && NET.status === "connected" && NET.conns.length >= 1)) return;
   NET.gen++;
-  NET.conn.send({ y: "start", g: NET.gen, st: APP.stageIndex });
-  startOnlineMatch(APP.stageIndex);
+  const n = connectedCount();
+  for (const e of NET.conns) if (e.conn.open) e.conn.send({ y: "start", g: NET.gen, st: APP.stageIndex, n });
+  startOnlineMatch(APP.stageIndex, n);
 }
 
-function startOnlineMatch(stageIndex) {
-  netResetBuffers();
+function startOnlineMatch(stageIndex, numPlayers) {
+  const n = Math.max(2, Math.min(4, numPlayers | 0));
+  NET.numPlayers = n;
+  NET.dropped = new Set();
+  netResetBuffers(n);
   NET.stall = 0; NET.resultPrev = true;
-  APP.match = makeMatchState([0, 1], stageIndex);   // ホスト=P1(赤), 参加側=P2(青)
+  const slots = []; for (let i = 0; i < n; i++) slots.push(i);
+  APP.match = makeMatchState(slots, stageIndex);   // ホスト=P1, 参加順にP2,P3,P4
   APP.mode = "online"; APP.phase = "match";
   document.getElementById("online").hidden = true;
 }
 
 function netLeaveToMenu() {
-  if (NET.conn && NET.conn.open) NET.conn.send({ y: "leave" });
+  netCleanup();
   APP.match = null; APP.mode = "local"; APP.phase = "lobby";
   openOnlineMenu();
 }
 
 function netCleanup() {
-  if (NET.conn) { try { NET.conn.close(); } catch (e) {} NET.conn = null; }
+  for (const e of NET.conns) { try { e.conn.close(); } catch (err) {} }
+  NET.conns = [];
+  if (NET.hostConn) { try { NET.hostConn.close(); } catch (e) {} NET.hostConn = null; }
   if (NET.peer) { try { NET.peer.destroy(); } catch (e) {} NET.peer = null; }
   NET.status = "idle"; NET.msg = "";
 }
 
-// 1tick分のオンライン処理: 入力生成→送信→両者の入力が揃っていればsimを1歩進める
+// 自分の入力を送信（参加者→ホスト / ホスト→全参加者）
+function netSendInput(t, sample) {
+  const msg = { y: "i", g: NET.gen, t, b: encodeSample(sample), p: NET.myIndex };
+  if (NET.isHost) { for (const e of NET.conns) if (e.conn.open) e.conn.send(msg); }
+  else if (NET.hostConn && NET.hostConn.open) NET.hostConn.send(msg);
+}
+
+// 1tick分のオンライン処理: 入力生成→送信→全員の入力が揃っていればsimを1歩進める
 function updateOnlineMatch() {
   const m = APP.match;
   if (!m) return;
-  const my = NET.isHost ? 0 : 1;
+  const my = NET.myIndex, n = NET.numPlayers;
 
   const genTick = m.tick + NET.DELAY;
-  if (!NET.buffers[my][genTick]) {
+  if (NET.buffers[my] && !NET.buffers[my][genTick]) {
     const s = sampleLocalMerged();
     NET.buffers[my][genTick] = s;
-    if (NET.conn && NET.conn.open) NET.conn.send({ y: "i", g: NET.gen, t: genTick, b: encodeSample(s) });
+    netSendInput(genTick, s);
   }
 
-  const ia = NET.buffers[0][m.tick], ib = NET.buffers[1][m.tick];
-  if (ia && ib) {
+  // 全員の入力[tick]が揃ったか（退出者はNEUTRAL）
+  const inputs = []; let ready = true;
+  for (let i = 0; i < n; i++) {
+    if (NET.dropped.has(i)) { inputs[i] = NEUTRAL; continue; }
+    const b = NET.buffers[i] && NET.buffers[i][m.tick];
+    if (b) inputs[i] = b; else { ready = false; break; }
+  }
+  if (ready) {
     NET.stall = 0;
-    handleEvents(stepMatch(m, [ia, ib]));
+    handleEvents(stepMatch(m, inputs));
   } else {
     NET.stall++;
   }
@@ -1061,12 +1183,18 @@ function refreshOnlineUI() {
   if (!room.hidden) {
     codeView.textContent = NET.code || "";
     share.textContent = NET.isHost ? (location.origin + location.pathname + "?room=" + NET.code) : "";
+    const count = NET.isHost ? connectedCount() : null;
     if (NET.status === "hosting") {
-      roomMsg.textContent = "友だちの参加を待っています… 上のコードかURLを伝えてください";
+      roomMsg.textContent = "友だちの参加を待っています（最大4人）… コード/URLを伝えてください";
       btnStart.hidden = true;
     } else if (NET.status === "connected") {
-      roomMsg.textContent = NET.isHost ? "接続完了！ステージを選んで開始！" : "接続完了！ホストの開始を待っています…";
-      btnStart.hidden = !NET.isHost;
+      if (NET.isHost) {
+        roomMsg.textContent = "接続: " + count + "人（あなた=P1）。ステージを選んで開始！ さらに参加も待てます";
+        btnStart.hidden = count < 2;
+      } else {
+        roomMsg.textContent = "接続完了（あなた=P" + (NET.myIndex + 1) + "）。ホストの開始を待っています…";
+        btnStart.hidden = true;
+      }
     }
     // ステージ選択はホストのみ（接続後）
     const stageBox = $ol("ol-stage");
@@ -1314,6 +1442,30 @@ function handleEvents(events) {
           life: 12 + Math.random() * 8, size: 2 + Math.random() * 3, color: "#ffd0e8",
         });
       }
+    } else if (ev.type === "mob-land") {
+      fx.shake = 12;
+      for (let k = 0; k < 14; k++) {
+        fx.particles.push({
+          x: ev.x + (Math.random() - 0.5) * MOB.size, y: ev.y,
+          vx: (Math.random() - 0.5) * 8, vy: -Math.random() * 4,
+          life: 12 + Math.random() * 8, size: 2 + Math.random() * 3, color: "#9aa0aa",
+        });
+      }
+    } else if (ev.type === "mob-pop") {
+      for (let k = 0; k < 10; k++) {
+        const ang = Math.random() * Math.PI * 2, sp = 2 + Math.random() * 4;
+        fx.particles.push({ x: ev.x + MOB.size / 2, y: ev.y, vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp, life: 12, size: 2 + Math.random() * 2, color: "#ff5b7f" });
+      }
+    } else if (ev.type === "mob-hit") {
+      fx.shake = 10;
+      for (let k = 0; k < 12; k++) {
+        fx.particles.push({
+          x: ev.x, y: ev.y,
+          vx: (Math.random() * 6 + 2) * ev.dir + (Math.random() - 0.5) * 4,
+          vy: (Math.random() - 0.7) * 8,
+          life: 16 + Math.random() * 8, size: 3 + Math.random() * 3, color: "#fff",
+        });
+      }
     }
   }
 }
@@ -1413,6 +1565,7 @@ function wallSnapshot(stage, phase) {
 const ITEM_STYLE = {
   reach: { color: "#ff8c42", dark: "#c85a1a", label: "リーチ" },
   speed: { color: "#42d9ff", dark: "#1a8fc8", label: "スピード" },
+  beam:  { color: "#c86bff", dark: "#8a2ad0", label: "ビーム" },
 };
 
 // アイテム本体を描画（落下中はふわっと揺れる）
@@ -1446,6 +1599,13 @@ function drawItem(it) {
     ctx.moveTo(cx + 9, cy); ctx.lineTo(cx + 4, cy - 5);
     ctx.moveTo(cx + 9, cy); ctx.lineTo(cx + 4, cy + 5);
     ctx.stroke();
+  } else if (it.type === "beam") {
+    // 横一文字のビーム
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(cx - 10, cy - 2.5, 20, 5);
+    ctx.beginPath();
+    ctx.moveTo(cx + 10, cy - 6); ctx.lineTo(cx + 15, cy); ctx.lineTo(cx + 10, cy + 6);
+    ctx.closePath(); ctx.fill();
   } else {
     // 稲妻（スピード）
     ctx.fillStyle = "#fff";
@@ -1456,6 +1616,44 @@ function drawItem(it) {
     ctx.closePath();
     ctx.fill();
   }
+}
+
+// ドスン風モブ（四角＋顔。上昇中は風船つき）
+function drawMob(m) {
+  if (!m) return;
+  const s = MOB.size, x = m.x, y = m.y;
+  // 風船（上昇中）
+  if (m.state === "rise") {
+    ctx.strokeStyle = "rgba(255,255,255,0.6)"; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(x + s / 2, y); ctx.lineTo(x + s / 2, y - 24); ctx.stroke();
+    ctx.fillStyle = "#ff5b7f"; ctx.strokeStyle = "#fff"; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.ellipse(x + s / 2, y - 34, 13, 16, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+  }
+  // 本体（石っぽいグレー）
+  ctx.fillStyle = "#6b7280";
+  ctx.strokeStyle = "#3f4550"; ctx.lineWidth = 3;
+  roundRect(x, y, s, s, 6); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = "#565c66";
+  roundRect(x + 4, y + 4, s - 8, s - 8, 4); ctx.fill();
+  // 目（落下中は怒り目）
+  ctx.fillStyle = "#fff";
+  const ey = y + s * 0.42;
+  ctx.beginPath();
+  ctx.arc(x + s * 0.34, ey, 6, 0, Math.PI * 2);
+  ctx.arc(x + s * 0.66, ey, 6, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = "#222";
+  const look = m.state === "fall" ? 2 : 0;
+  ctx.beginPath();
+  ctx.arc(x + s * 0.34, ey + look, 3, 0, Math.PI * 2);
+  ctx.arc(x + s * 0.66, ey + look, 3, 0, Math.PI * 2);
+  ctx.fill();
+  // 口
+  ctx.strokeStyle = "#222"; ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  if (m.state === "fall") { ctx.moveTo(x + s * 0.32, y + s * 0.72); ctx.lineTo(x + s * 0.68, y + s * 0.72); }
+  else { ctx.arc(x + s / 2, y + s * 0.64, 6, 0.15, Math.PI - 0.15); }
+  ctx.stroke();
 }
 
 function drawPlayer(p) {
@@ -1493,6 +1691,26 @@ function drawPlayer(p) {
   const atk = p.attackIsSpecial ? SPECIAL : ATTACK;
   if (p.attackTimer <= atk.activeFrom && p.attackTimer >= atk.activeTo && p.attackTimer > 0) {
     const prog = (atk.activeFrom - p.attackTimer) / (atk.activeFrom - atk.activeTo);
+    if (p.itemType === "beam") {
+      // ビーム: 長距離の光線を描く
+      const len = ITEM.beamRange, th = ITEM.beamThick;
+      ctx.save();
+      ctx.globalAlpha = 0.85 - prog * 0.3;
+      const grad = "#c86bff";
+      if (p.attackDir === "up") {
+        ctx.fillStyle = grad; ctx.fillRect(p.x - th / 2, p.y - PLAYER_H - len - 4, th, len);
+        ctx.fillStyle = "#fff"; ctx.fillRect(p.x - th / 6, p.y - PLAYER_H - len - 4, th / 3, len);
+      } else if (p.attackDir === "down") {
+        ctx.fillStyle = grad; ctx.fillRect(p.x - th / 2, p.y + 4, th, len);
+        ctx.fillStyle = "#fff"; ctx.fillRect(p.x - th / 6, p.y + 4, th / 3, len);
+      } else {
+        const bx = p.facing === 1 ? p.x + PLAYER_W / 2 - 6 : p.x - PLAYER_W / 2 - len + 6;
+        const cy = p.y - PLAYER_H / 2 - 4;
+        ctx.fillStyle = grad; ctx.fillRect(bx, cy - th / 2, len, th);
+        ctx.fillStyle = "#fff"; ctx.fillRect(bx, cy - th / 6, len, th / 3);
+      }
+      ctx.restore();
+    } else {
     const hasReach = p.itemType === "reach";
     const drawRange = atk.range * (hasReach ? ITEM.reachMult : 1);
     if (hasReach) {
@@ -1520,6 +1738,7 @@ function drawPlayer(p) {
       ctx.arc(cx, cy, drawRange - 4, a0, a1, p.facing !== 1);
     }
     ctx.stroke();
+    }
   }
 
   // 風船（浮上中: 背中の上に風船＋糸。残り燃料でしぼむ）
@@ -1651,7 +1870,7 @@ function drawHUD(m) {
     ctx.font = "bold 18px sans-serif";
     ctx.textAlign = "left";
     let nameLabel = NAMES[p.slot];
-    if (APP.mode === "online") nameLabel += (p.slot === (NET.isHost ? 0 : 1)) ? " あなた" : " 相手";
+    if (APP.mode === "online") nameLabel += (p.slot === NET.myIndex) ? " (あなた)" : (NET.dropped.has(p.slot) ? " (退出)" : "");
     ctx.fillText(nameLabel, x + 14, 658);
 
     // ダメージ%
@@ -1712,8 +1931,7 @@ function controlLinesFor(sourceId) {
 // カード表示用の内容（ローカル: 入力ソース別 / オンライン: 自分・相手）
 function cardInfoFor(p) {
   if (APP.mode === "online") {
-    const my = NET.isHost ? 0 : 1;
-    if (p.slot === my) {
+    if (p.slot === NET.myIndex) {
       return { label: "あなた", lines: ["移動: A/D または ←/→（W・↑ジャンプ / S・↓急降下）", "攻撃: J（上/下だけ入力で上下攻撃・長押し必殺）", "ガード（卵）: K", "風船: Space（浮上・落下防止）"] };
     }
     return { label: "相手（オンライン）", lines: ["リモートプレイヤー", "", "", "", ""] };
@@ -1766,6 +1984,7 @@ function drawMatch() {
   if (m.walls.length) drawWalls(m.walls, m.groundY, m.stage.theme);
   for (const it of m.items) drawItem(it);
   for (const p of m.players) drawPlayer(p);
+  if (m.mob) drawMob(m.mob);
 
   // パーティクル
   for (const pt of fx.particles) {
@@ -1913,7 +2132,7 @@ function drawLobby() {
 
   ctx.font = "bold 20px sans-serif";
   ctx.fillStyle = "#8fd3ff";
-  ctx.fillText("O キー: オンライン対戦（2人・β）", W / 2, 640);
+  ctx.fillText("O キー: オンライン対戦（2〜4人・β）", W / 2, 640);
 
   const pads = navigator.getGamepads();
   let padCount = 0;
@@ -1988,7 +2207,7 @@ requestAnimationFrame(frame);
 window.UCHI = {
   APP, keys, runTick, renderNow,
   makeMatchState, stepMatch, makePlayer,
-  PHYS, ATTACK, SPECIAL, GUARD, STAGES, BLAST, STOCKS, ITEM, BALLOON, rngNext,
+  PHYS, ATTACK, SPECIAL, GUARD, STAGES, BLAST, STOCKS, ITEM, BALLOON, MOB, rngNext,
   NET, netHost, netJoin, netHostStart, encodeSample, decodeSample,
 };
 </script>
