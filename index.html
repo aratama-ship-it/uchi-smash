@@ -165,6 +165,7 @@ const PLAYER_W = 36, PLAYER_H = 48;
 const STOCKS = 3;
 const RESPAWN_INVULN = 150;
 const COUNTDOWN_TICKS = 180;
+const TIME_LIMIT = 120 * 60;   // 1ラウンドの制限時間（2分＝7200tick）
 
 // アイテム: 空からステージ上へ落下。先にタッチした人が取得、効果は10秒。
 //   reach = 攻撃(波動)のリーチ延長 / speed = 移動速度1.5倍
@@ -213,6 +214,7 @@ const CRUMBLE = { crackTicks: 42, goneTicks: 160 };            // 乗って割�
 const PENDULUM = { damage: 13, kbBase: 6, kbScale: 0.11, r: 20 };  // 振り子（当たると弾く）
 const LAVA = { damage: 10, kbBase: 6, kbScale: 0.09 };         // 溶岩（触れると上へ跳ね返す）
 const WARP_CD = 30;                                            // ワープ後の再ワープ禁止tick
+const WARP_CYCLE = { on: 300, off: 210 };                     // ワープ口の出現(5s)↔消滅(3.5s)サイクル
 
 const BLAST = { left: -250, right: W + 250, top: -350, bottom: H + 330 };
 
@@ -313,9 +315,9 @@ const STAGES = [
     theme: { sky:["#2a2418","#4a3e22","#6a5a30"], mountain:"rgba(50,42,25,0.7)",
              dirt:"#4a4030", grass:"#c0a850", grass2:"#a08838", plat:"#9a8a6a", platTop:"#c0b088" },
     platforms: [
-      { x: 180, y: 560, w: 460, droppable: false, main: true, conveyor: -2.0 },  // 左半分: 左へ流れる
-      { x: 640, y: 560, w: 460, droppable: false, main: true, conveyor: 2.0 },   // 右半分: 右へ流れる
-      { x: 330, y: 440, w: 160, droppable: true },   // 安全な浮き足場
+      { x: 180, y: 560, w: 460, droppable: false, main: true, conveyor: 2.0 },   // 左半分: 右へ流れる（中央へ）
+      { x: 640, y: 560, w: 460, droppable: false, main: true, conveyor: -2.0 },  // 右半分: 左へ流れる（中央へ）
+      { x: 330, y: 440, w: 160, droppable: true },   // 逃げ場の浮き足場
       { x: 790, y: 440, w: 160, droppable: true },
     ],
     spawns: [ {x:420,y:560}, {x:860,y:560}, {x:540,y:560}, {x:740,y:560} ],
@@ -359,7 +361,7 @@ const STAGES = [
     ],
     spawns: [ {x:280,y:560}, {x:1000,y:560}, {x:340,y:560}, {x:940,y:560} ],
     lava: [ { x: 500, y: 596, w: 280, h: 90 } ],
-    pendulums: [ { pivotX: 640, pivotY: 120, len: 270, amp: 190, speed: 2.2, dir: 1, r: 22 } ],
+    pendulums: [ { pivotX: 640, pivotY: 120, len: 270, amp: 190, period: 150, r: 22 } ],
   },
   {
     // ワープ広場: 左右のワープ口で瞬間移動できる。横の場外は普通に残るので注意
@@ -391,12 +393,12 @@ const STAGES = [
       { x: 560, y: 300, w: 160, droppable: true },
     ],
     spawns: [ {x:330,y:590}, {x:930,y:590}, {x:460,y:420}, {x:820,y:420} ],
-    pendulums: [ { pivotX: 640, pivotY: 100, len: 205, amp: 150, speed: 2.0, dir: 1, r: 18 } ],
+    pendulums: [ { pivotX: 640, pivotY: 100, len: 205, amp: 150, period: 135, r: 18 } ],
   },
 ];
 
-const COLORS   = ["#e74c3c", "#3ee657", "#f1c40f", "#2ecc71"];  // P2=明るい緑
-const COLORS_D = ["#a93226", "#1fa83b", "#b7950b", "#1e8449"];
+const COLORS   = ["#e74c3c", "#3ee657", "#f1c40f", "#3498db"];  // P1赤 P2緑 P3黄 P4青
+const COLORS_D = ["#a93226", "#1fa83b", "#b7950b", "#21618c"];
 const NAMES    = ["P1", "P2", "P3", "P4"];
 
 /* ======================= 入力レイヤー ======================= */
@@ -569,6 +571,7 @@ function makePlayer(slotIdx, stage) {
     airJumps: PHYS.airJumps,
     dropTimer: 0,                 // すり抜け降下中の無視時間
     damage: 0,
+    damageDealt: 0,               // このプレイヤーが与えた総ダメージ（スコア）
     stocks: STOCKS,
     alive: true,
     invuln: 90,
@@ -622,11 +625,13 @@ function makeMatchState(slotIndices, stageIndex) {
   return {
     tick: 0,
     countdown: COUNTDOWN_TICKS,
+    timeLeft: TIME_LIMIT,         // 残り時間（tick）。0で時間切れ決着
     hitstop: 0,
     ending: false,
     endTimer: 0,
     finished: false,
     winnerSlot: null,
+    timeUp: false,
     stageIndex: idx,
     stage,
     platforms,                    // ライブな足場（動く床を含む）
@@ -636,13 +641,19 @@ function makeMatchState(slotIndices, stageIndex) {
     wallVel: stage.wallSpeed || 0,
     // ドスン風モブ（stage.mob フラグのあるステージのみ）
     mob: stage.mob ? { x: stage.mobX || 640, y: groundY - MOB.size, vy: 0, state: "rise", timer: 0, victims: [] } : null,
-    // 振り子（振れる球のハザード）
-    pendulums: (stage.pendulums || []).map(pd => ({
-      pivotX: pd.pivotX, pivotY: pd.pivotY, len: pd.len, amp: pd.amp, r: pd.r || PENDULUM.r,
-      off: pd.start || 0, vel: pd.speed * (pd.dir || 1), x: pd.pivotX, y: pd.pivotY + pd.len,
-    })),
+    // 振り子（振れる球のハザード）。調和振動で下(off=0)が最速＝本物の振り子挙動
+    pendulums: (stage.pendulums || []).map(pd => {
+      const om = 2 * Math.PI / (pd.period || 130);   // Math.PIは定数＝決定論的
+      const inside0 = pd.len * pd.len - pd.amp * pd.amp;
+      return {
+        pivotX: pd.pivotX, pivotY: pd.pivotY, len: pd.len, amp: pd.amp, r: pd.r || PENDULUM.r,
+        k: om * om, off: pd.amp, vel: 0,
+        x: pd.pivotX + pd.amp, y: pd.pivotY + Math.sqrt(inside0 > 0 ? inside0 : 0),
+      };
+    }),
     lava: (stage.lava || []).map(l => ({ x: l.x, y: l.y, w: l.w, h: l.h })),
     warps: (stage.warps || []).map(w => ({ x: w.x, y: w.y, w: w.w, h: w.h, link: w.link })),
+    warpOn: true, warpTimer: WARP_CYCLE.on,   // ワープ口の出現/消滅サイクル
     rng: seed,                    // xorshift32 の状態
     items: [],                    // 落下中/設置中のアイテム
     itemTimer: ITEM.firstSpawn,   // 次の出現までのtick
@@ -694,12 +705,14 @@ function updateCrumble(state) {
   }
 }
 
-// 振り子（球）を1tick更新。offを三角波で振る＋arc高さはsqrtで決定論的に算出。当たると弾く
+// 振り子（球）を1tick更新。調和振動(vel += -k*off)で下(off=0)が最速＝本物の振り子。
+// arc高さはsqrtで決定論的に算出。当たると弾く
 function updatePendulums(state, events) {
   for (const pd of state.pendulums) {
+    pd.vel += -pd.k * pd.off;    // 復元加速度（中心=下で最速、端で最遅）
     pd.off += pd.vel;
-    if (pd.off > pd.amp) { pd.off = pd.amp; pd.vel = -pd.vel; }
-    else if (pd.off < -pd.amp) { pd.off = -pd.amp; pd.vel = -pd.vel; }
+    if (pd.off > pd.amp) { pd.off = pd.amp; if (pd.vel > 0) pd.vel = 0; }        // 数値誤差の振幅増加を抑制
+    else if (pd.off < -pd.amp) { pd.off = -pd.amp; if (pd.vel < 0) pd.vel = 0; }
     pd.x = pd.pivotX + pd.off;
     const inside = pd.len * pd.len - pd.off * pd.off;
     pd.y = pd.pivotY + Math.sqrt(inside > 0 ? inside : 0);
@@ -741,8 +754,15 @@ function updateLava(state, events) {
   }
 }
 
-// ワープ: 入口に触れたら対のワープへ瞬間移動（左右の場外は普通に残る）
+// ワープ: 出現↔消滅を繰り返し、出現中だけ入口に触れると対のワープへ瞬間移動
 function updateWarps(state, events) {
+  // 出現/消滅サイクル
+  if (--state.warpTimer <= 0) {
+    state.warpOn = !state.warpOn;
+    state.warpTimer = state.warpOn ? WARP_CYCLE.on : WARP_CYCLE.off;
+    events.push({ type: state.warpOn ? "warp-appear" : "warp-vanish", warps: state.warps });
+  }
+  if (!state.warpOn) return;   // 消えている間はワープしない
   for (const p of state.players) {
     if (!p.alive) continue;
     if (p.warpCd > 0) { p.warpCd--; continue; }
@@ -989,7 +1009,7 @@ function stepMatch(state, samples) {
           p.y = plat.y;
           if (plat.bounce) {                           // トランポリン: 上へ跳ねる
             p.vy = -plat.bounce; bounced = true; p.airJumps = PHYS.airJumps;
-            events.push({ type: "bounce", x: p.x, y: plat.y });
+            events.push({ type: "bounce", x: p.x, y: plat.y, px: plat.x, pw: plat.w, strength: plat.bounce });
           } else {
             p.vy = 0; landed = true;
             if (plat.crumble && plat.crumbleState === "solid") { plat.crumbleState = "crack"; plat.crumbleTimer = CRUMBLE.crackTicks; }
@@ -1092,6 +1112,7 @@ function stepMatch(state, samples) {
 
       // ヒット（通常/必殺共通、角度45度上方向）
       v.damage += atk.damage;
+      a.damageDealt += atk.damage;   // スコア: 与えたダメージを加算
       const kb = atk.kbBase + v.damage * atk.kbScale;
       const rad = atk.angleDeg * Math.PI / 180;
       v.vx = Math.cos(rad) * kb * a.facing;
@@ -1195,7 +1216,16 @@ function stepMatch(state, samples) {
     }
   }
 
-  // --- 決着判定 ---
+  // --- 時間切れ（2分）---
+  if (!inCountdown && !state.ending && state.timeLeft > 0) {
+    if (--state.timeLeft <= 0) {
+      state.ending = true; state.timeUp = true; state.endTimer = 90;
+      state.winnerSlot = decideByScore(ps);
+      events.push({ type: "finish" });
+    }
+  }
+
+  // --- 決着判定（生き残り）---
   if (!state.ending) {
     const alive = ps.filter(p => p.alive);
     if (alive.length <= 1) {
@@ -1210,6 +1240,26 @@ function stepMatch(state, samples) {
   }
 
   return events;
+}
+
+// リザルト用の情報（勝者＋各プレイヤーのスコア）を作る
+function buildResultInfo(m) {
+  return {
+    winnerSlot: m.winnerSlot,
+    timeUp: !!m.timeUp,
+    scores: m.players.map(p => ({ slot: p.slot, dealt: Math.floor(p.damageDealt), stocks: Math.max(0, p.stocks), taken: Math.floor(p.damage) })),
+  };
+}
+
+// 時間切れ時の順位付け: ストック多い＞与ダメージ多い＞被ダメージ少ない。並びは同点=引き分け
+function decideByScore(ps) {
+  let bestSlot = null, bestKey = -Infinity, tie = false;
+  for (const p of ps) {
+    const key = p.stocks * 1e9 + p.damageDealt * 1000 - Math.floor(p.damage);
+    if (key > bestKey) { bestKey = key; bestSlot = p.slot; tie = false; }
+    else if (key === bestKey) tie = true;
+  }
+  return tie ? null : bestSlot;
 }
 
 function platformUnder(p, platforms) {
@@ -1396,6 +1446,8 @@ function netGuestOnData(d) {
   } else if (d.y === "drop") {
     NET.dropped.add(d.p);
     NET.msg = "P" + (d.p + 1) + " が退出しました";
+  } else if (d.y === "stagesel") {
+    NET.remoteStage = d.st | 0;   // ホストが選んだ次ステージ（表示用）
   }
 }
 
@@ -1468,7 +1520,7 @@ function updateOnlineMatch() {
   }
 
   if (m.finished) {
-    APP.resultInfo = { winnerSlot: m.winnerSlot };
+    APP.resultInfo = buildResultInfo(m);
     APP.phase = "result";
     NET.resultPrev = true;
   }
@@ -1627,7 +1679,7 @@ function updateMatch() {
   handleEvents(events);
 
   if (m.finished) {
-    APP.resultInfo = { winnerSlot: m.winnerSlot };
+    APP.resultInfo = buildResultInfo(m);
     APP.phase = "result";
     APP.lobbyPrev.clear();
   }
@@ -1639,34 +1691,49 @@ function updateMatch() {
   }
 }
 
+function changeStage(delta) {
+  APP.stageIndex = ((APP.stageIndex + delta) % STAGES.length + STAGES.length) % STAGES.length;
+}
+
 function updateResult() {
   if (APP.mode === "online") {
-    // ホスト: Enterで再戦（startを送信）。参加側: startメッセージ待ち。Esc: 退出
-    const enter = keys.has("Enter");
-    if (enter && !NET.resultPrev && NET.isHost) netHostStart();
-    NET.resultPrev = enter;
-    if (keys.has("Escape")) {
-      keys.delete("Escape");
-      netLeaveToMenu();
+    // ホスト: 左右でステージ変更／Enterで再戦（選択中ステージ）。参加側: 待つ。Esc: 退出
+    if (NET.isHost) {
+      const l = keys.has("KeyA") || keys.has("ArrowLeft");
+      const r = keys.has("KeyD") || keys.has("ArrowRight");
+      if (l && !NET._prevL) { changeStage(-1); olBroadcastStage(); }
+      if (r && !NET._prevR) { changeStage(1); olBroadcastStage(); }
+      NET._prevL = l; NET._prevR = r;
+      const enter = keys.has("Enter");
+      if (enter && !NET.resultPrev) netHostStart();   // netHostStart は APP.stageIndex を使う
+      NET.resultPrev = enter;
     }
+    if (keys.has("Escape")) { keys.delete("Escape"); netLeaveToMenu(); }
     return;
   }
-  let back = false;
+  // ローカル: 左右でステージ変更／Enter で同じ顔ぶれのまま再戦／Esc でロビーへ
+  let wantRematch = false, stageDelta = 0;
   for (const src of allCandidateSources()) {
     const cur = src.sample();
     const prev = APP.lobbyPrev.get(src.id) || NEUTRAL;
     APP.lobbyPrev.set(src.id, cur);
-    if (cur.start && !prev.start) back = true;
+    if (cur.start && !prev.start) wantRematch = true;
+    if (cur.left && !prev.left) stageDelta--;
+    if (cur.right && !prev.right) stageDelta++;
   }
-  if (back) {
-    APP.phase = "lobby";
-    APP.match = null;
-  }
+  if (stageDelta) changeStage(stageDelta);
+  if (keys.has("Escape")) { keys.delete("Escape"); APP.phase = "lobby"; APP.match = null; return; }
+  if (wantRematch) startMatch();   // 顔ぶれそのまま、選択中ステージで再戦
+}
+
+// ホストが選んだ次ステージを参加者へ通知（表示用）
+function olBroadcastStage() {
+  for (const e of NET.conns) if (e.conn.open) e.conn.send({ y: "stagesel", st: APP.stageIndex });
 }
 
 /* ==================== 演出（非決定でOKな層） ==================== */
 
-const fx = { particles: [], shake: 0, koFlash: 0 };
+const fx = { particles: [], shake: 0, koFlash: 0, tramp: {} };  // tramp: 床x→ビヨン揺れの経過フレーム
 
 function handleEvents(events) {
   for (const ev of events) {
@@ -1807,8 +1874,10 @@ function handleEvents(events) {
         fx.particles.push({ x: ev.x, y: ev.y, vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp, life: 14 + Math.random() * 8, size: 2 + Math.random() * 2, color: "#8fe3ff" });
       }
     } else if (ev.type === "bounce") {
-      for (let k = 0; k < 6; k++) {
-        fx.particles.push({ x: ev.x + (Math.random() - 0.5) * 40, y: ev.y, vx: (Math.random() - 0.5) * 4, vy: -Math.random() * 3, life: 10 + Math.random() * 6, size: 2 + Math.random() * 2, color: "#ff86b8" });
+      // トランポリンをビヨンと揺らす（床xで管理、時間経過で減衰振動）
+      if (ev.px !== undefined) fx.tramp[Math.round(ev.px)] = 0;   // 0からアニメ開始
+      for (let k = 0; k < 8; k++) {
+        fx.particles.push({ x: ev.x + (Math.random() - 0.5) * 44, y: ev.y, vx: (Math.random() - 0.5) * 5, vy: -Math.random() * 4, life: 12 + Math.random() * 6, size: 2 + Math.random() * 2, color: "#ff9ec4" });
       }
     }
   }
@@ -1824,6 +1893,15 @@ function updateFx() {
     pt.life--;
     if (pt.life <= 0) fx.particles.splice(i, 1);
   }
+  // トランポリンのビヨン揺れ（経過フレームを進める。40超で終了）
+  for (const k in fx.tramp) { fx.tramp[k]++; if (fx.tramp[k] > 40) delete fx.tramp[k]; }
+}
+
+// トランポリンの沈み量（ビヨンビヨン＝減衰する正弦振動）。t=経過フレーム
+function trampDip(platX) {
+  const t = fx.tramp[Math.round(platX)];
+  if (t === undefined) return 0;
+  return Math.sin(t * 0.5) * 16 * Math.exp(-t * 0.07);   // 最初に沈んで数回揺れて収束
 }
 
 /* ==================== 描画 ==================== */
@@ -1866,13 +1944,29 @@ function drawStage(platforms, theme) {
       // コンベアの矢印
       if (plat.conveyor) drawConveyorArrows(plat);
     } else if (plat.bounce) {
-      // トランポリン（バネの見た目）
-      ctx.fillStyle = "#c0447a";
-      ctx.fillRect(plat.x, plat.y, plat.w, 8);
-      ctx.strokeStyle = "#ff86b8"; ctx.lineWidth = 3;
+      // トランポリン: 中央が沈む膜（着地でビヨンビヨン揺れる）＋バネ
+      const dip = trampDip(plat.x);           // 中央の沈み量（減衰振動）
+      const cx = plat.x + plat.w / 2, midY = plat.y + Math.max(0, dip);
+      // 枠（左右のポール）
+      ctx.strokeStyle = "#8a2a52"; ctx.lineWidth = 5; ctx.lineCap = "round";
+      ctx.beginPath(); ctx.moveTo(plat.x + 4, plat.y - 4); ctx.lineTo(plat.x + 4, plat.y + 22);
+      ctx.moveTo(plat.x + plat.w - 4, plat.y - 4); ctx.lineTo(plat.x + plat.w - 4, plat.y + 22); ctx.stroke();
+      // 膜（中央が dip ぶん下がる曲線）
+      ctx.fillStyle = "#d84a86"; ctx.strokeStyle = "#ff9ec4"; ctx.lineWidth = 4;
       ctx.beginPath();
-      for (let bx = plat.x + 8; bx < plat.x + plat.w - 4; bx += 14) { ctx.moveTo(bx, plat.y + 8); ctx.lineTo(bx + 7, plat.y + 18); ctx.lineTo(bx + 14, plat.y + 8); }
+      ctx.moveTo(plat.x + 4, plat.y);
+      ctx.quadraticCurveTo(cx, plat.y + dip * 2, plat.x + plat.w - 4, plat.y);
       ctx.stroke();
+      ctx.lineTo(plat.x + plat.w - 4, plat.y + 6);
+      ctx.quadraticCurveTo(cx, plat.y + 6 + dip * 2, plat.x + 4, plat.y + 6);
+      ctx.closePath(); ctx.fill();
+      // バネ（沈み量ぶん縮む）
+      ctx.strokeStyle = "#ffb8d4"; ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      const springTop = plat.y + 8, springBot = plat.y + 20 - Math.max(0, dip) * 0.4;
+      for (let bx = plat.x + 12; bx < plat.x + plat.w - 8; bx += 16) { ctx.moveTo(bx, springTop); ctx.lineTo(bx + 8, springBot); ctx.lineTo(bx + 16, springTop); }
+      ctx.stroke();
+      ctx.lineCap = "butt";
     } else {
       const moving = plat.moveAxis !== undefined;
       const cracking = plat.crumbleState === "crack";
@@ -1925,25 +2019,32 @@ function drawLavaZones(lava) {
   }
 }
 
-// ワープ口
-function drawWarps(warps) {
+// ワープ口。出現中は光る、消滅中は薄いゴースト＋もうすぐ出るとき点滅
+function drawWarps(warps, warpOn, warpTimer) {
   const now = performance.now();
   const cols = ["#42d9ff", "#c86bff", "#ffd34d", "#3ee657"];
+  const soon = !warpOn && warpTimer <= 45;          // もうすぐ出現（点滅で予告）
+  const blink = soon ? (Math.floor(now / 120) % 2 === 0) : false;
   for (let i = 0; i < warps.length; i++) {
     const w = warps[i], c = cols[Math.floor(i / 2) % cols.length];
     const cx = w.x + w.w / 2, cy = w.y + w.h / 2;
     ctx.save();
-    ctx.strokeStyle = c; ctx.lineWidth = 3;
-    for (let r = 0; r < 3; r++) {
-      const rr = 1 - ((now / 700 + r / 3) % 1);
-      ctx.globalAlpha = rr * 0.8;
-      ctx.beginPath();
-      ctx.ellipse(cx, cy, (w.w / 2) * rr, (w.h / 2) * rr, 0, 0, Math.PI * 2);
-      ctx.stroke();
+    if (warpOn) {
+      ctx.strokeStyle = c; ctx.lineWidth = 3;
+      for (let r = 0; r < 3; r++) {
+        const rr = 1 - ((now / 700 + r / 3) % 1);
+        ctx.globalAlpha = rr * 0.8;
+        ctx.beginPath(); ctx.ellipse(cx, cy, (w.w / 2) * rr, (w.h / 2) * rr, 0, 0, Math.PI * 2); ctx.stroke();
+      }
+      ctx.globalAlpha = 1; ctx.strokeStyle = c; ctx.lineWidth = 2.5;
+      ctx.beginPath(); ctx.ellipse(cx, cy, w.w / 2, w.h / 2, 0, 0, Math.PI * 2); ctx.stroke();
+    } else {
+      // 消滅中: 薄い破線のゴースト（予告点滅時は少し濃く）
+      ctx.globalAlpha = blink ? 0.5 : 0.18;
+      ctx.strokeStyle = c; ctx.lineWidth = 2; ctx.setLineDash([5, 5]);
+      ctx.beginPath(); ctx.ellipse(cx, cy, w.w / 2, w.h / 2, 0, 0, Math.PI * 2); ctx.stroke();
+      ctx.setLineDash([]);
     }
-    ctx.globalAlpha = 1;
-    ctx.strokeStyle = c; ctx.lineWidth = 2.5;
-    ctx.beginPath(); ctx.ellipse(cx, cy, w.w / 2, w.h / 2, 0, 0, Math.PI * 2); ctx.stroke();
     ctx.restore();
   }
 }
@@ -2017,35 +2118,33 @@ function drawItem(it) {
   ctx.fill();
   ctx.stroke();
   ctx.restore();
-  // アイコン
+  // アイコン（分かりやすく）
   ctx.fillStyle = "#fff";
   ctx.textAlign = "center";
   if (it.type === "reach") {
-    // 双方向矢印（リーチ）
-    ctx.strokeStyle = "#fff"; ctx.lineWidth = 3;
-    ctx.beginPath();
-    ctx.moveTo(cx - 9, cy); ctx.lineTo(cx + 9, cy);
-    ctx.moveTo(cx - 9, cy); ctx.lineTo(cx - 4, cy - 5);
-    ctx.moveTo(cx - 9, cy); ctx.lineTo(cx - 4, cy + 5);
-    ctx.moveTo(cx + 9, cy); ctx.lineTo(cx + 4, cy - 5);
-    ctx.moveTo(cx + 9, cy); ctx.lineTo(cx + 4, cy + 5);
-    ctx.stroke();
+    // 波動リーチ: 発信源の点＋広がる同心の波
+    ctx.fillStyle = "#fff";
+    ctx.beginPath(); ctx.arc(cx - 8, cy, 2.5, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = "#fff"; ctx.lineWidth = 2.5;
+    for (let r = 5; r <= 13; r += 4) {
+      ctx.beginPath(); ctx.arc(cx - 8, cy, r, -0.9, 0.9); ctx.stroke();
+    }
   } else if (it.type === "beam") {
-    // 横一文字のビーム
+    // ビーム: 太い光線＋根元の輝き
     ctx.fillStyle = "#fff";
-    ctx.fillRect(cx - 10, cy - 2.5, 20, 5);
+    ctx.fillRect(cx - 11, cy - 3, 18, 6);
     ctx.beginPath();
-    ctx.moveTo(cx + 10, cy - 6); ctx.lineTo(cx + 15, cy); ctx.lineTo(cx + 10, cy + 6);
+    ctx.moveTo(cx + 7, cy - 7); ctx.lineTo(cx + 14, cy); ctx.lineTo(cx + 7, cy + 7);
     ctx.closePath(); ctx.fill();
+    ctx.beginPath(); ctx.arc(cx - 11, cy, 4, 0, Math.PI * 2); ctx.fill();
   } else {
-    // 稲妻（スピード）
-    ctx.fillStyle = "#fff";
+    // スピード: 早送りの二重シェブロン >>
+    ctx.strokeStyle = "#fff"; ctx.lineWidth = 3; ctx.lineJoin = "round"; ctx.lineCap = "round";
     ctx.beginPath();
-    ctx.moveTo(cx + 2, cy - 9); ctx.lineTo(cx - 6, cy + 1);
-    ctx.lineTo(cx - 1, cy + 1); ctx.lineTo(cx - 3, cy + 9);
-    ctx.lineTo(cx + 6, cy - 2); ctx.lineTo(cx + 1, cy - 2);
-    ctx.closePath();
-    ctx.fill();
+    ctx.moveTo(cx - 8, cy - 7); ctx.lineTo(cx - 1, cy); ctx.lineTo(cx - 8, cy + 7);
+    ctx.moveTo(cx + 1, cy - 7); ctx.lineTo(cx + 8, cy); ctx.lineTo(cx + 1, cy + 7);
+    ctx.stroke();
+    ctx.lineJoin = "miter"; ctx.lineCap = "butt";
   }
 }
 
@@ -2097,11 +2196,27 @@ function drawPlayer(p) {
     ctx.globalAlpha = 0.35;
   }
 
-  // 体
+  // 短い足（体より下に。地上を動いているときはちょこちょこ交互に動く）
+  const legLen = 8, bodyH = PLAYER_H - legLen;
+  const moving = p.onGround && Math.abs(p.vx) > 0.4;
+  const legPhase = moving ? performance.now() * 0.022 : 0;   // 素早いちょこちょこ
+  const legTop = by + bodyH - 3, footY = p.y;
+  const legDefs = [
+    { x: bx + PLAYER_W * 0.30, lift: moving ? Math.max(0, Math.sin(legPhase)) * 5 : 0 },
+    { x: bx + PLAYER_W * 0.70, lift: moving ? Math.max(0, Math.sin(legPhase + Math.PI)) * 5 : 0 },
+  ];
+  ctx.fillStyle = COLORS_D[p.slot];
+  for (const lg of legDefs) {
+    const foot = footY - lg.lift;
+    if (foot - legTop > 0.5) { roundRect(lg.x - 4, legTop, 8, foot - legTop, 3); ctx.fill(); }
+    ctx.beginPath(); ctx.ellipse(lg.x, foot, 5, 3.2, 0, 0, Math.PI * 2); ctx.fill();   // 小さな足先
+  }
+
+  // 体（足の上に重ねて描く）
   ctx.fillStyle = p.hitFlash > 0 ? "#ffffff" : COLORS[p.slot];
   ctx.strokeStyle = COLORS_D[p.slot];
   ctx.lineWidth = 3;
-  roundRect(bx, by, PLAYER_W, PLAYER_H, 8);
+  roundRect(bx, by, PLAYER_W, bodyH, 8);
   ctx.fill();
   ctx.stroke();
 
@@ -2415,7 +2530,7 @@ function drawMatch() {
   drawBackground(m.stage);
   drawStage(m.platforms, m.stage.theme);
   if (m.lava.length) drawLavaZones(m.lava);
-  if (m.warps.length) drawWarps(m.warps);
+  if (m.warps.length) drawWarps(m.warps, m.warpOn, m.warpTimer);
   if (m.walls.length) drawWalls(m.walls, m.groundY, m.stage.theme);
   for (const it of m.items) drawItem(it);
   for (const p of m.players) drawPlayer(p);
@@ -2437,6 +2552,17 @@ function drawMatch() {
   }
 
   drawHUD(m);
+
+  // 残り時間（中央上に mm:ss）
+  if (m.countdown === 0) {
+    const secs = Math.max(0, Math.ceil(m.timeLeft / 60));
+    const mm = Math.floor(secs / 60), ss = secs % 60;
+    const txt = mm + ":" + (ss < 10 ? "0" + ss : ss);
+    ctx.textAlign = "center";
+    ctx.font = "bold 30px sans-serif";
+    ctx.fillStyle = secs <= 10 ? "#ff5b5b" : "#fff";
+    ctx.fillText(txt, W / 2, 40);
+  }
 
   // 試合中: H長押しで操作確認、右上に常時ヒント
   if (m.countdown === 0 && !m.ending) {
@@ -2592,25 +2718,59 @@ function drawResult() {
   drawStage(rPlats, rStage.theme);
   if (APP.match && APP.match.walls.length) drawWalls(APP.match.walls, APP.match.groundY, rStage.theme);
   else if (!APP.match && rStage.walls) { const s = wallSnapshot(rStage, 0.75); drawWalls(s.walls, s.groundY, rStage.theme); }
-  ctx.fillStyle = "rgba(0,0,0,0.55)";
+  ctx.fillStyle = "rgba(0,0,0,0.6)";
   ctx.fillRect(0, 0, W, H);
   ctx.textAlign = "center";
-  const ws = APP.resultInfo.winnerSlot;
-  if (ws !== null) {
-    ctx.fillStyle = COLORS[ws];
-    ctx.font = "bold 96px sans-serif";
-    ctx.fillText(NAMES[ws] + " の勝ち！", W / 2, H / 2 - 30);
-  } else {
-    ctx.fillStyle = "#fff";
-    ctx.font = "bold 96px sans-serif";
-    ctx.fillText("引き分け！", W / 2, H / 2 - 30);
+  const info = APP.resultInfo;
+  const ws = info.winnerSlot;
+  // 勝者
+  ctx.font = "bold 66px sans-serif";
+  if (ws !== null) { ctx.fillStyle = COLORS[ws]; ctx.fillText(NAMES[ws] + " の勝ち！", W / 2, 130); }
+  else { ctx.fillStyle = "#fff"; ctx.fillText("引き分け！", W / 2, 130); }
+  if (info.timeUp) { ctx.fillStyle = "#ffd34d"; ctx.font = "bold 22px sans-serif"; ctx.fillText("タイムアップ（残ストック→与ダメージで判定）", W / 2, 168); }
+
+  // スコア表（各プレイヤーの与ダメージ）
+  const scores = (info.scores || []).slice().sort((a, b) => (b.stocks - a.stocks) || (b.dealt - a.dealt));
+  const rowH = 46, tableW = 560, x0 = (W - tableW) / 2;
+  let y = 230;
+  ctx.font = "bold 16px sans-serif"; ctx.textAlign = "left";
+  ctx.fillStyle = "rgba(255,255,255,0.6)";
+  ctx.fillText("プレイヤー", x0 + 14, y - 12);
+  ctx.textAlign = "center"; ctx.fillText("与えたダメージ", x0 + 300, y - 12);
+  ctx.fillText("残ストック", x0 + 450, y - 12);
+  for (const s of scores) {
+    ctx.fillStyle = "rgba(15,15,28,0.8)";
+    roundRect(x0, y, tableW, rowH - 8, 8); ctx.fill();
+    ctx.strokeStyle = COLORS[s.slot]; ctx.lineWidth = 2.5; roundRect(x0, y, tableW, rowH - 8, 8); ctx.stroke();
+    ctx.fillStyle = COLORS[s.slot]; ctx.font = "bold 20px sans-serif"; ctx.textAlign = "left";
+    let nm = NAMES[s.slot];
+    if (APP.mode === "online") nm += (s.slot === NET.myIndex ? " (あなた)" : "");
+    else if (s.slot === APP.soloSlot) nm += " (あなた)";
+    else if (APP.slots[s.slot] && APP.slots[s.slot].cpu) nm += " (CPU)";
+    ctx.fillText(nm, x0 + 14, y + 26);
+    ctx.textAlign = "center"; ctx.fillStyle = "#ffd34d"; ctx.font = "bold 24px sans-serif";
+    ctx.fillText(s.dealt + "%", x0 + 300, y + 27);
+    ctx.fillStyle = "#fff"; ctx.font = "bold 20px sans-serif";
+    ctx.fillText(s.stocks > 0 ? "●".repeat(s.stocks) : "—", x0 + 450, y + 27);
+    y += rowH;
   }
-  ctx.fillStyle = "#fff";
-  ctx.font = "bold 26px sans-serif";
+
+  // 次のステージ選択（結果画面で変えてそのまま再戦できる）
+  const canPick = (APP.mode !== "online") || NET.isHost;
+  const nextIdx = (APP.mode === "online" && !NET.isHost) ? (NET.remoteStage != null ? NET.remoteStage : APP.stageIndex) : APP.stageIndex;
+  const selY = Math.max(y + 30, H - 118);
+  ctx.textAlign = "center"; ctx.font = "bold 22px sans-serif"; ctx.fillStyle = "#fff";
+  const arrows = canPick ? "◀  " : "";
+  const arrowsR = canPick ? "  ▶" : "";
+  ctx.fillText(arrows + "次のステージ: " + STAGES[nextIdx].name + arrowsR, W / 2, selY);
+  if (canPick) { ctx.font = "13px sans-serif"; ctx.fillStyle = "rgba(255,255,255,0.55)"; ctx.fillText("← → でステージ変更", W / 2, selY + 22); }
+
+  ctx.fillStyle = "#fff"; ctx.font = "bold 22px sans-serif"; ctx.textAlign = "center";
+  const btmY = selY + 54;
   if (APP.mode === "online") {
-    ctx.fillText(NET.isHost ? "Enter: 再戦 ／ Esc: 退出" : "ホストの再戦待ち… ／ Esc: 退出", W / 2, H / 2 + 60);
+    ctx.fillText(NET.isHost ? "Enter: このステージで再戦 ／ Esc: 退出" : "ホストの再戦待ち… ／ Esc: 退出", W / 2, btmY);
   } else {
-    ctx.fillText("Enter / Start でロビーに戻る", W / 2, H / 2 + 60);
+    ctx.fillText("Enter: このステージで再戦 ／ Esc: ロビーへ", W / 2, btmY);
   }
 }
 
