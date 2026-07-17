@@ -170,7 +170,7 @@ const COUNTDOWN_TICKS = 180;
 //   reach = 攻撃(波動)のリーチ延長 / speed = 移動速度1.5倍
 //   ⚠️ 落下位置・種類・タイミングは決定論的PRNG(state.rng)で決める→オンライン同期維持
 const ITEM = {
-  duration: 600,        // 効果時間（10秒）
+  duration: { reach: 300, speed: 600 },  // 効果時間: reach=5秒 / speed=10秒
   spawnInterval: 480,   // 出現間隔（8秒ごと）
   firstSpawn: 240,      // 最初の出現（4秒後）
   maxOnField: 2,        // 同時に落ちている上限
@@ -178,7 +178,7 @@ const ITEM = {
   gravity: 0.3,
   maxFall: 6,
   reachMult: 1.8,       // reach効果: リーチ倍率
-  speedMult: 1.5,       // speed効果: 移動速度倍率
+  speedMult: 1.5,       // speed効果: 移動速度＆ジャンプ力倍率
 };
 const ITEM_TYPES = ["reach", "speed"];
 
@@ -203,27 +203,6 @@ const STAGES = [
     spawns: [ {x:390,y:455}, {x:890,y:455}, {x:420,y:560}, {x:860,y:560} ],
   },
   {
-    name: "しゅうてん（平地）",
-    theme: { sky:["#2a1c3a","#4a2a52","#7a3a5a"], mountain:"rgba(40,20,50,0.7)",
-             dirt:"#3a2a44", grass:"#c86ba0", grass2:"#a5508a", plat:"#7a6a9a", platTop:"#9a8aba" },
-    platforms: [
-      { x: 240, y: 560, w: 800, droppable: false, main: true },
-    ],
-    spawns: [ {x:400,y:560}, {x:880,y:560}, {x:520,y:560}, {x:760,y:560} ],
-  },
-  {
-    name: "せんじょう",
-    theme: { sky:["#1c3320","#2a5232","#3a6b42"], mountain:"rgba(20,50,30,0.7)",
-             dirt:"#3a4a2a", grass:"#7ac850", grass2:"#5aa540", plat:"#6a9a7a", platTop:"#8abaa0" },
-    platforms: [
-      { x: 290, y: 580, w: 700, droppable: false, main: true },
-      { x: 360, y: 470, w: 160, droppable: true },
-      { x: 760, y: 470, w: 160, droppable: true },
-      { x: 560, y: 375, w: 160, droppable: true },
-    ],
-    spawns: [ {x:440,y:470}, {x:840,y:470}, {x:480,y:580}, {x:800,y:580} ],
-  },
-  {
     name: "ふたご島",
     theme: { sky:["#16283a","#1e4a6a","#2a6a8a"], mountain:"rgba(20,60,90,0.6)",
              dirt:"#6a5a3a", grass:"#d8c088", grass2:"#b8a068", plat:"#5a8a9a", platTop:"#7aaaba" },
@@ -246,6 +225,21 @@ const STAGES = [
       { x: 520, y: 300, w: 240, droppable: true },   // 頂上
     ],
     spawns: [ {x:470,y:500}, {x:810,y:500}, {x:440,y:600}, {x:840,y:600} ],
+  },
+  {
+    // 浮いた床が左右・上下に往復して動くステージ
+    // move: {axis:'x'|'y', range:振れ幅px, speed:px/tick, dir:初速の向き}
+    // ⚠️ 決定論のため床移動は毎tickの整数加算(off+=vel)＝三角波。Math.sinは使わない
+    name: "うごく床",
+    theme: { sky:["#241a2e","#3a2450","#5a3a7a"], mountain:"rgba(45,30,65,0.7)",
+             dirt:"#3e3450", grass:"#8a6ad0", grass2:"#6a4ab0", plat:"#b088e0", platTop:"#cbb0f0" },
+    platforms: [
+      { x: 220, y: 585, w: 840, droppable: false, main: true },
+      { x: 300, y: 470, w: 160, droppable: true, move: { axis: "x", range: 160, speed: 1.4, dir: 1 } },
+      { x: 800, y: 470, w: 160, droppable: true, move: { axis: "x", range: 160, speed: 1.4, dir: -1 } },
+      { x: 540, y: 400, w: 200, droppable: true, move: { axis: "y", range: 80, speed: 1.1, dir: 1 } },
+    ],
+    spawns: [ {x:360,y:585}, {x:920,y:585}, {x:480,y:585}, {x:800,y:585} ],
   },
 ];
 
@@ -355,6 +349,16 @@ function makeMatchState(slotIndices, stageIndex) {
   // 決定論PRNGの種（両クライアントで同一）。0は不可なので必ず非0に。
   let seed = ((idx + 1) * 2654435761) | 0;
   if (seed === 0) seed = 1;
+  // 足場は可変（動く床）なのでライブなコピーを作る（静的STAGESは書き換えない）
+  const platforms = stage.platforms.map(pl => {
+    const c = { x: pl.x, y: pl.y, w: pl.w, droppable: pl.droppable, main: pl.main, dx: 0, dy: 0 };
+    if (pl.move) {
+      c.baseX = pl.x; c.baseY = pl.y;
+      c.moveAxis = pl.move.axis; c.moveRange = pl.move.range;
+      c.off = 0; c.vel = pl.move.speed * (pl.move.dir || 1);
+    }
+    return c;
+  });
   return {
     tick: 0,
     countdown: COUNTDOWN_TICKS,
@@ -365,11 +369,27 @@ function makeMatchState(slotIndices, stageIndex) {
     winnerSlot: null,
     stageIndex: idx,
     stage,
+    platforms,                    // ライブな足場（動く床を含む）
     rng: seed,                    // xorshift32 の状態
     items: [],                    // 落下中/設置中のアイテム
     itemTimer: ITEM.firstSpawn,   // 次の出現までのtick
     players: slotIndices.map(s => makePlayer(s, stage)),
   };
+}
+
+// 動く床を1tick更新（決定論: off += vel の三角波）。dx/dyに今tickの移動量を記録
+function updateMovingPlatforms(state) {
+  for (const plat of state.platforms) {
+    plat.dx = 0; plat.dy = 0;
+    if (plat.moveAxis === undefined) continue;
+    const old = plat.off;
+    plat.off += plat.vel;
+    if (plat.off > plat.moveRange) { plat.off = plat.moveRange; plat.vel = -plat.vel; }
+    else if (plat.off < -plat.moveRange) { plat.off = -plat.moveRange; plat.vel = -plat.vel; }
+    const delta = plat.off - old;
+    if (plat.moveAxis === "x") { plat.x = plat.baseX + plat.off; plat.dx = delta; }
+    else { plat.y = plat.baseY + plat.off; plat.dy = delta; }
+  }
 }
 
 // 決定論的乱数（xorshift32）。ビット演算のみ＝全環境で同一結果。[0,1) を返す。
@@ -400,6 +420,25 @@ function stepMatch(state, samples) {
   }
 
   const ps = state.players;
+
+  // --- 動く床: 乗っているプレイヤーを一緒に運ぶ ---
+  // 1) 移動前の位置で「どの動く床に乗っているか」を判定
+  const carriers = ps.map(p => {
+    if (!p.alive || !p.onGround) return null;
+    for (const plat of state.platforms) {
+      if (plat.moveAxis === undefined) continue;
+      if (p.x >= plat.x && p.x <= plat.x + plat.w && Math.abs(p.y - plat.y) < 1.5) return plat;
+    }
+    return null;
+  });
+  // 2) 床を動かす（決定論的）
+  updateMovingPlatforms(state);
+  // 3) 乗っているプレイヤーを床と一緒に運ぶ。
+  //    縦方向は床top(plat.y)へスナップ＝floatズレで着地判定が外れて落ちるのを防ぐ。
+  for (let i = 0; i < ps.length; i++) {
+    const plat = carriers[i];
+    if (plat) { ps[i].x += plat.dx; ps[i].y = plat.y; }
+  }
 
   // --- 各プレイヤーの入力・移動 ---
   for (let i = 0; i < ps.length; i++) {
@@ -462,14 +501,15 @@ function stepMatch(state, samples) {
       }
     }
 
-    // ジャンプ（エッジ）
+    // ジャンプ（エッジ）。speedアイテムでジャンプ力も1.5倍
     const jumpEdge = cur.jump && !prev.jump;
+    const jmul = p.itemType === "speed" ? ITEM.speedMult : 1;
     if (jumpEdge && canAct && !locked) {
       if (p.onGround) {
-        p.vy = PHYS.jumpVel;
+        p.vy = PHYS.jumpVel * jmul;
         p.onGround = false;
       } else if (p.airJumps > 0) {
-        p.vy = PHYS.doubleJumpVel;
+        p.vy = PHYS.doubleJumpVel * jmul;
         p.airJumps--;
       }
     }
@@ -477,7 +517,7 @@ function stepMatch(state, samples) {
     // すり抜け降下（薄い足場の上で下エッジ）
     const downEdge = cur.down && !prev.down;
     if (downEdge && canAct && !locked && p.onGround) {
-      const plat = platformUnder(p, state.stage.platforms);
+      const plat = platformUnder(p, state.platforms);
       if (plat && plat.droppable) {
         p.onGround = false;
         p.dropTimer = 10;
@@ -525,7 +565,7 @@ function stepMatch(state, samples) {
 
     if (p.vy >= 0) {
       let landed = false;
-      for (const plat of state.stage.platforms) {
+      for (const plat of state.platforms) {
         if (plat.droppable && p.dropTimer > 0) continue;
         if (p.x + PLAYER_W / 2 <= plat.x || p.x - PLAYER_W / 2 >= plat.x + plat.w) continue;
         if (prevY <= plat.y && p.y >= plat.y) {
@@ -625,7 +665,7 @@ function stepMatch(state, samples) {
         if (it.vy > ITEM.maxFall) it.vy = ITEM.maxFall;
         const prevY = it.y;
         it.y += it.vy;
-        for (const plat of state.stage.platforms) {
+        for (const plat of state.platforms) {
           if (it.x <= plat.x || it.x >= plat.x + plat.w) continue;
           if (prevY <= plat.y && it.y >= plat.y) {
             it.y = plat.y - ITEM.radius; it.vy = 0; it.landed = true;
@@ -651,7 +691,7 @@ function stepMatch(state, samples) {
       if (taken >= 0) {
         const p = ps[taken];
         p.itemType = it.type;
-        p.itemTimer = ITEM.duration;
+        p.itemTimer = ITEM.duration[it.type];
         p.itemGetFlash = 24;
         state.items.splice(k, 1);
         events.push({ type: "item-get", x: p.x, y: p.y - PLAYER_H, slot: p.slot, itemType: it.type });
@@ -1189,10 +1229,9 @@ function drawBackground(stage) {
   ctx.fill();
 }
 
-function drawStage(stage) {
-  const s = stage || STAGES[0];
-  const th = s.theme;
-  for (const plat of s.platforms) {
+function drawStage(platforms, theme) {
+  const th = theme;
+  for (const plat of platforms) {
     if (plat.main) {
       ctx.fillStyle = th.dirt;
       ctx.fillRect(plat.x, plat.y, plat.w, H - plat.y);
@@ -1201,10 +1240,17 @@ function drawStage(stage) {
       ctx.fillStyle = th.grass2;
       ctx.fillRect(plat.x, plat.y + 14, plat.w, 5);
     } else {
+      // 動く床は少し目立たせる（縁取り＋矢印なし・厚め）
+      const moving = plat.moveAxis !== undefined;
       ctx.fillStyle = th.plat;
-      ctx.fillRect(plat.x, plat.y, plat.w, 12);
+      ctx.fillRect(plat.x, plat.y, plat.w, moving ? 14 : 12);
       ctx.fillStyle = th.platTop;
       ctx.fillRect(plat.x, plat.y, plat.w, 4);
+      if (moving) {
+        ctx.strokeStyle = "rgba(255,255,255,0.35)";
+        ctx.lineWidth = 2;
+        ctx.strokeRect(plat.x, plat.y, plat.w, 14);
+      }
     }
   }
 }
@@ -1335,7 +1381,7 @@ function drawPlayer(p) {
   // アイテム所持中: 足元の光るリング（残り時間で細くなる）＋取得フラッシュ
   if (p.itemType && p.itemTimer > 0) {
     const st = ITEM_STYLE[p.itemType];
-    const frac = p.itemTimer / ITEM.duration;
+    const frac = p.itemTimer / ITEM.duration[p.itemType];
     ctx.save();
     ctx.strokeStyle = st.color;
     ctx.globalAlpha = 0.85;
@@ -1527,7 +1573,7 @@ function drawMatch() {
     ctx.translate((Math.random() - 0.5) * fx.shake, (Math.random() - 0.5) * fx.shake);
   }
   drawBackground(m.stage);
-  drawStage(m.stage);
+  drawStage(m.platforms, m.stage.theme);
   for (const it of m.items) drawItem(it);
   for (const p of m.players) drawPlayer(p);
 
@@ -1601,7 +1647,7 @@ function drawMatch() {
 function drawLobby() {
   const selStage = STAGES[APP.stageIndex];
   drawBackground(selStage);
-  drawStage(selStage);   // 選択中ステージを背景にプレビュー
+  drawStage(selStage.platforms, selStage.theme);   // 選択中ステージを背景にプレビュー
 
   ctx.textAlign = "center";
   ctx.fillStyle = "#fff";
@@ -1647,7 +1693,7 @@ function drawLobby() {
     "キーボード右: 矢印移動 / ↑=ジャンプ / ↓=急降下 / ,=攻撃 / .=ガード(卵)",
     "ゲームパッド: 移動 / A=ジャンプ / X=攻撃 / L・R=ガード",
     "★攻撃を2秒長押しで必殺技（ガードを一撃で割る）。卵は使い切ると割れて復活まで無し",
-    "★アイテムが空から落下！先に触れた人が10秒ゲット（🟠リーチ延長／🔵移動1.5倍）",
+    "★アイテムが空から落下！先に触れた人がゲット（🟠リーチ延長5秒／🔵移動＆ジャンプ1.5倍10秒）",
   ];
   lines.forEach((t, i) => ctx.fillText(t, W / 2, 380 + i * 26));
 
@@ -1685,8 +1731,9 @@ function drawLobby() {
 
 function drawResult() {
   const rStage = APP.match ? APP.match.stage : STAGES[APP.stageIndex];
+  const rPlats = APP.match ? APP.match.platforms : rStage.platforms;
   drawBackground(rStage);
-  drawStage(rStage);
+  drawStage(rPlats, rStage.theme);
   ctx.fillStyle = "rgba(0,0,0,0.55)";
   ctx.fillRect(0, 0, W, H);
   ctx.textAlign = "center";
