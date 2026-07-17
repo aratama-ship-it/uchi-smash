@@ -366,7 +366,7 @@ function makeCpuSource() {
   };
 }
 
-// シンプルなCPU思考: 最寄りの相手を追って接近攻撃、崖外なら中央へ戻って復帰
+// CPU思考: 最寄りの相手へ積極的に接近して連打、上下も狙う。崖外なら確実に復帰。
 function cpuThink(src, slot, m) {
   const st = src.st;
   if (st.jumpCd > 0) st.jumpCd--;
@@ -386,38 +386,62 @@ function cpuThink(src, slot, m) {
 
   const g = m.groundY;
   const overGround = m.platforms.some(pl => pl.main && me.x > pl.x - 20 && me.x < pl.x + pl.w + 20);
-  const needRecover = !me.onGround && me.y > 220 && (me.y > g + 30 || !overGround);
+  const needRecover = !me.onGround && me.y > 200 && (me.y > g + 30 || !overGround);
 
-  // --- 復帰: 崖外/落下中は中央へ戻ってジャンプ・風船 ---
+  // --- 復帰: 崖外/落下中は中央へ確実に戻る（ジャンプ→風船） ---
   if (needRecover) {
     if (me.x < W / 2) inp.right = true; else inp.left = true;
-    if (me.airJumps > 0 && st.jumpCd <= 0) { inp.jump = true; st.jumpCd = 14; }
-    if (me.y > g + 100 && me.balloonFuel > 0) inp.balloon = true;   // 深いときは風船
+    if (me.airJumps > 0 && st.jumpCd <= 0) { inp.jump = true; st.jumpCd = 10; }
+    if (me.y > g + 70 && me.balloonFuel > 0) inp.balloon = true;   // やや深いと即風船
     return inp;
   }
 
   if (!tgt) return inp;
-  const dx = tgt.x - me.x, dy = tgt.y - me.y;
+  const dx = tgt.x - me.x, dy = tgt.y - me.y, adx = Math.abs(dx), ady = Math.abs(dy);
+  const face = dx >= 0 ? 1 : -1;
 
-  // 端に寄りすぎたら自滅しないよう内側へ
-  const edge = 150;
-  if (me.onGround && me.x < edge && dx < 0) { /* 左端で左に行かない */ }
-  else if (me.onGround && me.x > W - edge && dx > 0) { /* 右端で右に行かない */ }
-  else if (Math.abs(dx) > 46) { if (dx > 0) inp.right = true; else inp.left = true; }
-
-  // 相手が上にいればジャンプ
-  if (dy < -55 && st.jumpCd <= 0) {
-    if (me.onGround) { inp.jump = true; st.jumpCd = 24; }
-    else if (me.airJumps > 0 && me.vy > 0) { inp.jump = true; st.jumpCd = 24; }
+  // 接近（近づき切るまで詰める）。進む先の足場/奈落を見て自滅を避ける
+  if (adx > 30) {
+    const probeX = me.x + face * (PLAYER_W / 2 + 14);
+    const outerEdge = me.onGround && ((me.x < 120 && face < 0) || (me.x > W - 120 && face > 0));
+    const groundAhead = m.platforms.some(pl => probeX > pl.x && probeX < pl.x + pl.w && Math.abs(me.y - pl.y) < 2);
+    // 進む先の下方に着地できる地面があるか（薄い足場から降りて回り込む用）
+    const groundBelow = m.platforms.some(pl => probeX > pl.x && probeX < pl.x + pl.w && pl.y > me.y + 4 && pl.y < me.y + 220);
+    if (outerEdge) {
+      // 外周の崖: 歩いて出ない（攻撃だけ）
+    } else if (me.onGround && !groundAhead) {
+      if (groundBelow) {
+        // 下に地面あり: 降りて追う（端から落ちて下の地面へ）
+        if (dx > 0) inp.right = true; else inp.left = true;
+      } else if (dy > -40 && adx < 240 && st.jumpCd <= 0) {
+        // 真下は奈落: 届く範囲なら飛び越える
+        inp.jump = true; st.jumpCd = 16;
+        if (dx > 0) inp.right = true; else inp.left = true;
+      }
+      // それ以外は縁で止まる（自滅回避）
+    } else {
+      if (dx > 0) inp.right = true; else inp.left = true;
+    }
   }
 
-  // 接近したら攻撃（数tick押して離す＝通常攻撃）。上にいれば上攻撃
-  const near = Math.abs(dx) < 56 && Math.abs(dy) < 55;
-  if (st.atkHold > 0) { inp.attack = true; st.atkHold--; if (dy < -30) { inp.up = true; inp.left = false; inp.right = false; } }
-  else if (near && st.atkCd <= 0) { st.atkHold = 3; st.atkCd = 40; inp.attack = true; st.atkHold--; if (dy < -30) { inp.up = true; inp.left = false; inp.right = false; } }
-  // 相手の攻撃が近いとたまにガード（決定論的に tick で判断）
-  else if (best < 80 && tgt.attackTimer > 0 && me.onGround && st.guardCd <= 0 && ((m.tick + slot * 13) % 20 < 8)) {
-    inp.guard = true; st.guardCd = 30; inp.left = false; inp.right = false;
+  // 相手が上にいれば積極的にジャンプで追う（真下に回り込んでから跳ぶと足場に乗りやすい）
+  if (dy < -42 && adx < 120 && st.jumpCd <= 0) {
+    if (me.onGround) { inp.jump = true; st.jumpCd = 14; }
+    else if (me.airJumps > 0 && me.vy > -2) { inp.jump = true; st.jumpCd = 14; }
+  }
+  // 相手が下にいて自分が足場の上なら、降りて追う（すり抜け）
+  if (dy > 90 && me.onGround && adx < 60 && ((m.tick + slot * 7) % 30 < 3)) { inp.down = true; }
+
+  // 攻撃: 射程内なら頻繁に。上/下も狙う
+  const upAtk = dy < -32 && adx < 42;
+  const downAtk = dy > 34 && adx < 42 && !me.onGround;
+  const inRange = adx < 64 && ady < 60;
+  const applyDir = () => { if (upAtk) { inp.up = true; inp.left = false; inp.right = false; } else if (downAtk) { inp.down = true; inp.left = false; inp.right = false; } };
+  if (st.atkHold > 0) { inp.attack = true; st.atkHold--; applyDir(); }
+  else if (inRange && st.atkCd <= 0) { st.atkHold = 3; st.atkCd = 18; inp.attack = true; st.atkHold--; applyDir(); }
+  // 相手の攻撃/チャージが近いとガードで受ける
+  else if (best < 74 && (tgt.attackTimer > 0 || tgt.chargeTimer > 20) && me.onGround && st.guardCd <= 0) {
+    inp.guard = true; st.guardCd = 22; inp.left = false; inp.right = false;
   }
   return inp;
 }
@@ -986,6 +1010,7 @@ const APP = {
   slots: [null, null, null, null],   // {source} を格納
   match: null,
   stageIndex: 0,            // ロビーで選択中のステージ
+  soloSlot: -1,             // 人間1人(ソロ)のときその人のslot（オンライン操作を使う）
   lobbyPrev: new Map(),     // sourceId -> 前フレームsample（参加検出用）
   resultInfo: null,
 };
@@ -1365,6 +1390,10 @@ function updateLobby() {
 function startMatch() {
   const slotIndices = [];
   APP.slots.forEach((s, i) => { if (s) slotIndices.push(i); });
+  // 人間が1人だけ（ソロ）なら、その人はオンラインと同じキー操作(J攻撃/K防御/Space風船)にする
+  const humans = [];
+  APP.slots.forEach((s, i) => { if (s && !s.cpu) humans.push(i); });
+  APP.soloSlot = humans.length === 1 ? humans[0] : -1;
   APP.match = makeMatchState(slotIndices, APP.stageIndex);
   APP.phase = "match";
 }
@@ -1372,7 +1401,8 @@ function startMatch() {
 function updateMatch() {
   if (APP.mode === "online") { updateOnlineMatch(); return; }
   const m = APP.match;
-  const samples = m.players.map(p => APP.slots[p.slot].source.sample(p.slot, m));
+  const samples = m.players.map(p =>
+    p.slot === APP.soloSlot ? sampleLocalMerged() : APP.slots[p.slot].source.sample(p.slot, m));
   const events = stepMatch(m, samples);
   handleEvents(events);
 
@@ -2010,12 +2040,14 @@ function controlLinesFor(sourceId) {
 
 // カード表示用の内容（ローカル: 入力ソース別 / オンライン: 自分・相手）
 function cardInfoFor(p) {
+  // オンライン操作の説明（オンライン本人 or ローカルのソロ本人）
+  const onlineControls = { label: "あなた", lines: ["移動: A/D または ←/→（W・↑ジャンプ / S・↓急降下）", "攻撃: J（上/下だけ入力で上下攻撃・長押し必殺）", "ガード（卵）: K", "風船: Space（浮上・落下防止）"] };
   if (APP.mode === "online") {
-    if (p.slot === NET.myIndex) {
-      return { label: "あなた", lines: ["移動: A/D または ←/→（W・↑ジャンプ / S・↓急降下）", "攻撃: J（上/下だけ入力で上下攻撃・長押し必殺）", "ガード（卵）: K", "風船: Space（浮上・落下防止）"] };
-    }
+    if (p.slot === NET.myIndex) return onlineControls;
     return { label: "相手（オンライン）", lines: ["リモートプレイヤー", "", "", "", ""] };
   }
+  if (p.slot === APP.soloSlot) return onlineControls;
+  if (APP.slots[p.slot] && APP.slots[p.slot].cpu) return { label: "CPU", lines: ["コンピュータ操作", "", "", "", ""] };
   const src = APP.slots[p.slot].source;
   return { label: src.label, lines: controlLinesFor(src.id) };
 }
@@ -2191,15 +2223,22 @@ function drawLobby() {
   lines.forEach((t, i) => ctx.fillText(t, W / 2, 380 + i * 26));
 
   const joined = APP.slots.filter(Boolean).length;
+  const humanCount = APP.slots.filter(s => s && !s.cpu).length;
   ctx.font = "bold 26px sans-serif";
   if (joined >= 2) {
     if (Math.floor(performance.now() / 400) % 2 === 0) {
       ctx.fillStyle = "#ffd34d";
-      ctx.fillText("Enter / Start で開始！", W / 2, 540);
+      ctx.fillText("Enter / Start で開始！", W / 2, 538);
     }
   } else {
     ctx.fillStyle = "rgba(255,255,255,0.5)";
-    ctx.fillText("2人以上そろうと開始できます", W / 2, 540);
+    ctx.fillText("2人以上そろうと開始できます（CはCPU追加）", W / 2, 538);
+  }
+  // ソロ（人間1人）のときの操作案内
+  if (humanCount === 1 && joined >= 2) {
+    ctx.font = "14px sans-serif";
+    ctx.fillStyle = "#8fd3ff";
+    ctx.fillText("1人プレイの操作 → 移動: WASD / 矢印　攻撃: J　ガード: K　風船: Space", W / 2, 562);
   }
 
   // ステージ選択（左右キーで変更）
