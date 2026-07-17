@@ -169,7 +169,7 @@ const PLAYER_W = 36, PLAYER_H = 48;
 const STOCKS = 3;
 const RESPAWN_INVULN = 150;
 const COUNTDOWN_TICKS = 180;
-const TIME_LIMIT = 120 * 60;   // 1ラウンドの制限時間（2分＝7200tick）
+const TIME_LIMIT = 180 * 60;   // 1ラウンドの制限時間（3分＝10800tick）
 const RESPAWN_TOP = 30;        // 復活時に出る高さ（画面上部）
 const RESPAWN_FLOAT = 1.8;     // 復活風船での降下速度（ふわふわ）
 
@@ -177,7 +177,7 @@ const RESPAWN_FLOAT = 1.8;     // 復活風船での降下速度（ふわふわ�
 //   reach = 攻撃(波動)のリーチ延長 / speed = 移動速度1.5倍
 //   ⚠️ 落下位置・種類・タイミングは決定論的PRNG(state.rng)で決める→オンライン同期維持
 const ITEM = {
-  duration: { reach: 300, speed: 600, beam: 300 },  // reach=5秒 / speed=10秒 / beam=5秒
+  duration: { reach: 300, speed: 600, beam: 300, giant: 600 },  // reach=5秒 / speed=10秒 / beam=5秒 / giant=10秒
   spawnInterval: 480,   // 出現間隔（8秒ごと）
   firstSpawn: 240,      // 最初の出現（4秒後）
   maxOnField: 2,        // 同時に落ちている上限
@@ -194,10 +194,21 @@ const ITEM_TYPES = ["reach", "speed", "beam"];
 // 風船（Space）: 1ストックにつき1回。押している間だけ少しずつ浮上し落下を防ぐ。
 //   燃料を使い切ると割れて復活まで使えない。浮上中も横移動は可能。
 const BALLOON = {
-  fuel: 150,      // 使える総tick（約2.5秒ぶん）
+  fuel: 180,      // 使える総tick（150の1.2倍＝約3秒ぶん）
   lift: 0.55,     // 上昇加速
   maxRise: 3.2,   // 最大上昇速度（プカプカ）
 };
+
+// 巨大化アイテム: 体が大きくなり、速度1/2・ジャンプ高さ1/2・パワー(ふっとばし)4倍
+const GIANT = {
+  size: 1.6,      // 体・当たり判定の倍率
+  speedMult: 0.5, // 移動速度
+  jumpMult: 0.7071067811865476, // √0.5＝ジャンプ高さ1/2（高さは速度の2乗）
+  powerMult: 4,   // ふっとばし倍率
+};
+// プレイヤーの実効サイズ（巨大化中は拡大）
+function pHW(p) { return p.itemType === "giant" ? PLAYER_W * 0.5 * GIANT.size : PLAYER_W * 0.5; }  // 半幅
+function pH(p)  { return p.itemType === "giant" ? PLAYER_H * GIANT.size : PLAYER_H; }               // 高さ
 
 // ドスン風モブ（ステージ4のみ）: 風船で上昇→上で割れて落下、を繰り返す四角。
 //   触れたプレイヤーを弾き飛ばす（無敵：プレイヤーの攻撃は効かない）
@@ -694,7 +705,7 @@ function updateMob(state, events) {
   // プレイヤーとの当たり（弾き飛ばす。プレイヤーは無敵化で多段防止）
   for (const p of state.players) {
     if (!p.alive || p.invuln > 0) continue;
-    if (rectsOverlap(m.x, m.y, MOB.size, MOB.size, p.x - PLAYER_W / 2, p.y - PLAYER_H, PLAYER_W, PLAYER_H)) {
+    if (rectsOverlap(m.x, m.y, MOB.size, MOB.size, p.x - pHW(p), p.y - pH(p), pHW(p) * 2, pH(p))) {
       const dir = p.x >= m.x + MOB.size / 2 ? 1 : -1;
       p.damage += MOB.damage;
       const kb = MOB.kbBase + p.damage * MOB.kbScale;
@@ -732,8 +743,8 @@ function updatePendulums(state, events) {
     pd.y = pd.pivotY + Math.sqrt(inside > 0 ? inside : 0);
     for (const p of state.players) {
       if (!p.alive || p.invuln > 0) continue;
-      const dxp = p.x - pd.x, dyp = (p.y - PLAYER_H / 2) - pd.y;
-      const rr = pd.r + PLAYER_W * 0.4;
+      const dxp = p.x - pd.x, dyp = (p.y - pH(p) / 2) - pd.y;
+      const rr = pd.r + pHW(p) * 0.8;
       if (dxp * dxp + dyp * dyp < rr * rr) {
         const dir = p.x >= pd.x ? 1 : -1;
         p.damage += PENDULUM.damage;
@@ -754,7 +765,7 @@ function updateLava(state, events) {
   for (const lv of state.lava) {
     for (const p of state.players) {
       if (!p.alive || p.invuln > 0) continue;
-      if (rectsOverlap(lv.x, lv.y, lv.w, lv.h, p.x - PLAYER_W / 2, p.y - PLAYER_H, PLAYER_W, PLAYER_H)) {
+      if (rectsOverlap(lv.x, lv.y, lv.w, lv.h, p.x - pHW(p), p.y - pH(p), pHW(p) * 2, pH(p))) {
         p.damage += LAVA.damage;
         const kb = LAVA.kbBase + p.damage * LAVA.kbScale;
         p.vx = (p.x >= lv.x + lv.w / 2 ? 1 : -1) * kb * 0.5;
@@ -913,8 +924,8 @@ function stepMatch(state, samples) {
     const dir = (canAct && !locked) ? ((cur.right ? 1 : 0) - (cur.left ? 1 : 0)) : 0;
     if (dir !== 0) p.facing = dir;
 
-    // 水平移動（speedアイテムで最高速・加速が1.5倍）
-    const spd = p.itemType === "speed" ? ITEM.speedMult : 1;
+    // 水平移動（speedアイテムで1.5倍 / giantで1/2）
+    const spd = p.itemType === "speed" ? ITEM.speedMult : p.itemType === "giant" ? GIANT.speedMult : 1;
     const maxRun = PHYS.maxRun * spd, maxAir = PHYS.maxAir * spd;
     if (p.onGround) {
       if (dir !== 0) {
@@ -937,9 +948,9 @@ function stepMatch(state, samples) {
       }
     }
 
-    // ジャンプ（エッジ）。speedアイテムでジャンプ力も1.5倍
+    // ジャンプ（エッジ）。speedで1.5倍 / giantで高さ1/2（√0.5）
     const jumpEdge = cur.jump && !prev.jump;
-    const jmul = p.itemType === "speed" ? ITEM.speedMult : 1;
+    const jmul = p.itemType === "speed" ? ITEM.speedMult : p.itemType === "giant" ? GIANT.jumpMult : 1;
     if (jumpEdge && canAct && !locked) {
       if (p.onGround) {
         p.vy = PHYS.jumpVel * jmul;
@@ -1027,7 +1038,7 @@ function stepMatch(state, samples) {
       for (const plat of state.platforms) {
         if (plat.droppable && p.dropTimer > 0) continue;
         if (plat.crumbleState === "gone") continue;   // 崩れて消えた床は乗れない
-        if (p.x + PLAYER_W / 2 <= plat.x || p.x - PLAYER_W / 2 >= plat.x + plat.w) continue;
+        if (p.x + pHW(p) <= plat.x || p.x - pHW(p) >= plat.x + plat.w) continue;
         if (prevY <= plat.y && p.y >= plat.y) {
           p.y = plat.y;
           if (plat.bounce) {                           // トランポリン: 上へ跳ねる
@@ -1074,7 +1085,7 @@ function stepMatch(state, samples) {
       if (!p.alive) continue;
       for (const w of state.walls) {
         if (w.raise <= 0.02) continue;  // 下がって隠れている壁は素通り
-        const pl = p.x - PLAYER_W / 2, pr = p.x + PLAYER_W / 2, pt = p.y - PLAYER_H, pb = p.y;
+        const pl = p.x - pHW(p), pr = p.x + pHW(p), pt = p.y - pH(p), pb = p.y;
         if (pr > w.x && pl < w.x + w.w && pb > w.top && pt < w.bottom) {
           const pushL = pr - w.x;                  // 左へ出る量
           const pushR = (w.x + w.w) - pl;          // 右へ出る量
@@ -1096,25 +1107,26 @@ function stepMatch(state, samples) {
     const len = isBeam ? ITEM.beamRange : atk.range * (a.itemType === "reach" ? ITEM.reachMult : 1);
     const thickV = isBeam ? ITEM.beamThick : (PLAYER_W + 20);   // 上下攻撃の横幅
     const thickF = isBeam ? ITEM.beamThick : atk.height;        // 正面攻撃の厚み
-    // 攻撃向き別のヒットボックス（fwd=前方 / up=頭上 / down=足元）
+    // 攻撃向き別のヒットボックス（fwd=前方 / up=頭上 / down=足元）。giantは体が大きいぶん基準も拡大
+    const aHW = pHW(a), aH = pH(a);
     let hx, hy, hw, hh;
     if (a.attackDir === "up") {
       hw = thickV; hh = len;
-      hx = a.x - hw / 2; hy = a.y - PLAYER_H - len - 4;   // 頭上（頭より上に隙間）
+      hx = a.x - hw / 2; hy = a.y - aH - len - 4;   // 頭上（頭より上に隙間）
     } else if (a.attackDir === "down") {
       hw = thickV; hh = len;
-      hx = a.x - hw / 2; hy = a.y + 4;                    // 足元（足より下）
+      hx = a.x - hw / 2; hy = a.y + 4;              // 足元（足より下）
     } else {
       hw = len; hh = thickF;
-      hx = a.facing === 1 ? a.x + PLAYER_W / 2 - 6 : a.x - PLAYER_W / 2 - len + 6;
-      hy = a.y - PLAYER_H / 2 - thickF / 2 - 4;
+      hx = a.facing === 1 ? a.x + aHW - 6 : a.x - aHW - len + 6;
+      hy = a.y - aH / 2 - thickF / 2 - 4;
     }
     for (let j = 0; j < ps.length; j++) {
       if (i === j) continue;
       const v = ps[j];
       if (!v.alive || v.invuln > 0 || a.attackVictims.includes(j)) continue;
       if (!rectsOverlap(hx, hy, hw, hh,
-                        v.x - PLAYER_W / 2, v.y - PLAYER_H, PLAYER_W, PLAYER_H)) continue;
+                        v.x - pHW(v), v.y - pH(v), pHW(v) * 2, pH(v))) continue;
       a.attackVictims.push(j);
 
       // ガードで防御中
@@ -1138,10 +1150,11 @@ function stepMatch(state, samples) {
         events.push({ type: "guardbreak", x: v.x, y: v.y - PLAYER_H / 2, slot: v.slot });
       }
 
-      // ヒット（通常/必殺共通、角度45度上方向）
+      // ヒット（通常/必殺共通、角度45度上方向）。giantはパワー4倍
       v.damage += atk.damage;
       a.damageDealt += atk.damage;   // スコア: 与えたダメージを加算
-      const kb = atk.kbBase + v.damage * atk.kbScale;
+      const powerMult = a.itemType === "giant" ? GIANT.powerMult : 1;
+      const kb = (atk.kbBase + v.damage * atk.kbScale) * powerMult;
       const rad = atk.angleDeg * Math.PI / 180;
       v.vx = Math.cos(rad) * kb * a.facing;
       v.vy = -Math.sin(rad) * kb;
@@ -1163,8 +1176,9 @@ function stepMatch(state, samples) {
     if (state.itemTimer === 0) {
       state.itemTimer = ITEM.spawnInterval;
       if (state.items.length < ITEM.maxOnField) {
-        const roll = rngNext(state) * 7;
-        const type = roll < 2 ? "reach" : roll < 4 ? "speed" : roll < 6 ? "beam" : "refill";
+        // reach/speed/beam/giant=各weight2、refill=weight1（半分の頻度）
+        const roll = rngNext(state) * 9;
+        const type = roll < 2 ? "reach" : roll < 4 ? "speed" : roll < 6 ? "beam" : roll < 8 ? "giant" : "refill";
         if (type === "refill") {
           // 風船なのでふわふわ浮いて、風で左右に流れて横切る
           const dir = rngNext(state) < 0.5 ? 1 : -1;
@@ -1208,7 +1222,7 @@ function stepMatch(state, samples) {
         const p = ps[i];
         if (!p.alive) continue;
         if (rectsOverlap(it.x - ITEM.radius, it.y - ITEM.radius, ITEM.radius * 2, ITEM.radius * 2,
-                         p.x - PLAYER_W / 2, p.y - PLAYER_H, PLAYER_W, PLAYER_H)) {
+                         p.x - pHW(p), p.y - pH(p), pHW(p) * 2, pH(p))) {
           taken = i; break;
         }
       }
@@ -1313,7 +1327,7 @@ function decideByScore(ps) {
 function platformUnder(p, platforms) {
   for (const plat of platforms) {
     if (p.y === plat.y &&
-        p.x + PLAYER_W / 2 > plat.x && p.x - PLAYER_W / 2 < plat.x + plat.w) {
+        p.x + pHW(p) > plat.x && p.x - pHW(p) < plat.x + plat.w) {
       return plat;
     }
   }
@@ -2193,6 +2207,7 @@ const ITEM_STYLE = {
   speed:  { color: "#42d9ff", dark: "#1a8fc8", label: "スピード" },
   beam:   { color: "#c86bff", dark: "#8a2ad0", label: "ビーム" },
   refill: { color: "#ff7bb0", dark: "#c8407a", label: "風船満タン" },
+  giant:  { color: "#f25a5a", dark: "#b52e2e", label: "巨大化" },
 };
 
 // アイテム本体を描画（落下中はふわっと揺れる）
@@ -2251,6 +2266,18 @@ function drawItem(it) {
     ctx.moveTo(cx + 7, cy - 7); ctx.lineTo(cx + 14, cy); ctx.lineTo(cx + 7, cy + 7);
     ctx.closePath(); ctx.fill();
     ctx.beginPath(); ctx.arc(cx - 11, cy, 4, 0, Math.PI * 2); ctx.fill();
+  } else if (it.type === "giant") {
+    // 巨大化: 小さい四角→大きい四角＋外向き矢印
+    ctx.strokeStyle = "#fff"; ctx.lineWidth = 2.5;
+    ctx.strokeRect(cx - 3, cy - 3, 6, 6);
+    ctx.strokeRect(cx - 10, cy - 10, 20, 20);
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.moveTo(cx + 11, cy - 11); ctx.lineTo(cx + 15, cy - 15);
+    ctx.moveTo(cx - 11, cy - 11); ctx.lineTo(cx - 15, cy - 15);
+    ctx.moveTo(cx + 11, cy + 11); ctx.lineTo(cx + 15, cy + 15);
+    ctx.moveTo(cx - 11, cy + 11); ctx.lineTo(cx - 15, cy + 15);
+    ctx.stroke(); ctx.lineCap = "butt";
   } else {
     // スピード: 早送りの二重シェブロン >>
     ctx.strokeStyle = "#fff"; ctx.lineWidth = 3; ctx.lineJoin = "round"; ctx.lineCap = "round";
@@ -2302,6 +2329,10 @@ function drawMob(m) {
 
 function drawPlayer(p) {
   if (!p.alive) return;
+  // 巨大化中は足元(p.x,p.y)を基準に拡大して描く
+  const _gs = p.itemType === "giant" ? GIANT.size : 1;
+  ctx.save();
+  if (_gs !== 1) { ctx.translate(p.x, p.y); ctx.scale(_gs, _gs); ctx.translate(-p.x, -p.y); }
   const bx = p.x - PLAYER_W / 2;
   const by = p.y - PLAYER_H;
 
@@ -2511,6 +2542,8 @@ function drawPlayer(p) {
     ctx.stroke();
     ctx.restore();
   }
+  ctx.globalAlpha = 1;
+  ctx.restore();   // 巨大化スケール解除
 }
 
 function roundRect(x, y, w, h, r) {
