@@ -215,11 +215,14 @@ function pH(p)  { return p.itemType === "giant" ? PLAYER_H * GIANT.size : PLAYER
 //   触れたプレイヤーを弾き飛ばす（無敵：プレイヤーの攻撃は効かない）
 const MOB = {
   size: 46,
-  riseSpeed: 2.0,     // 風船での上昇速度
-  fallGravity: 0.8,   // 落下加速（ドスン）
-  maxFall: 15,
-  topY: 300,          // ここまで上がると風船が割れて落下
-  waitTicks: 45,      // 着地後の待ち
+  riseSpeed: 1.4,     // ゆっくり浮上（画面外の上まで上がる）
+  fallGravity: 0.55,  // 落下加速（ドスン・やや緩め）
+  maxFall: 14,
+  topY: -70,          // 上昇の到達＝画面外(上)。ここから落ちてくる
+  topHold: 34,        // 画面外で少し溜めてから落下
+  waitTicks: 40,      // 着地後の待ち
+  swayRange: 360,     // 左右ゆらゆらの振れ幅(px)（ベース幅を行き来）
+  swaySpeed: 1.2,     // ゆらゆらの速さ(px/tick)
   damage: 14,
   kbBase: 5, kbScale: 0.10,
 };
@@ -359,12 +362,11 @@ const STAGES = [
   },
   {
     // 溶岩ふたご島（旧 ふたご島/うごく床/くずれ足場/振り子と溶岩 を統合）:
-    //   左右2島＋中央は奈落。溶岩が周期的にせり上がり、引いている間に落ちると即場外(奈落)。
-    //   中央の「沈む床」(lavaFloor)は溶岩の上昇に連動して沈む＝乗ったまま水没する。
-    //   崩れ足場＋ドスン風モブも同居する高難度ステージ。
+    //   左右2島＋中央は奈落。溶岩が約10秒周期でせり上がり（最高到達＝島と同じ高さ）、
+    //   引いている間に中央へ落ちると即場外(奈落)。中央のエレベーター(上下する足場)が唯一の渡り。
+    //   エレベーターが低い位置のとき溶岩が上がると水没する。崩れ足場(左右)＋ドスン風モブも同居。
     // risingLava: 中央縦穴の溶岩を down(奈落)→rise→up→fall で上下（決定論・整数タイマー）。
-    //   restY=引ききり上面(場外線1050より下) / peakY=最高到達 / bottomY=溶岩矩形の下端。
-    //   floorUpY/floorDownY = 連動する中央床の 上(橋)/下(水没) 位置。
+    //   restY=引ききり上面(場外線1050より下) / peakY=最高到達の上面(＝島の高さ) / bottomY=溶岩矩形の下端。
     name: "溶岩ふたご島",
     mob: true, mobX: 640,
     theme: { sky:["#2a1414","#4a1e1e","#6a2a1e"], mountain:"rgba(50,18,18,0.7)",
@@ -372,18 +374,17 @@ const STAGES = [
     platforms: [
       { x: 60,  y: 560, w: 440, droppable: false, main: true },        // 左島
       { x: 780, y: 560, w: 440, droppable: false, main: true },        // 右島
-      { x: 540, y: 470, w: 200, droppable: false, lavaFloor: true },   // 中央「沈む床」(溶岩連動)
+      // 中央エレベーター(唯一の渡り)。460↔600を半速で上下。低点600は溶岩peak560より下＝水没
+      { x: 540, y: 530, w: 200, droppable: false, move: { axis: "y", range: 70, speed: 0.7, dir: 1 } },
       { x: 250, y: 440, w: 140, droppable: true, crumble: true },      // 崩れ足場（左）
       { x: 890, y: 440, w: 140, droppable: true, crumble: true },      // 崩れ足場（右）
-      { x: 570, y: 340, w: 140, droppable: true, crumble: true },      // 崩れ足場（中央高・奈落の真上）
     ],
     spawns: [ {x:230,y:560}, {x:1050,y:560}, {x:330,y:560}, {x:950,y:560} ],
     risingLava: {
       x: 500, w: 280,            // 中央の縦穴（左島右端500〜右島左端780）
-      restY: 1090, peakY: 500,   // 引ききり上面(BLAST.bottom=1050より下＝奈落) / 最高到達の上面
+      restY: 1090, peakY: 560,   // 引ききり上面(BLAST.bottom=1050より下＝奈落) / 最高到達＝島の高さ560
       bottomY: 1140,             // 溶岩矩形の下端（画面外まで満たす）
-      downTicks: 240, riseTicks: 96, upTicks: 156, fallTicks: 96,  // 奈落4s→上昇1.6s→滞留2.6s→下降1.6s
-      floorUpY: 470, floorDownY: 600,   // 中央床: 上(橋)=470 / 下(水没)=600（peak500より下＝沈む）
+      downTicks: 372, riseTicks: 96, upTicks: 72, fallTicks: 60,  // 約10秒周期(600tick): 奈落6.2s→上昇1.6s→滞留1.2s→下降1.0s
     },
   },
 ];
@@ -612,7 +613,6 @@ function makeMatchState(slotIndices, stageIndex) {
     if (pl.conveyor) c.conveyor = pl.conveyor;   // 毎tick押す量(+右/-左)
     if (pl.bounce) c.bounce = pl.bounce;         // トランポリン: 着地で上へ跳ねる
     if (pl.crumble) { c.crumble = true; c.crumbleState = "solid"; c.crumbleTimer = 0; }
-    if (pl.lavaFloor) c.lavaFloor = true;        // 溶岩連動の「沈む床」(stepRisingLavaがyを制御)
     return c;
   });
   // 地面の高さ（動く壁の基準）
@@ -628,17 +628,14 @@ function makeMatchState(slotIndices, stageIndex) {
   let risingLava = null;
   if (stage.risingLava) {
     const c = stage.risingLava;
-    const floorPlat = platforms.find(pl => pl.lavaFloor) || null;
     const lavaIndex = lava.length;
     lava.push({ x: c.x, y: c.restY, w: c.w, h: c.bottomY - c.restY });   // 動的な溶岩面
     risingLava = {
       x: c.x, w: c.w, restY: c.restY, peakY: c.peakY, bottomY: c.bottomY,
       downTicks: c.downTicks, riseTicks: c.riseTicks, upTicks: c.upTicks, fallTicks: c.fallTicks,
-      floorUpY: c.floorUpY, floorDownY: c.floorDownY,
       phase: "down", timer: c.downTicks, prog: 0, topY: c.restY,
-      lavaIndex, floorPlat,
+      lavaIndex,
     };
-    if (floorPlat) floorPlat.y = c.floorUpY;   // 中央床の初期位置＝橋(上)
   }
   return {
     tick: 0,
@@ -658,7 +655,7 @@ function makeMatchState(slotIndices, stageIndex) {
     wallPhase: 0,                 // 0..1 の位相（三角波）
     wallVel: stage.wallSpeed || 0,
     // ドスン風モブ（stage.mob フラグのあるステージのみ）
-    mob: stage.mob ? { x: stage.mobX || 640, y: groundY - MOB.size, vy: 0, state: "rise", timer: 0, victims: [] } : null,
+    mob: stage.mob ? { x: stage.mobX || 640, homeX: stage.mobX || 640, y: groundY - MOB.size, vy: 0, state: "rise", timer: 0, swayOff: 0, swayVel: MOB.swaySpeed, victims: [] } : null,
     // 振り子（振れる球のハザード）。調和振動で下(off=0)が最速＝本物の振り子挙動
     pendulums: (stage.pendulums || []).map(pd => {
       const om = 2 * Math.PI / (pd.period || 130);   // Math.PIは定数＝決定論的
@@ -684,16 +681,38 @@ function makeMatchState(slotIndices, stageIndex) {
 function updateMob(state, events) {
   const m = state.mob;
   if (!m) return;
-  const g = state.groundY;
+  // 左右ゆらゆら（上昇中のみ。落下/滞留/着地中はx固定でまっすぐ落ちてくる）
   if (m.state === "rise") {
-    m.y -= MOB.riseSpeed;
-    if (m.y <= MOB.topY) { m.y = MOB.topY; m.state = "fall"; m.vy = 0; events.push({ type: "mob-pop", x: m.x, y: m.y }); }
+    m.swayOff += m.swayVel;
+    if (m.swayOff > MOB.swayRange) { m.swayOff = MOB.swayRange; m.swayVel = -m.swayVel; }
+    else if (m.swayOff < -MOB.swayRange) { m.swayOff = -MOB.swayRange; m.swayVel = -m.swayVel; }
+    m.x = m.homeX + m.swayOff;
+  }
+  if (m.state === "rise") {
+    m.y -= MOB.riseSpeed;                              // ゆっくり浮上して画面外(上)へ
+    if (m.y <= MOB.topY) { m.y = MOB.topY; m.state = "top"; m.timer = MOB.topHold; events.push({ type: "mob-pop", x: m.x + MOB.size / 2, y: m.y }); }
+  } else if (m.state === "top") {
+    if (--m.timer <= 0) { m.state = "fall"; m.vy = 0; }  // 画面外で溜めてから落下
   } else if (m.state === "fall") {
     m.vy += MOB.fallGravity;
     if (m.vy > MOB.maxFall) m.vy = MOB.maxFall;
+    const prevBottom = m.y + MOB.size;
     m.y += m.vy;
-    if (m.y + MOB.size >= g) { m.y = g - MOB.size; m.vy = 0; m.state = "wait"; m.timer = MOB.waitTicks; events.push({ type: "mob-land", x: m.x, y: g }); }
-  } else { // wait
+    // 普通のキャラと同じく足場の上面へ着地（上からのみ）。溶岩は足場でないので乗らない
+    let landedY = null;
+    for (const plat of state.platforms) {
+      if (plat.crumbleState === "gone") continue;
+      if (m.x + MOB.size <= plat.x || m.x >= plat.x + plat.w) continue;
+      if (prevBottom <= plat.y && m.y + MOB.size >= plat.y) { landedY = plat.y; break; }
+    }
+    if (landedY !== null) {
+      m.y = landedY - MOB.size; m.vy = 0; m.state = "wait"; m.timer = MOB.waitTicks;
+      events.push({ type: "mob-land", x: m.x + MOB.size / 2, y: landedY });
+    } else if (m.y > H + 60) {
+      // 中央の奈落へ落ちた場合は画面外(上)へ戻して再度ゆらゆら上昇（溶岩には乗らない）
+      m.y = MOB.topY; m.state = "top"; m.timer = MOB.topHold;
+    }
+  } else { // wait（着地して少し休む）
     if (--m.timer <= 0) { m.state = "rise"; m.victims = []; }
   }
   // プレイヤーとの当たり（弾き飛ばす。プレイヤーは無敵化で多段防止）
@@ -797,13 +816,6 @@ function stepRisingLava(state) {
   const lv = state.lava[rl.lavaIndex];
   lv.y = topY;
   lv.h = rl.bottomY - topY;
-  // 連動する中央「沈む床」: prog=0で上(橋)、prog=1で下(水没)。dyに移動量を記録
-  const fp = rl.floorPlat;
-  if (fp) {
-    const ny = rl.floorUpY + (rl.floorDownY - rl.floorUpY) * prog;
-    fp.dy = ny - fp.y;
-    fp.y = ny;
-  }
 }
 
 // ワープ: 出現↔消滅を繰り返し、出現中だけ入口に触れると対のワープへ瞬間移動
@@ -898,7 +910,7 @@ function stepMatch(state, samples) {
   const carriers = ps.map(p => {
     if (!p.alive || !p.onGround) return null;
     for (const plat of state.platforms) {
-      if (plat.moveAxis === undefined && !plat.lavaFloor) continue;   // 動く床 or 溶岩連動の沈む床だけが運ぶ
+      if (plat.moveAxis === undefined) continue;   // 動く床（乗っているプレイヤーを運ぶ）だけ対象
       if (p.x >= plat.x && p.x <= plat.x + plat.w && Math.abs(p.y - plat.y) < 1.5) return plat;
     }
     return null;
@@ -907,7 +919,7 @@ function stepMatch(state, samples) {
   updateMovingPlatforms(state);
   updateWalls(state);
   updateCrumble(state);
-  if (state.risingLava) stepRisingLava(state);   // 溶岩せり上がり＋中央「沈む床」のy更新（運搬スナップ前）
+  if (state.risingLava) stepRisingLava(state);   // 溶岩せり上がりの溶岩面を更新（当たり判定より前）
   // 3) 乗っているプレイヤーを床と一緒に運ぶ。
   //    縦方向は床top(plat.y)へスナップ＝floatズレで着地判定が外れて落ちるのを防ぐ。
   for (let i = 0; i < ps.length; i++) {
