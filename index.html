@@ -3,6 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
 <title>ウチスマ！β</title>
 <style>
   html, body {
@@ -87,7 +90,7 @@
     </div>
     <div id="ol-status"></div>
     <button id="btn-close" class="secondary">閉じる（切断してローカルへ）</button>
-    <div class="ol-note">※ 通信はP2P（PeerJS）。まれに接続できないネット環境があります。<br>コードを電話・LINEなどで相手に伝えてください。</div>
+    <div class="ol-note">※ 通信はP2P（PeerJS）。まれに接続できないネット環境があります。<br>コードを電話・LINEなどで相手に伝えてください。<br>バージョン <span id="ol-ver"></span>（対戦相手と同じ版でないと接続できません。違う場合は両者ページを更新）</div>
   </div>
 </div>
 
@@ -164,6 +167,10 @@ const GUARD = {
   hitCost: 40,     // 通常攻撃を防いだ時の減少量
   breakStun: 45,   // ガードブレイク時の硬直
 };
+
+// ★オンライン同期の要: 決定論simに影響する変更(stepMatch/ステージ/物理/定数など)をしたら
+//   必ずこの版数を上げること。オンライン接続時に両者で照合し、食い違えば試合させず弾く。
+const GAME_VERSION = "0.9.0";
 
 const PLAYER_W = 36, PLAYER_H = 48;
 const STOCKS = 3;
@@ -1478,7 +1485,7 @@ function netHost() {
     const entry = { conn, idx };
     NET.conns.push(entry);
     conn.on("open", () => {
-      conn.send({ y: "welcome", idx });
+      conn.send({ y: "welcome", idx, ver: GAME_VERSION });   // 版数を通知（参加側が照合）
       NET.status = "connected"; NET.msg = ""; refreshOnlineUI();
     });
     conn.on("data", d => netHostOnData(d, entry));
@@ -1499,11 +1506,16 @@ function netJoin(code) {
   peer.on("open", () => {
     const conn = peer.connect(peerIdFor(code), { reliable: true, serialization: "json" });
     NET.hostConn = conn;
-    conn.on("open", () => { NET.status = "connected"; NET.msg = ""; refreshOnlineUI(); });
+    conn.on("open", () => {
+      conn.send({ y: "hello", ver: GAME_VERSION });   // 自分の版数をホストへ（ホスト側も照合）
+      NET.status = "connected"; NET.msg = ""; refreshOnlineUI();
+    });
     conn.on("data", netGuestOnData);
     conn.on("close", () => {
       NET.hostConn = null;
-      NET.status = "idle"; NET.msg = "ホストとの接続が切れました";
+      NET.status = "idle";
+      if (!NET._verMismatch) NET.msg = "ホストとの接続が切れました";   // 版不一致メッセージは上書きしない
+      NET._verMismatch = false;
       if (APP.mode === "online") { APP.match = null; APP.mode = "local"; APP.phase = "lobby"; openOnlineMenu(); }
       refreshOnlineUI();
     });
@@ -1514,6 +1526,16 @@ function netJoin(code) {
 // ホスト: 参加者からのデータ受信
 function netHostOnData(d, entry) {
   if (!d || !d.y) return;
+  if (d.y === "hello") {
+    // 版数照合。食い違えば相手に通知して切断（試合させない）
+    if (d.ver !== GAME_VERSION) {
+      if (entry.conn.open) entry.conn.send({ y: "verfail", host: GAME_VERSION, guest: d.ver });
+      NET.msg = "P" + (entry.idx + 1) + " は別バージョン(" + (d.ver || "?") + ")のため拒否。両者ページ更新を";
+      refreshOnlineUI();
+      setTimeout(() => { try { entry.conn.close(); } catch (e) {} }, 200);   // verfail送達を待って切断
+    }
+    return;
+  }
   if (d.y === "i") {
     if (d.g !== NET.gen) return;
     NET.buffers[d.p] && (NET.buffers[d.p][d.t] = decodeSample(d.b));
@@ -1536,14 +1558,25 @@ function netHostConnClosed(entry) {
   refreshOnlineUI();
 }
 
+// 版数不一致で接続を打ち切りロビーへ戻す（メッセージは維持）
+function netVerAbort(msg) {
+  NET.msg = msg; NET._verMismatch = true; NET.status = "idle";
+  refreshOnlineUI();
+  try { if (NET.hostConn) NET.hostConn.close(); } catch (e) {}
+}
+
 // 参加者: ホストからのデータ受信
 function netGuestOnData(d) {
   if (!d || !d.y) return;
   if (d.y === "welcome") {
+    if (d.ver !== GAME_VERSION) { netVerAbort("バージョンが違います（あなた:" + GAME_VERSION + " / ホスト:" + (d.ver || "?") + "）。両者ページを更新してください"); return; }
     NET.myIndex = d.idx;
+  } else if (d.y === "verfail") {
+    netVerAbort("バージョンが違うため接続できません（あなた:" + GAME_VERSION + " / ホスト:" + (d.host || "?") + "）。両者ページを更新してください");
   } else if (d.y === "i") {
     if (d.g === NET.gen && NET.buffers[d.p]) NET.buffers[d.p][d.t] = decodeSample(d.b);
   } else if (d.y === "start") {
+    if (d.ver && d.ver !== GAME_VERSION) { netVerAbort("バージョン不一致で開始できません。両者ページを更新してください"); return; }
     NET.gen = d.g;
     startOnlineMatch(d.st | 0, d.n | 0);
   } else if (d.y === "drop") {
@@ -1558,7 +1591,7 @@ function netHostStart() {
   if (!(NET.isHost && NET.status === "connected" && NET.conns.length >= 1)) return;
   NET.gen++;
   const n = connectedCount();
-  for (const e of NET.conns) if (e.conn.open) e.conn.send({ y: "start", g: NET.gen, st: APP.stageIndex, n });
+  for (const e of NET.conns) if (e.conn.open) e.conn.send({ y: "start", g: NET.gen, st: APP.stageIndex, n, ver: GAME_VERSION });
   startOnlineMatch(APP.stageIndex, n);
 }
 
@@ -1638,6 +1671,7 @@ const $ol = id => document.getElementById(id);
 
 function openOnlineMenu() {
   $ol("online").hidden = false;
+  const v = $ol("ol-ver"); if (v) v.textContent = GAME_VERSION;
   refreshOnlineUI();
 }
 
@@ -2886,6 +2920,12 @@ function drawLobby() {
   ctx.font = "bold 22px sans-serif";
   ctx.fillStyle = "#ffd34d";
   ctx.fillText("β版 — 身内スマッシュ", W / 2, 158);
+  // 版数（オンラインは同版どうしでないと繋がらないので常時表示）
+  ctx.font = "13px sans-serif";
+  ctx.fillStyle = "rgba(255,255,255,0.4)";
+  ctx.textAlign = "right";
+  ctx.fillText("ver " + GAME_VERSION, W - 14, 26);
+  ctx.textAlign = "center";
 
   // スロット表示
   const slotW = 250, gap = 24;
