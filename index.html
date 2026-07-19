@@ -29,19 +29,21 @@
     position: fixed;
     z-index: 7;
     transform: translate(-50%, -50%);
-    width: 300px;
-    min-height: 54px;
-    border: 2px solid #ffd34d;
-    border-radius: 9px;
+    width: 224px;
+    min-height: 40px;
+    box-sizing: border-box;
+    padding: 5px 12px;
+    border: 1.5px solid #ffd34d;
+    border-radius: 7px;
     background: #20203a;
     color: #fff;
     font-family: inherit;
-    font-size: 17px;
+    font-size: 14px;
     font-weight: 700;
     line-height: 1.2;
     letter-spacing: 0.03em;
     cursor: pointer;
-    box-shadow: 0 8px 0 rgba(10,10,22,0.65);
+    box-shadow: 0 4px 0 rgba(10,10,22,0.65);
   }
   #help-open:hover, #help-open:focus-visible {
     background: #2c2c4b;
@@ -50,13 +52,13 @@
   }
   #help-open .key {
     display: inline-block;
-    margin-right: 12px;
-    padding: 4px 8px;
+    margin-right: 8px;
+    padding: 2px 6px;
     border: 1px solid rgba(255,255,255,0.45);
-    border-bottom-width: 3px;
-    border-radius: 5px;
+    border-bottom-width: 2px;
+    border-radius: 4px;
     color: #ffd34d;
-    font-size: 12px;
+    font-size: 10px;
     vertical-align: 1px;
   }
   #help-open[hidden], #help-modal[hidden] { display: none; }
@@ -488,13 +490,24 @@ const GUARD = {
 
 // ★オンライン同期の要: 決定論simに影響する変更(stepMatch/ステージ/物理/定数など)をしたら
 //   必ずこの版数を上げること。オンライン接続時に両者で照合し、食い違えば試合させず弾く。
-const GAME_VERSION = "0.9.29";
+const GAME_VERSION = "0.9.39";
 
 const PLAYER_W = 36, PLAYER_H = 48;
 // キャラクター同士の物理衝突。複数人が同時に密集しても、反復して体の重なりを解消する。
 const BODY_COLLISION = {
   passes: 32,
   separationEpsilon: 0.01,
+};
+// 攻撃で吹き飛ばされている間だけ、全身がステージ面へ当たると反射する。
+// 通常着地は従来の操作感を維持し、キャラクター同士はこの反射の対象外。
+const BODY_BOUNCE = {
+  minNormalSpeed: 3.8,
+  restitution: 0.58,       // 面へ垂直な速度の戻り
+  tangentRetention: 0.82,  // 面に沿う勢いは少しだけ減衰
+  cooldown: 3,
+  visualTicks: 9,
+  minHitstun: 8,
+  platformThickness: 14,
 };
 const DOUBLE_JUMP_FLIP_TICKS = 30;  // 二段ジャンプ時の宙返り時間（0.5秒）
 const TAUNT_TICKS = 90;              // アピール（仰向けで足をバタバタ）の長さ（1.5秒）
@@ -609,6 +622,8 @@ const PENDULUM = { damage: 13, kbBase: 6, kbScale: 0.11, r: 20 };  // 振り子�
 const LAVA = { damage: 10, kbBase: 6, kbScale: 0.09 };         // 溶岩（触れると上へ跳ね返す）
 const WARP_CD = 30;                                            // ワープ後の再ワープ禁止tick
 const WARP_CYCLE = { on: 300, off: 210 };                     // ワープ口の出現(5s)↔消滅(3.5s)サイクル
+// 画面下端を浮遊する上向き扇風機。重力より少し強い風を連続で加え、上昇速度には上限を設ける。
+const FAN = { windWidth: 118, windTop: 155, lift: 0.58, maxRise: 4.1, housingW: 92 };
 
 const BLAST = { left: -250, right: W + 250, top: -350, bottom: H + 330 };
 
@@ -643,20 +658,22 @@ const STAGES = [
              dirt:"#4a4048", grass:"#9a8ab0", grass2:"#7a6a90", plat:"#8a7a9a", platTop:"#aa9aba" },
     platforms: [
       { x: 300, y: 600, w: 680, droppable: false, main: true },
-      { x: 360, y: 500, w: 220, droppable: true },   // 左（横重なり十分）
-      { x: 700, y: 500, w: 220, droppable: true },   // 右
-      { x: 480, y: 400, w: 320, droppable: true },   // 中央（左右と100px重なる）
-      { x: 520, y: 300, w: 240, droppable: true },   // 頂上
+      { x: 340, y: 500, w: 230, droppable: true },   // 下段: 左
+      { x: 710, y: 400, w: 230, droppable: true },   // 中段: 右
+      { x: 525, y: 300, w: 230, droppable: true },   // 最上段: 中央
     ],
-    spawns: [ {x:470,y:500}, {x:810,y:500}, {x:440,y:600}, {x:840,y:600} ],
+    spawns: [ {x:455,y:500}, {x:825,y:400}, {x:440,y:600}, {x:840,y:600} ],
+    // 画面下端を浮遊し、本体が完全に画面外へ出る幅で左右を往復する。
+    fan: { x: 640, startX: -120, y: 650, range: 760, speed: 2.6 },
   },
   {
-    // ながれの塔: 中央へ流れる地面と、逆位相で上下する壁を縦長の登り構造へ統合。
-    // 最下段だけが壁ごと左右へ動き、上空は左→右→中央の互い違い3段で登る。
+    // ながれの塔: 中央へ流れる地面と、逆位相で生える巨大タケノコを縦長の登り構造へ統合。
+    // 最下段だけがタケノコごと左右へ動き、上空は左→右→中央の互い違い3段で登る。
     name: "ながれの塔",
     theme: { sky:["#15272c","#203b40","#31565a"], mountain:"rgba(18,42,46,0.72)",
              dirt:"#3c4544", grass:"#c4a34a", grass2:"#9d8038", plat:"#657b7c", platTop:"#91aa9f",
-             wall:"#b47c42", wallTop:"#e0b56d" },
+             shoot:"#c8b84e", shootLight:"#eadb79", shootShade:"#87913d",
+             shootEdge:"#4c572c", shootSoil:"#76503a" },
     platforms: [
       { x: 340, y: 610, w: 300, droppable: false, main: true, conveyor: 2.0,
         move: { axis: "x", range: 80, speed: 0.55, dir: 1 } },
@@ -668,10 +685,10 @@ const STAGES = [
     ],
     spawns: [ {x:455,y:505}, {x:825,y:400}, {x:500,y:610}, {x:780,y:610} ],
     walls: [
-      { x: 340, w: 60, height: 90, side: "left", platformIndex: 0 },
-      { x: 880, w: 60, height: 90, side: "right", platformIndex: 1 },
+      { x: 340, w: 60, height: 90, side: "left", platformIndex: 0, kind: "bamboo-shoot" },
+      { x: 880, w: 60, height: 90, side: "right", platformIndex: 1, kind: "bamboo-shoot" },
     ],
-    wallSpeed: 0.00396,   // 旧速度0.006の66%（三角波0..1、約4.2秒で上下反転）
+    wallSpeed: 0.00396,   // 旧速度0.006の66%（三角波0..1、約4.2秒でせり上がり方向を反転）
   },
   {
     // うちゅう: 重力50%の空中島群。長い滞空でも移動距離が通常面に近づくよう横移動を抑える。
@@ -727,6 +744,7 @@ const STAGES = [
   {
     // こおり: 左右から中央へ下るV字の氷床。加速・減速・切り返しが鈍く、中央へ少し滑る。
     // 第三者ペンギンは地面と上段へ交互に現れ、警告後に腹ばいで斜面を横断する。
+    // ワープは左右の地面／左右の上段の4候補から2地点を選び、ペンギンも巻き込む。
     name: "こおり",
     icePhysics: { accel: 0.28, turnAccel: 0.18, friction: 0.972, slopeSlide: 0.035 },
     penguin: true,
@@ -739,6 +757,12 @@ const STAGES = [
       { x: 720, y: 375, w: 260, slope: -45, droppable: true },
     ],
     spawns: [ {x:280,y:530}, {x:1000,y:530}, {x:460,y:560}, {x:820,y:560} ],
+    warpCandidates: [
+      { x: 176,  y: 427, w: 48, h: 88, platformIndex: -1 },  // 左地面
+      { x: 1056, y: 427, w: 48, h: 88, platformIndex: -1 },  // 右地面
+      { x: 360,  y: 255, w: 48, h: 88, platformIndex: 2 },   // 左上段
+      { x: 872,  y: 255, w: 48, h: 88, platformIndex: 3 },   // 右上段
+    ],
   },
   {
     // 溶岩ふたご島（旧 ふたご島/うごく床/くずれ足場/振り子と溶岩 を統合）:
@@ -1125,6 +1149,10 @@ function makePlayer(slotIdx, stage) {
     warpCd: 0,                    // ワープ後クールダウン
     stepPhase: 0,                 // 足のちょこちょこアニメ位相
     hitFlash: 0,
+    stageBounceCd: 0,
+    bodyBounceTimer: 0,
+    bodyBounceNormalX: 0,
+    bodyBounceNormalY: 0,
     lastHitBy: null,                // 最後に攻撃を当てた相手（5秒以内の場外KOを撃墜として記録）
     lastHitTimer: 0,
     prev: NEUTRAL,                // 前フレーム入力（エッジ検出用・状態の一部として保持）
@@ -1151,12 +1179,13 @@ function makeMatchState(slotIndices, stageIndex) {
     if (pl.crumble) { c.crumble = true; c.crumbleState = "solid"; c.crumbleTimer = 0; }
     return c;
   });
-  // 地面の高さ（動く壁の基準）
+  // 地面の高さ（せり上がる障害物の基準）
   const mains = stage.platforms.filter(p => p.main);
   const groundY = mains.length ? Math.max(...mains.map(p => Math.max(p.y, p.y + (p.slope || 0)))) : 585;
-  // 動く壁のライブコピー
+  // せり上がる障害物のライブコピー（既存の同期形式を保つため内部名はwallsのまま）
   const walls = (stage.walls || []).map(w => ({
     x: w.x, w: w.w, height: w.height, side: w.side,
+    kind: w.kind || "wall",
     platformIndex: Number.isInteger(w.platformIndex) ? w.platformIndex : -1,
     platformOffsetX: Number.isInteger(w.platformIndex) ? w.x - stage.platforms[w.platformIndex].x : 0,
     top: groundY + 8, bottom: groundY + 40, raise: 0, dx: 0, dy: 0,
@@ -1175,6 +1204,15 @@ function makeMatchState(slotIndices, stageIndex) {
       lavaIndex,
     };
   }
+  const fan = stage.fan ? {
+    x: Number.isFinite(stage.fan.startX) ? stage.fan.startX : stage.fan.x,
+    y: stage.fan.y, baseX: stage.fan.x,
+    range: stage.fan.range, speed: stage.fan.speed, dir: stage.fan.dir || 1, dx: 0,
+    windWidth: stage.fan.windWidth || FAN.windWidth,
+    windTop: stage.fan.windTop || FAN.windTop,
+    lift: stage.fan.lift || FAN.lift,
+    maxRise: stage.fan.maxRise || FAN.maxRise,
+  } : null;
   const state = {
     tick: 0,
     countdown: COUNTDOWN_TICKS,
@@ -1189,7 +1227,7 @@ function makeMatchState(slotIndices, stageIndex) {
     stage,
     platforms,                    // ライブな足場（動く床を含む）
     groundY,                      // 地面の高さ（壁の基準）
-    walls,                        // 動く壁（ライブ）
+    walls,                        // せり上がる障害物（ライブ）
     wallPhase: 0,                 // 0..1 の位相（三角波）
     wallVel: stage.wallSpeed || 0,
     // ドスン風モブ（stage.mob フラグのあるステージのみ）
@@ -1197,7 +1235,7 @@ function makeMatchState(slotIndices, stageIndex) {
     // 氷ステージの第三者ペンギン。最初は左側から現れ、その後は左右交互に突進する。
     penguin: stage.penguin ? {
       x: 66, y: groundY, dir: 1, state: "wait", timer: PENGUIN.firstWait,
-      passes: 0, platformIndex: -1, lane: "main", airborne: false, vy: 0,
+      passes: 0, platformIndex: -1, lane: "main", airborne: false, vy: 0, warpCd: 0,
     } : null,
     // 振り子（振れる球のハザード）。調和振動で下(off=0)が最速＝本物の振り子挙動
     pendulums: (stage.pendulums || []).map(pd => {
@@ -1211,7 +1249,11 @@ function makeMatchState(slotIndices, stageIndex) {
     }),
     lava,                         // 溶岩の矩形（静的＋せり上がり動的）
     risingLava,                   // せり上がり溶岩の状態（無いステージはnull）
-    warpCandidates: (stage.warpCandidates || []).map(w => ({ x: w.x, y: w.y, w: w.w, h: w.h })),
+    fan,                          // 画面下端を浮遊する上向き扇風機（無いステージはnull）
+    warpCandidates: (stage.warpCandidates || []).map(w => ({
+      x: w.x, y: w.y, w: w.w, h: w.h,
+      platformIndex: Number.isInteger(w.platformIndex) ? w.platformIndex : null,
+    })),
     warpSelection: [],             // 現在選ばれている候補番号2つ
     warps: [],                     // warpCandidatesから作る現在の一対
     warpOn: true, warpTimer: WARP_CYCLE.on,   // ワープ口の出現/消滅サイクル
@@ -1342,6 +1384,7 @@ function preparePenguinEntry(state, penguin) {
   penguin.y = penguinSurfaceYAt(state, penguin, penguin.x);
   penguin.airborne = false;
   penguin.vy = 0;
+  penguin.warpCd = 0;
 }
 
 // プレイヤーの足元が、下降しながら移動中のペンギン上面を横切ったかを連続判定する。
@@ -1587,7 +1630,8 @@ function selectWarpPair(state) {
   state.warpSelection = pair.slice();
   state.warps = pair.map((candidateIndex, i) => {
     const w = candidates[candidateIndex];
-    return { x: w.x, y: w.y, w: w.w, h: w.h, link: 1 - i, candidateIndex };
+    return { x: w.x, y: w.y, w: w.w, h: w.h, link: 1 - i, candidateIndex,
+      platformIndex: w.platformIndex };
   });
 }
 
@@ -1618,6 +1662,30 @@ function updateWarps(state, events) {
         break;
       }
     }
+  }
+
+  // 氷ステージのペンギンも、突進中に偶然ワープへ入れば同じ対の出口へ運ぶ。
+  // 出口の足場情報へ乗り換えるため、上段へ出てもそのまま横方向の勢いを保って走り続ける。
+  const penguin = state.penguin;
+  if (!penguin || penguin.state !== "charge") return;
+  if (penguin.warpCd > 0) { penguin.warpCd--; return; }
+  for (let i = 0; i < state.warps.length; i++) {
+    const w = state.warps[i];
+    if (!rectsOverlap(w.x, w.y, w.w, w.h,
+                      penguin.x - PENGUIN.width / 2, penguin.y - PENGUIN.chargeHeight,
+                      PENGUIN.width, PENGUIN.chargeHeight)) continue;
+    const dest = state.warps[w.link];
+    const fromX = penguin.x, fromY = penguin.y - PENGUIN.chargeHeight / 2;
+    penguin.x = dest.x + dest.w / 2;
+    penguin.y = dest.y + dest.h - 2;
+    penguin.platformIndex = Number.isInteger(dest.platformIndex) ? dest.platformIndex : -1;
+    penguin.lane = penguin.platformIndex >= 0 ? "upper" : "main";
+    penguin.airborne = false;
+    penguin.vy = 0;
+    penguin.warpCd = WARP_CD;
+    events.push({ type: "penguin-warp", fromX, fromY,
+      x: penguin.x, y: penguin.y - PENGUIN.chargeHeight / 2, dir: penguin.dir });
+    break;
   }
 }
 
@@ -1658,6 +1726,37 @@ function updateMovingPlatforms(state) {
   }
 }
 
+// 画面下端の扇風機を1tick更新。画面外の端で向きを反転し、オンラインでも同じ軌道にする。
+function updateFan(state) {
+  const fan = state.fan;
+  if (!fan) return;
+  const oldX = fan.x;
+  fan.x += fan.speed * fan.dir;
+  const left = fan.baseX - fan.range;
+  const right = fan.baseX + fan.range;
+  if (fan.x >= right) { fan.x = right; fan.dir = -1; }
+  else if (fan.x <= left) { fan.x = left; fan.dir = 1; }
+  fan.dx = fan.x - oldX;
+}
+
+// 風の柱に体が触れている間だけ上向きの加速度を加える。足場上からも自然に浮き、
+// 最大上昇速度を超えないため、風だけで画面外へ撃墜されることはない。
+function applyFanWind(state, player) {
+  const fan = state.fan;
+  if (!fan || !player.alive || player.respawning) return false;
+  const halfWind = fan.windWidth / 2;
+  const overlapsX = player.x + pHW(player) > fan.x - halfWind
+    && player.x - pHW(player) < fan.x + halfWind;
+  const overlapsY = player.y >= fan.windTop && player.y - pH(player) <= fan.y;
+  if (!overlapsX || !overlapsY) return false;
+  player.onGround = false;
+  player.crouching = false;
+  player.guarding = false;
+  // 攻撃などですでに上限より速く飛んでいる場合、その勢いを風が弱めることはしない。
+  if (player.vy > -fan.maxRise) player.vy = Math.max(player.vy - fan.lift, -fan.maxRise);
+  return true;
+}
+
 // 決定論的乱数（xorshift32）。ビット演算のみ＝全環境で同一結果。[0,1) を返す。
 function rngNext(state) {
   let x = state.rng | 0;
@@ -1683,6 +1782,90 @@ function itemArcFlightTicks(startY, startVy, targetY) {
 
 function rectsOverlap(ax, ay, aw, ah, bx, by, bw, bh) {
   return ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by;
+}
+
+// 面の外向き法線へ、ステージ側の移動速度を差し引いた相対速度で反射する。
+// hitstun中かつ十分な衝突速度がある場合だけ成立するため、通常移動・通常着地は変わらない。
+function applyStageBodyBounce(player, normalX, normalY, events, contactX, contactY,
+                              surfaceVx = 0, surfaceVy = 0) {
+  if (!player.alive || player.hitstun <= 0 || player.stageBounceCd > 0) return false;
+  const normalLength = Math.sqrt(normalX * normalX + normalY * normalY) || 1;
+  const nx = normalX / normalLength, ny = normalY / normalLength;
+  const relativeVx = player.vx - surfaceVx, relativeVy = player.vy - surfaceVy;
+  const normalSpeed = relativeVx * nx + relativeVy * ny;
+  if (normalSpeed > -BODY_BOUNCE.minNormalSpeed) return false;
+
+  const tx = -ny, ty = nx;
+  const tangentSpeed = relativeVx * tx + relativeVy * ty;
+  const reboundNormal = -normalSpeed * BODY_BOUNCE.restitution;
+  const retainedTangent = tangentSpeed * BODY_BOUNCE.tangentRetention;
+  player.vx = surfaceVx + tx * retainedTangent + nx * reboundNormal;
+  player.vy = surfaceVy + ty * retainedTangent + ny * reboundNormal;
+  player.onGround = false;
+  player.crouching = false;
+  player.tauntTimer = 0;
+  player.stageBounceCd = BODY_BOUNCE.cooldown;
+  player.bodyBounceTimer = BODY_BOUNCE.visualTicks;
+  player.bodyBounceNormalX = nx;
+  player.bodyBounceNormalY = ny;
+  player.hitstun = Math.max(player.hitstun, BODY_BOUNCE.minHitstun);
+  events.push({ type: "body-bounce", x: contactX, y: contactY, nx, ny,
+    speed: -normalSpeed, slot: player.slot });
+  return true;
+}
+
+// 薄い足場の下面と、足場・地面の左右端へ全身で衝突した場合を連続判定する。
+// 上面は既存の精密な斜面着地処理側で反射させる。
+function resolveKnockbackPlatformBody(player, prevX, prevY, platforms, events) {
+  if (player.hitstun <= 0 || player.stageBounceCd > 0) return false;
+  const hw = pHW(player), height = pH(player);
+  const currentTop = player.y - height;
+  const previousTop = prevY - height;
+
+  for (const platform of platforms) {
+    if (platform.crumbleState === "gone") continue;
+    if (platform.droppable && player.dropTimer > 0) continue;
+    const surfaceVx = platform.dx || 0, surfaceVy = platform.dy || 0;
+
+    // 薄い足場の下面。斜面では下面も同じ傾きとして、下向きの法線へ反射する。
+    if (!platform.main && player.vy < surfaceVy) {
+      const overlapsNow = player.x + hw > platform.x && player.x - hw < platform.x + platform.w;
+      const overlapsBefore = prevX + hw > platform.x && prevX - hw < platform.x + platform.w;
+      if (overlapsNow && overlapsBefore) {
+        const slope = (platform.slope || 0) / platform.w;
+        const previousBottom = platformYAt(platform, prevX) + BODY_BOUNCE.platformThickness;
+        const currentBottom = platformYAt(platform, player.x) + BODY_BOUNCE.platformThickness;
+        if (previousTop >= previousBottom - 1.5 && currentTop <= currentBottom + 1.5) {
+          player.y = currentBottom + height;
+          return applyStageBodyBounce(player, -slope, 1, events, player.x, currentBottom,
+            surfaceVx, surfaceVy);
+        }
+      }
+    }
+
+    // 左右端。薄い足場は14pxの縁、main地面は画面下まで続く壁として扱う。
+    const leftSurface = platformYAt(platform, platform.x);
+    const rightSurface = platformYAt(platform, platform.x + platform.w);
+    const previousLeft = prevX - hw, previousRight = prevX + hw;
+    const currentLeft = player.x - hw, currentRight = player.x + hw;
+    const overlapsLeftEdgeY = player.y > leftSurface
+      && currentTop < (platform.main ? H + 200 : leftSurface + BODY_BOUNCE.platformThickness);
+    const overlapsRightEdgeY = player.y > rightSurface
+      && currentTop < (platform.main ? H + 200 : rightSurface + BODY_BOUNCE.platformThickness);
+
+    if (overlapsLeftEdgeY && previousRight <= platform.x + 1.5 && currentRight >= platform.x) {
+      player.x = platform.x - hw;
+      return applyStageBodyBounce(player, -1, 0, events, platform.x, player.y - height / 2,
+        surfaceVx, surfaceVy);
+    }
+    if (overlapsRightEdgeY && previousLeft >= platform.x + platform.w - 1.5
+        && currentLeft <= platform.x + platform.w) {
+      player.x = platform.x + platform.w + hw;
+      return applyStageBodyBounce(player, 1, 0, events, platform.x + platform.w,
+        player.y - height / 2, surfaceVx, surfaceVy);
+    }
+  }
+  return false;
 }
 
 // 足元が床・壁上面に接しているかを、onGroundとは別に幾何判定する。
@@ -1847,6 +2030,7 @@ function stepMatch(state, samples) {
   });
   // 2) 床を動かす（決定論的）
   updateMovingPlatforms(state);
+  updateFan(state);
   updateWalls(state);
   updateCrumble(state);
   if (state.risingLava) stepRisingLava(state);   // 溶岩せり上がりの溶岩面を更新（当たり判定より前）
@@ -1878,6 +2062,8 @@ function stepMatch(state, samples) {
     if (p.guardBreakFlash > 0) p.guardBreakFlash--;
     if (p.itemGetFlash > 0) p.itemGetFlash--;
     if (p.tauntTimer > 0) p.tauntTimer--;
+    if (p.stageBounceCd > 0) p.stageBounceCd--;
+    if (p.bodyBounceTimer > 0) p.bodyBounceTimer--;
     if (p.itemTimer > 0) { p.itemTimer--; if (p.itemTimer === 0) p.itemType = null; }
     if (p.lastHitTimer > 0) {
       p.lastHitTimer--;
@@ -2021,6 +2207,9 @@ function stepMatch(state, samples) {
       if (p.vy > cap) p.vy = cap;
     }
 
+    // 「とう（縦長）」の移動扇風機。試合開始前と決着演出中は風で位置を変えない。
+    if (!inCountdown && !state.ending) applyFanWind(state, p);
+
     // --- 攻撃 / 3段階チャージ ---
     // 50%未満で離すと通常、50〜99%で離すと中間溜め、2秒でフルチャージが自動発動。
     // ガード中・攻撃硬直中はチャージしない。
@@ -2082,12 +2271,17 @@ function stepMatch(state, samples) {
             p.vy *= ceiling.breakVelocityRetain;
           } else {
             p.y = ceilingBottom + pH(p);
-            p.vy = 0;
-            events.push({ type: "ceiling-hit", x: p.x, y: ceilingBottom, slot: p.slot, impactSpeed });
+            if (!applyStageBodyBounce(p, 0, 1, events, p.x, ceilingBottom)) {
+              p.vy = 0;
+              events.push({ type: "ceiling-hit", x: p.x, y: ceilingBottom, slot: p.slot, impactSpeed });
+            }
           }
         }
       }
     }
+
+    // 上面以外（薄い足場の下面・全足場の左右端）へ頭や胴体が当たった場合の反射。
+    resolveKnockbackPlatformBody(p, prevX, prevY, state.platforms, events);
 
     if (p.vy >= 0) {
       let landed = false, bounced = false;
@@ -2114,6 +2308,9 @@ function stepMatch(state, samples) {
             if (!inCountdown && !state.ending) p.highlights.bounces++;
             p.vy = -plat.bounce; bounced = true; p.airJumps = PHYS.airJumps;
             events.push({ type: "bounce", x: p.x, y: surfaceY, px: plat.x, pw: plat.w, strength: plat.bounce });
+          } else if (applyStageBodyBounce(p, (plat.slope || 0) / plat.w, -1, events,
+                                         p.x, surfaceY, plat.dx || 0, plat.dy || 0)) {
+            bounced = true;
           } else {
             p.vy = 0; landed = true;
             if (plat.crumble && plat.crumbleState === "solid") { plat.crumbleState = "crack"; plat.crumbleTimer = CRUMBLE.crackTicks; }
@@ -2128,8 +2325,12 @@ function stepMatch(state, samples) {
           if (p.x + pHW(p) <= w.x || p.x - pHW(p) >= w.x + w.w) continue;
           if (prevY <= w.top && p.y >= w.top) {
             p.y = w.top;
-            p.vy = 0;
-            landed = true;
+            if (applyStageBodyBounce(p, 0, -1, events, p.x, w.top, w.dx || 0, w.dy || 0)) {
+              bounced = true;
+            } else {
+              p.vy = 0;
+              landed = true;
+            }
             break;
           }
         }
@@ -2176,8 +2377,15 @@ function stepMatch(state, samples) {
         if (pr > w.x && pl < w.x + w.w && pb > w.top && pt < w.bottom) {
           const pushL = pr - w.x;                  // 左へ出る量
           const pushR = (w.x + w.w) - pl;          // 右へ出る量
-          if (pushL < pushR) { p.x -= pushL; if (p.vx > 0) p.vx = 0; }
-          else { p.x += pushR; if (p.vx < 0) p.vx = 0; }
+          if (pushL < pushR) {
+            p.x -= pushL;
+            if (!applyStageBodyBounce(p, -1, 0, events, w.x, p.y - pH(p) / 2,
+                                      w.dx || 0, w.dy || 0) && p.vx > 0) p.vx = 0;
+          } else {
+            p.x += pushR;
+            if (!applyStageBodyBounce(p, 1, 0, events, w.x + w.w, p.y - pH(p) / 2,
+                                      w.dx || 0, w.dy || 0) && p.vx < 0) p.vx = 0;
+          }
         }
       }
     }
@@ -2431,6 +2639,8 @@ function stepMatch(state, samples) {
         p.balloonFuel = BALLOON.fuel; p.ballooning = false;                // 風船も復活で回復
         p.crouching = false; p.tauntTimer = 0;
         p.warpCd = 0;
+        p.stageBounceCd = 0; p.bodyBounceTimer = 0;
+        p.bodyBounceNormalX = 0; p.bodyBounceNormalY = 0;
         p.airJumps = PHYS.airJumps;
         p.invuln = RESPAWN_INVULN;
         p.respawning = true;                   // 復活風船でふわふわ降下
@@ -2622,6 +2832,16 @@ const APP = {
 };
 window.APP = APP;  // デバッグ用に公開
 
+// 試合画面を直接開くQA URLにも通常試合と同じ入力スロットを用意する。
+// これがないとupdateMatchが入力元を参照した瞬間に止まり、動く演出を確認できない。
+function attachPreviewInputs(previewMatch) {
+  APP.slots = Array(4).fill(null);
+  for (const player of previewMatch.players) {
+    APP.slots[player.slot] = { source: { sample: () => NEUTRAL }, cpu: true };
+  }
+  APP.soloSlot = -1;
+}
+
 // 結果画面を直接確認するQA用URL（?preview=result）。通常起動には一切影響しない。
 // 実際と同じbuildResultInfo/drawResultを通すため、称号や4人分の表が崩れていないか確認できる。
 function applyResultPreviewFromUrl() {
@@ -2653,6 +2873,90 @@ function applyResultPreviewFromUrl() {
   APP.phase = "result";
 }
 applyResultPreviewFromUrl();
+
+// ワープ意匠だけを即座に確認するQA用URL（?preview=warp）。ロビー操作なしで実戦描画を開く。
+function applyWarpPreviewFromUrl() {
+  const params = new URLSearchParams(location.search);
+  if (params.get("preview") !== "warp") return;
+  const previewMatch = makeMatchState([0, 1, 2, 3], APP.stageIndex);
+  previewMatch.countdown = 0;
+  previewMatch.tick = COUNTDOWN_TICKS + 60;          // 「GO!」表示を終え、ワープ本体を見やすくする
+  previewMatch.itemTimer = 9999;
+  for (const player of previewMatch.players) player.invuln = 9999;
+  attachPreviewInputs(previewMatch);
+  APP.match = previewMatch;
+  APP.phase = "match";
+}
+applyWarpPreviewFromUrl();
+
+// 全身バウンドのQA用URL（?preview=bounce）。P1を吹き飛び状態で足場へ落とし、反射を即確認できる。
+function applyBodyBouncePreviewFromUrl() {
+  const params = new URLSearchParams(location.search);
+  if (params.get("preview") !== "bounce") return;
+  const previewMatch = makeMatchState([0, 1], APP.stageIndex);
+  previewMatch.countdown = 0;
+  previewMatch.tick = COUNTDOWN_TICKS + 60;
+  previewMatch.itemTimer = 9999;
+  const player = previewMatch.players[0];
+  player.x = 350;
+  player.y = 350;
+  player.vx = 3;
+  player.vy = 10;
+  player.hitstun = 300;
+  player.invuln = 300;
+  player.damage = 80;
+  player.onGround = false;
+  const observer = previewMatch.players[1];
+  observer.x = 900;
+  observer.y = platformYAt(previewMatch.platforms.find(platform => platform.main), observer.x);
+  observer.vx = 0; observer.vy = 0; observer.onGround = true; observer.invuln = 9999;
+  attachPreviewInputs(previewMatch);
+  APP.match = previewMatch;
+  APP.phase = "match";
+}
+applyBodyBouncePreviewFromUrl();
+
+// 地面から生えるタケノコのQA用URL（?preview=sprout）。ロビー操作なしで実戦中の動きを確認する。
+function applyBambooShootPreviewFromUrl() {
+  const params = new URLSearchParams(location.search);
+  if (params.get("preview") !== "sprout" || !STAGES[APP.stageIndex].walls?.length) return;
+  const previewMatch = makeMatchState([0, 1], APP.stageIndex);
+  previewMatch.countdown = 0;
+  previewMatch.tick = COUNTDOWN_TICKS + 60;
+  previewMatch.itemTimer = 9999;
+  previewMatch.wallPhase = 0.62;
+  previewMatch.wallVel = previewMatch.stage.wallSpeed || 0;
+  updateWalls(previewMatch);
+  for (const player of previewMatch.players) player.invuln = 9999;
+  attachPreviewInputs(previewMatch);
+  APP.match = previewMatch;
+  APP.phase = "match";
+}
+applyBambooShootPreviewFromUrl();
+
+// 移動扇風機のQA用URL（?preview=fan）。P1を風の中央へ置き、上昇をすぐ確認できる。
+function applyFanPreviewFromUrl() {
+  const params = new URLSearchParams(location.search);
+  if (params.get("preview") !== "fan" || !STAGES[APP.stageIndex].fan) return;
+  const previewMatch = makeMatchState([0, 1], APP.stageIndex);
+  previewMatch.countdown = 0;
+  previewMatch.tick = COUNTDOWN_TICKS + 60;
+  previewMatch.itemTimer = 9999;
+  previewMatch.fan.x = 340;   // 画面外スタートでは確認しづらいため、QAだけ地面上の左端寄りから始める
+  const player = previewMatch.players[0];
+  player.x = previewMatch.fan.x;
+  player.y = previewMatch.groundY;
+  player.vx = 0; player.vy = 0; player.onGround = true; player.invuln = 9999;
+  const observer = previewMatch.players[1];
+  const observerPlatform = previewMatch.platforms.find(platform => !platform.main);
+  observer.x = observerPlatform.x + observerPlatform.w / 2;
+  observer.y = observerPlatform.y;
+  observer.vx = 0; observer.vy = 0; observer.onGround = true; observer.invuln = 9999;
+  attachPreviewInputs(previewMatch);
+  APP.match = previewMatch;
+  APP.phase = "match";
+}
+applyFanPreviewFromUrl();
 
 /* ==================== オンライン対戦（2〜4人・入力同期lockstep） ====================
  * 方式: delay-based lockstep
@@ -3583,10 +3887,34 @@ function handleEvents(events) {
       for (let k = 0; k < 14; k++) {
         fx.particles.push({ x: ev.x, y: ev.y, vx: (Math.random() - 0.5) * 7, vy: -(Math.random() * 7 + 2), life: 16 + Math.random() * 10, size: 2 + Math.random() * 3, color: Math.random() < 0.5 ? "#ff7a2a" : "#ffd34d" });
       }
-    } else if (ev.type === "warp") {
+    } else if (ev.type === "warp" || ev.type === "penguin-warp") {
+      if (ev.type === "penguin-warp") {
+        fx.shake = Math.max(fx.shake, 4);
+        for (let k = 0; k < 10; k++) {
+          const ang = Math.random() * Math.PI * 2, sp = 1 + Math.random() * 4;
+          fx.particles.push({ x: ev.fromX, y: ev.fromY, vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp,
+            life: 12 + Math.random() * 7, size: 2 + Math.random() * 2, color: "#dff9ff" });
+        }
+      }
       for (let k = 0; k < 14; k++) {
         const ang = Math.random() * Math.PI * 2, sp = 1 + Math.random() * 5;
-        fx.particles.push({ x: ev.x, y: ev.y, vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp, life: 14 + Math.random() * 8, size: 2 + Math.random() * 2, color: "#8fe3ff" });
+        fx.particles.push({ x: ev.x, y: ev.y, vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp,
+          life: 14 + Math.random() * 8, size: 2 + Math.random() * 2,
+          color: ev.type === "penguin-warp" ? "#dff9ff" : "#8fe3ff" });
+      }
+    } else if (ev.type === "body-bounce") {
+      fx.shake = Math.max(fx.shake, Math.min(7, 1.5 + ev.speed * 0.22));
+      const tx = -ev.ny, ty = ev.nx;
+      for (let k = 0; k < 12; k++) {
+        const spread = (Math.random() - 0.5) * Math.min(9, ev.speed * 0.8);
+        const lift = 1.5 + Math.random() * 3.5;
+        fx.particles.push({
+          x: ev.x + tx * spread, y: ev.y + ty * spread,
+          vx: tx * spread * 0.25 + ev.nx * lift,
+          vy: ty * spread * 0.25 + ev.ny * lift,
+          life: 12 + Math.random() * 8, size: 2 + Math.random() * 2.5,
+          color: k % 3 === 0 ? COLORS[ev.slot] : "#eefcff",
+        });
       }
     } else if (ev.type === "bounce") {
       // トランポリンをビヨンと揺らす（床xで管理、時間経過で減衰振動）
@@ -3921,32 +4249,80 @@ function drawLavaZones(lava) {
   }
 }
 
-// ワープ口。出現中は光る、消滅中は薄いゴースト＋もうすぐ出るとき点滅
+// ワープ口。黒い空洞＋反転回転する二色の切れ目で「対」を表し、派手な発光に頼らず視認させる。
+// 消滅中も輪郭の名残を残し、再出現直前は切れ目が集まる動きで予告する。
 function drawWarps(warps, warpOn, warpTimer) {
   const now = performance.now();
-  const cols = ["#42d9ff", "#c86bff", "#ffd34d", "#3ee657"];
   const soon = !warpOn && warpTimer <= 45;          // もうすぐ出現（点滅で予告）
-  const blink = soon ? (Math.floor(now / 120) % 2 === 0) : false;
+  const blink = soon ? (0.55 + 0.35 * (0.5 + 0.5 * Math.sin(now / 70))) : 0;
+  const accents = ["#63e5ef", "#ff7a9d"];          // 氷・サーカス双方で沈まない寒色＋暖色
   for (let i = 0; i < warps.length; i++) {
-    const w = warps[i], c = cols[Math.floor(i / 2) % cols.length];
+    const w = warps[i];
     const cx = w.x + w.w / 2, cy = w.y + w.h / 2;
+    const direction = i % 2 === 0 ? 1 : -1;          // 対の出口は逆回転
+    const phase = direction * now / 820 + i * Math.PI;
+    const breath = 1 + Math.sin(now / 420 + i * Math.PI) * 0.025;
+    const rx = w.w * 0.46 * breath, ry = w.h * 0.48 * breath;
     ctx.save();
+    ctx.translate(0.5, 0.5);                         // 細線のにじみを抑える
+    ctx.lineCap = "round";
     if (warpOn) {
-      ctx.strokeStyle = c; ctx.lineWidth = 3;
-      for (let r = 0; r < 3; r++) {
-        const rr = 1 - ((now / 700 + r / 3) % 1);
-        ctx.globalAlpha = rr * 0.8;
-        ctx.beginPath(); ctx.ellipse(cx, cy, (w.w / 2) * rr, (w.h / 2) * rr, 0, 0, Math.PI * 2); ctx.stroke();
+      // 中央は「光の板」ではなく奥行きのある空洞。縁だけを明るくしてキャラクターを邪魔しない。
+      const voidGradient = ctx.createRadialGradient(cx, cy, 2, cx, cy, ry);
+      voidGradient.addColorStop(0, "rgba(4,7,18,0.92)");
+      voidGradient.addColorStop(0.64, "rgba(9,14,30,0.78)");
+      voidGradient.addColorStop(1, "rgba(18,28,48,0.22)");
+      ctx.fillStyle = voidGradient;
+      ctx.beginPath(); ctx.ellipse(cx, cy, rx * 0.82, ry * 0.9, 0, 0, Math.PI * 2); ctx.fill();
+
+      // 白い細輪を土台にし、二色の短い弧がゆっくり反転回転する。
+      ctx.globalAlpha = 0.72;
+      ctx.strokeStyle = "#eefcff"; ctx.lineWidth = 1.35;
+      ctx.beginPath(); ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2); ctx.stroke();
+      for (let segment = 0; segment < 4; segment++) {
+        const start = phase + segment * Math.PI / 2;
+        ctx.globalAlpha = segment % 2 === 0 ? 0.98 : 0.82;
+        ctx.strokeStyle = accents[(segment + i) % accents.length];
+        ctx.lineWidth = segment % 2 === 0 ? 3.8 : 2.7;
+        ctx.beginPath();
+        ctx.ellipse(cx, cy, rx, ry, 0, start, start + direction * Math.PI * 0.3, direction < 0);
+        ctx.stroke();
       }
-      ctx.globalAlpha = 1; ctx.strokeStyle = c; ctx.lineWidth = 2.5;
-      ctx.beginPath(); ctx.ellipse(cx, cy, w.w / 2, w.h / 2, 0, 0, Math.PI * 2); ctx.stroke();
+
+      // 小さな粒が外周から中心へ吸い込まれ、触れると移動する場所だと伝える。
+      for (let dot = 0; dot < 4; dot++) {
+        const t = (now / 980 + dot / 4 + i * 0.11) % 1;
+        const angle = phase * 0.55 + dot * Math.PI / 2;
+        const inward = 1 - t;
+        const dx = Math.cos(angle) * rx * 0.62 * inward;
+        const dy = Math.sin(angle) * ry * 0.62 * inward;
+        ctx.globalAlpha = Math.sin(Math.PI * t) * 0.85;
+        ctx.fillStyle = accents[(dot + i) % accents.length];
+        ctx.beginPath(); ctx.arc(cx + dx, cy + dy, 1.5 + t * 1.2, 0, Math.PI * 2); ctx.fill();
+      }
+
+      // 足元の短い受け線で、当たり判定の底をさりげなく示す。
+      ctx.globalAlpha = 0.58;
+      ctx.strokeStyle = "#eefcff"; ctx.lineWidth = 1.4;
+      ctx.beginPath(); ctx.moveTo(cx - rx * 0.42, cy + ry + 4); ctx.lineTo(cx + rx * 0.42, cy + ry + 4); ctx.stroke();
     } else {
-      // 消滅中: 薄い破線のゴースト（予告点滅時は少し濃く）
-      ctx.globalAlpha = blink ? 0.5 : 0.18;
-      ctx.strokeStyle = c; ctx.lineWidth = 2; ctx.setLineDash([5, 5]);
-      ctx.beginPath(); ctx.ellipse(cx, cy, w.w / 2, w.h / 2, 0, 0, Math.PI * 2); ctx.stroke();
+      // 消滅中: 薄い破線の輪郭。再出現直前だけ二色の四隅が脈打つ。
+      ctx.globalAlpha = soon ? blink : 0.16;
+      ctx.strokeStyle = "#dff8ff"; ctx.lineWidth = 1.5; ctx.setLineDash([3, 7]);
+      ctx.beginPath(); ctx.ellipse(cx, cy, rx, ry, 0, phase * 0.18, phase * 0.18 + Math.PI * 2); ctx.stroke();
       ctx.setLineDash([]);
+      if (soon) {
+        for (let mark = 0; mark < 4; mark++) {
+          const angle = mark * Math.PI / 2 + Math.PI / 4;
+          ctx.globalAlpha = blink;
+          ctx.fillStyle = accents[(mark + i) % accents.length];
+          ctx.beginPath();
+          ctx.arc(cx + Math.cos(angle) * rx, cy + Math.sin(angle) * ry, 2.2, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
     }
+    ctx.lineCap = "butt";
     ctx.restore();
   }
 }
@@ -3964,10 +4340,164 @@ function drawPendulums(pendulums) {
   }
 }
 
-// 動く壁を描画（地面から上に出ている部分だけ。下がりきると見えない）
+// 画面下端を浮遊する上向き扇風機。風そのものは描かず、送風口・回転羽根と
+// キャラクターの上昇だけで、見えない上向きの力を表現する。
+function drawFan(fan, theme, tick = 0) {
+  if (!fan) return;
+  const housingW = FAN.housingW;
+  const drawY = fan.y + Math.sin(tick * 0.055) * 3;
+  ctx.save();
+
+  // 本体と一緒にゆっくり上下する影で、地面に固定されていないことを示す。
+  ctx.fillStyle = "rgba(5,10,16,0.28)";
+  ctx.beginPath(); ctx.ellipse(fan.x, drawY + 51, 42, 5, 0, 0, Math.PI * 2); ctx.fill();
+
+  // 上向きの送風口。
+  ctx.fillStyle = "rgba(16,28,34,0.95)";
+  roundRect(fan.x - housingW / 2, drawY - 3, housingW, 17, 6); ctx.fill();
+  ctx.strokeStyle = "rgba(191,220,219,0.72)"; ctx.lineWidth = 2;
+  roundRect(fan.x - housingW / 2, drawY - 3, housingW, 17, 6); ctx.stroke();
+  for (let x = fan.x - housingW / 2 + 12; x <= fan.x + housingW / 2 - 12; x += 12) {
+    ctx.beginPath(); ctx.moveTo(x, drawY); ctx.lineTo(x, drawY + 10); ctx.stroke();
+  }
+
+  // 浮遊本体と回転羽根。
+  ctx.fillStyle = "rgba(28,48,56,0.97)";
+  roundRect(fan.x - 38, drawY + 7, 76, 36, 9); ctx.fill();
+  ctx.strokeStyle = theme.platTop || "#a9c3c4"; ctx.lineWidth = 2.5;
+  roundRect(fan.x - 38, drawY + 7, 76, 36, 9); ctx.stroke();
+  ctx.save();
+  ctx.translate(fan.x, drawY + 25);
+  ctx.rotate(tick * 0.22);
+  ctx.fillStyle = "rgba(188,224,220,0.78)";
+  for (let i = 0; i < 4; i++) {
+    ctx.rotate(Math.PI / 2);
+    ctx.beginPath();
+    ctx.moveTo(3, 0);
+    ctx.quadraticCurveTo(13, -6, 18, 1);
+    ctx.quadraticCurveTo(10, 6, 3, 4);
+    ctx.closePath(); ctx.fill();
+  }
+  ctx.fillStyle = "#d8b95f";
+  ctx.beginPath(); ctx.arc(0, 0, 5, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+  ctx.restore();
+}
+
+function fanSnapshot(stage) {
+  if (!stage.fan) return null;
+  return {
+    x: stage.fan.x, y: stage.fan.y, baseX: stage.fan.x,
+    range: stage.fan.range, speed: stage.fan.speed, dir: 1, dx: stage.fan.speed,
+    windWidth: stage.fan.windWidth || FAN.windWidth,
+    windTop: stage.fan.windTop || FAN.windTop,
+    lift: stage.fan.lift || FAN.lift,
+    maxRise: stage.fan.maxRise || FAN.maxRise,
+  };
+}
+
+// 皮が何層にも重なるタケノコ。固定サイズの本体を地面でクリップし、
+// 形が伸びるのではなく「地中から丸ごと生えてくる」ように見せる。
+function drawRisingBambooShoot(w, groundY, theme) {
+  const fullH = w.height || 90;
+  const centerX = w.x + w.w / 2;
+  const halfW = w.w / 2 - 3;
+  const topY = w.top;
+  const baseY = topY + fullH;
+  const lean = w.side === "right" ? -2 : 2;
+
+  ctx.save();
+  // 地面の盛り上がりと、上昇時に跳ねる小さな土。
+  ctx.fillStyle = theme.shootSoil || "#76503a";
+  ctx.beginPath(); ctx.ellipse(centerX, groundY + 1, w.w * 0.55, 7, 0, 0, Math.PI * 2); ctx.fill();
+  if ((w.dy || 0) < -0.05) {
+    ctx.globalAlpha = 0.72;
+    for (const side of [-1, 1]) {
+      ctx.beginPath();
+      ctx.arc(centerX + side * (halfW + 4), groundY - 6 - (side + 1) * 2, 3, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  // 地面より下を隠すことで、タケノコ全体が押し上がる動きにする。
+  ctx.beginPath();
+  ctx.rect(w.x - 14, groundY - fullH - 10, w.w + 28, fullH + 16);
+  ctx.clip();
+
+  // 先端が少し傾いた、太い円錐形の外皮。
+  ctx.fillStyle = theme.shoot || "#c8b84e";
+  ctx.strokeStyle = theme.shootEdge || "#4c572c";
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(centerX + lean, topY);
+  ctx.bezierCurveTo(centerX + halfW * 0.42, topY + fullH * 0.22,
+                    centerX + halfW * 0.86, topY + fullH * 0.62,
+                    centerX + halfW, baseY);
+  ctx.quadraticCurveTo(centerX, baseY + 5, centerX - halfW, baseY);
+  ctx.bezierCurveTo(centerX - halfW * 0.86, topY + fullH * 0.62,
+                    centerX - halfW * 0.42, topY + fullH * 0.22,
+                    centerX + lean, topY);
+  ctx.closePath(); ctx.fill(); ctx.stroke();
+
+  // 左側の明るい面で、背景に埋もれず丸みが読めるようにする。
+  ctx.fillStyle = theme.shootLight || "#eadb79";
+  ctx.globalAlpha = 0.72;
+  ctx.beginPath();
+  ctx.moveTo(centerX + lean - 2, topY + 5);
+  ctx.bezierCurveTo(centerX - 8, topY + fullH * 0.34,
+                    centerX - 12, topY + fullH * 0.7,
+                    centerX - 9, baseY - 5);
+  ctx.quadraticCurveTo(centerX - 21, baseY - 8, centerX - halfW + 6, baseY - 10);
+  ctx.bezierCurveTo(centerX - halfW * 0.68, topY + fullH * 0.6,
+                    centerX - halfW * 0.32, topY + fullH * 0.24,
+                    centerX + lean - 2, topY + 5);
+  ctx.fill();
+  ctx.globalAlpha = 1;
+
+  // 交互に重なる四段の皮。上向きの尖りがタケノコらしい鱗模様になる。
+  const huskRows = [0.29, 0.47, 0.66, 0.84];
+  for (let i = 0; i < huskRows.length; i++) {
+    const row = huskRows[i];
+    const y = topY + fullH * row;
+    const rowHalf = halfW * (0.32 + row * 0.72);
+    const pointShift = (i % 2 === 0 ? -1 : 1) * 5;
+    ctx.fillStyle = i % 2 === 0 ? (theme.shootShade || "#87913d") : (theme.shoot || "#c8b84e");
+    ctx.strokeStyle = theme.shootEdge || "#4c572c";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(centerX + pointShift, y - 14);
+    ctx.quadraticCurveTo(centerX - rowHalf * 0.48, y - 2, centerX - rowHalf, y + 6);
+    ctx.quadraticCurveTo(centerX - rowHalf * 0.35, y + 4, centerX + pointShift, y + 15);
+    ctx.quadraticCurveTo(centerX + rowHalf * 0.35, y + 4, centerX + rowHalf, y + 6);
+    ctx.quadraticCurveTo(centerX + rowHalf * 0.48, y - 2, centerX + pointShift, y - 14);
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+  }
+
+  // 最上部の若い皮を二枚に分け、単なる三角コーンに見えるのを防ぐ。
+  ctx.fillStyle = theme.shootShade || "#87913d";
+  ctx.strokeStyle = theme.shootEdge || "#4c572c"; ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(centerX + lean, topY);
+  ctx.quadraticCurveTo(centerX - 12, topY + 16, centerX - 7, topY + 29);
+  ctx.quadraticCurveTo(centerX + 1, topY + 20, centerX + lean, topY);
+  ctx.fill(); ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(centerX + lean, topY);
+  ctx.quadraticCurveTo(centerX + 14, topY + 15, centerX + 8, topY + 30);
+  ctx.quadraticCurveTo(centerX, topY + 20, centerX + lean, topY);
+  ctx.fill(); ctx.stroke();
+  ctx.restore();
+}
+
+// せり上がる障害物を描画（内部名wallsはオンライン同期の互換性のため維持）。
 function drawWalls(walls, groundY, theme) {
   for (const w of walls) {
     if (w.top >= groundY) continue;   // 地面下＝隠れている
+    if (w.kind === "bamboo-shoot") {
+      drawRisingBambooShoot(w, groundY, theme);
+      continue;
+    }
     const h = groundY - w.top;
     ctx.fillStyle = theme.wall || "#8a94a6";
     ctx.fillRect(w.x, w.top, w.w, h);
@@ -3984,14 +4514,15 @@ function drawWalls(walls, groundY, theme) {
   }
 }
 
-// 静的ステージから壁のプレビュー用スナップショットを作る（ロビー用）
+// 静的ステージから、せり上がる障害物のプレビュー用スナップショットを作る（ロビー用）
 function wallSnapshot(stage, phase) {
   if (!stage.walls) return { walls: [], groundY: 585 };
   const mains = stage.platforms.filter(p => p.main);
   const g = mains.length ? Math.max(...mains.map(p => p.y)) : 585;
   const walls = stage.walls.map(w => {
     const raise = w.side === "left" ? phase : 1 - phase;
-    return { x: w.x, w: w.w, top: g + 8 - (w.height + 8) * raise };
+    return { x: w.x, w: w.w, height: w.height, side: w.side, kind: w.kind || "wall",
+      raise, top: g + 8 - (w.height + 8) * raise, dy: -1 };
   });
   return { walls, groundY: g };
 }
@@ -4271,6 +4802,17 @@ function drawPlayer(p) {
   const _gs = p.itemType === "giant" ? GIANT.size : 1;
   ctx.save();
   if (_gs !== 1) { ctx.translate(p.x, p.y); ctx.scale(_gs, _gs); ctx.translate(-p.x, -p.y); }
+  // ステージ反射の瞬間だけ、衝突面の法線方向へ全身をつぶして弾性を視覚化する。
+  if (p.bodyBounceTimer > 0) {
+    const bounceT = p.bodyBounceTimer / BODY_BOUNCE.visualTicks;
+    const bounceAngle = Math.atan2(p.bodyBounceNormalY, p.bodyBounceNormalX);
+    const bounceCenterY = p.y - PLAYER_H / 2;
+    ctx.translate(p.x, bounceCenterY);
+    ctx.rotate(bounceAngle);
+    ctx.scale(1 - 0.22 * bounceT, 1 + 0.09 * bounceT);
+    ctx.rotate(-bounceAngle);
+    ctx.translate(-p.x, -bounceCenterY);
+  }
   const bx = p.x - PLAYER_W / 2;
   const by = p.y - PLAYER_H;
 
@@ -4705,6 +5247,7 @@ function drawMatch() {
   }
   drawBackground(m.stage);
   drawStage(m.platforms, m.stage.theme);
+  if (m.fan) drawFan(m.fan, m.stage.theme, m.tick);
   drawCeiling(m.stage.ceiling, m.stage.theme, m.ceilingSegments);
   if (m.risingLava) drawPit(m);
   if (m.lava.length) drawLavaZones(m.lava);
@@ -4883,6 +5426,7 @@ function drawLobby() {
   const selStage = STAGES[APP.stageIndex];
   drawBackground(selStage);
   drawStage(selStage.platforms, selStage.theme);   // 選択中ステージを背景にプレビュー
+  if (selStage.fan) drawFan(fanSnapshot(selStage), selStage.theme, 20);
   drawCeiling(selStage.ceiling, selStage.theme);
   if (selStage.walls) {                             // 壁は左上・右下のプレビュー
     const snap = wallSnapshot(selStage, 0.75);
@@ -4941,54 +5485,71 @@ function drawLobby() {
   const joined = APP.slots.filter(Boolean).length;
   const humanCount = APP.slots.filter(s => s && !s.cpu).length;
 
-  // 参加方法をひとつの帯にまとめ、ステージ選択以降の導線と分離する。
-  ctx.fillStyle = "rgba(18,18,38,0.84)";
-  roundRect(310, 350, 660, 84, 10);
+  // 参加方法は長い1行を詰め込まず、横幅と高さを確保した2段の案内枠にする。
+  ctx.fillStyle = "rgba(14,16,34,0.9)";
+  roundRect(220, 344, 840, 98, 11);
   ctx.fill();
-  ctx.strokeStyle = "rgba(255,255,255,0.14)";
+  ctx.strokeStyle = "rgba(255,211,77,0.46)";
   ctx.lineWidth = 2;
-  roundRect(310, 350, 660, 84, 10);
+  roundRect(220, 344, 840, 98, 11);
   ctx.stroke();
 
   if (joined >= 2) {
     if (Math.floor(performance.now() / 400) % 2 === 0) {
       ctx.fillStyle = "#ffd34d";
       ctx.font = "bold 26px sans-serif";
-      ctx.fillText("Enter / 設定した決定ボタンで開始！", W / 2, 388);
+      ctx.fillText("Enter / 設定した決定ボタンで開始！", W / 2, 386);
     }
   } else {
+    ctx.fillStyle = "#ffd34d";
+    ctx.font = "bold 14px sans-serif";
+    ctx.fillText("参加", W / 2, 367);
     ctx.fillStyle = "#fff";
-    ctx.font = "bold 20px sans-serif";
-    ctx.fillText("参加：F（左キーボード）／ L（右キーボード）／ パッドは設定した攻撃ボタン", W / 2, 382);
-    ctx.fillStyle = "rgba(255,255,255,0.58)";
-    ctx.font = "15px sans-serif";
-    ctx.fillText("CPU：C で追加 ／ X で削除", W / 2, 412);
+    ctx.font = "bold 19px sans-serif";
+    ctx.fillText("F（左キーボード）／ L（右キーボード）／ パッド：設定した攻撃ボタン", W / 2, 393);
+    ctx.fillStyle = "rgba(255,255,255,0.66)";
+    ctx.font = "14px sans-serif";
+    ctx.fillText("CPU：C で追加 ／ X で削除", W / 2, 422);
   }
   // ソロ（人間1人）のときの操作案内
   if (humanCount === 1 && joined >= 2) {
     ctx.font = "14px sans-serif";
     ctx.fillStyle = "#8fd3ff";
-    ctx.fillText("1人プレイ → 移動: WASD / 矢印　攻撃: J　ガード: K　風船: Space", W / 2, 416);
+    ctx.fillText("1人プレイ → 移動: WASD / 矢印　攻撃: J　ガード: K　風船: Space", W / 2, 418);
   }
 
   // ステージ選択（左右キーで変更）
   ctx.font = "bold 22px sans-serif";
   ctx.fillStyle = "#fff";
-  ctx.fillText("◀  ステージ: " + selStage.name + "  （" + (APP.stageIndex + 1) + "/" + STAGES.length + "）  ▶", W / 2, 492);
+  ctx.fillText("◀  ステージ: " + selStage.name + "  （" + (APP.stageIndex + 1) + "/" + STAGES.length + "）  ▶", W / 2, 482);
   ctx.font = "13px sans-serif";
   ctx.fillStyle = "rgba(255,255,255,0.5)";
-  ctx.fillText("← → ／ 設定したステージボタンで変更", W / 2, 518);
+  ctx.fillText("← → ／ 設定したステージボタンで変更", W / 2, 508);
 
-  ctx.font = "bold 20px sans-serif";
-  ctx.fillStyle = "#8fd3ff";
-  ctx.fillText("O キー: オンライン対戦（2〜4人・β）", W / 2, 590);
+  // 背景条件に左右されないオンライン対戦専用ボックス。Oをキーキャップとして分離する。
+  ctx.fillStyle = "rgba(9,22,38,0.92)";
+  roundRect(400, 536, 480, 72, 11); ctx.fill();
+  ctx.strokeStyle = "rgba(143,211,255,0.82)"; ctx.lineWidth = 2;
+  roundRect(400, 536, 480, 72, 11); ctx.stroke();
+  ctx.fillStyle = "#182e44";
+  roundRect(426, 552, 48, 40, 7); ctx.fill();
+  ctx.strokeStyle = "#8fd3ff"; ctx.lineWidth = 1.5;
+  roundRect(426, 552, 48, 40, 7); ctx.stroke();
+  ctx.fillStyle = "#fff"; ctx.font = "bold 22px sans-serif";
+  ctx.fillText("O", 450, 580);
+  ctx.textAlign = "left";
+  ctx.fillStyle = "#8fd3ff"; ctx.font = "bold 19px sans-serif";
+  ctx.fillText("オンライン対戦", 500, 565);
+  ctx.fillStyle = "rgba(255,255,255,0.68)"; ctx.font = "13px sans-serif";
+  ctx.fillText("2〜4人・β　部屋を作る／コードで参加", 500, 588);
+  ctx.textAlign = "center";
 
   const pads = navigator.getGamepads();
   let padCount = 0;
   for (let i = 0; i < pads.length; i++) if (pads[i]) padCount++;
   ctx.font = "14px sans-serif";
   ctx.fillStyle = "rgba(255,255,255,0.45)";
-  ctx.fillText("接続中のゲームパッド: " + padCount + "台（ボタンを押すと認識されます）", W / 2, 620);
+  ctx.fillText("接続中のゲームパッド: " + padCount + "台（ボタンを押すと認識されます）", W / 2, 633);
 }
 
 function drawResult() {
@@ -4996,6 +5557,8 @@ function drawResult() {
   const rPlats = APP.match ? APP.match.platforms : rStage.platforms;
   drawBackground(rStage);
   drawStage(rPlats, rStage.theme);
+  if (APP.match && APP.match.fan) drawFan(APP.match.fan, rStage.theme, APP.match.tick);
+  else if (!APP.match && rStage.fan) drawFan(fanSnapshot(rStage), rStage.theme, 20);
   drawCeiling(rStage.ceiling, rStage.theme, APP.match ? APP.match.ceilingSegments : null);
   if (APP.match && APP.match.walls.length) drawWalls(APP.match.walls, APP.match.groundY, rStage.theme);
   else if (!APP.match && rStage.walls) { const s = wallSnapshot(rStage, 0.75); drawWalls(s.walls, s.groundY, rStage.theme); }
@@ -5128,8 +5691,11 @@ window.UCHI = {
   PHYS, ATTACK, CHARGED_ATTACK, SPECIAL, MID_CHARGE, SPECIAL_CHARGE, DOWN_ATTACK, GUARD,
   STAGES, BLAST, STOCKS, ITEM, BALLOON, MOB, PENGUIN, rngNext,
   LOBBY_CORNER_CHARACTERS,
-  CRUMBLE, PENDULUM, LAVA, WARP_CD, PLAYER_W, PLAYER_H, BODY_COLLISION, DOUBLE_JUMP_FLIP_TICKS, TAUNT_TICKS,
+  CRUMBLE, PENDULUM, LAVA, WARP_CD, FAN, PLAYER_W, PLAYER_H, BODY_COLLISION, BODY_BOUNCE,
+  DOUBLE_JUMP_FLIP_TICKS, TAUNT_TICKS,
   resolvePlayerCollisions, resolveFloorPenetrations, playerSupportedByWorld,
+  applyStageBodyBounce, resolveKnockbackPlatformBody,
+  updateFan, applyFanWind,
   pH, attackData, attackActiveWindow, itemTimeFraction,
   platformYAt, mainSurfaceYAt, updatePenguin, selectWinnerTitle, buildResultInfo,
   fx,

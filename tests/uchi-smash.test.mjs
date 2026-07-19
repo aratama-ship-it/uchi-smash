@@ -127,13 +127,20 @@ test("release constants and input codec stay coherent", () => {
   const { UCHI: game } = sandbox;
   assert.match(HTML, /<title>PYGMIX BONBON<\/title>/);
   assert.match(HTML, /ctx\.fillText\("PYGMIX BONBON", W \/ 2, 120\)/);
-  assert.match(HTML, /const GAME_VERSION = "0\.9\.29"/);
+  assert.match(HTML, /const GAME_VERSION = "0\.9\.39"/);
   assert.match(HTML, /リーチ・速度・ビーム・巨大化・風船補充の5種類/);
   assert.equal(game.PHYS.gravity, 0.495);
   assert.equal(game.DOWN_ATTACK.damageMult, 1.2);
   assert.equal(game.DOWN_ATTACK.groundedUpKbMult, 1.3);
   assert.equal(game.DOWN_ATTACK.startupTicks, 1);
   assert.equal(game.BODY_COLLISION.passes, 32);
+  assert.equal(game.BODY_BOUNCE.restitution, 0.58);
+  assert.equal(game.BODY_BOUNCE.tangentRetention, 0.82);
+  assert.equal(game.BODY_BOUNCE.minNormalSpeed, 3.8);
+  assert.equal(game.FAN.windWidth, 118);
+  assert.equal(game.FAN.windTop, 155);
+  assert.equal(game.FAN.lift, 0.58);
+  assert.equal(game.FAN.maxRise, 4.1);
   assert.equal(game.TAUNT_TICKS, 90);
   assert.equal(game.MID_CHARGE, 60);
   assert.equal(game.SPECIAL_CHARGE, 120);
@@ -166,6 +173,8 @@ test("release constants and input codec stay coherent", () => {
   assert.equal(flowTower.walls.length, 2);
   assert.equal(flowTower.wallSpeed, 0.00396);
   assert.equal(flowTower.walls.every(wall => wall.height === 90), true);
+  assert.equal(flowTower.walls.every(wall => wall.kind === "bamboo-shoot"), true);
+  assert.match(HTML, /function drawRisingBambooShoot\(w, groundY, theme\)/);
   const flowGround = flowTower.platforms.filter(platform => platform.main);
   const flowSteps = flowTower.platforms.filter(platform => !platform.main).sort((a, b) => b.y - a.y);
   assert.equal(flowGround.reduce((sum, platform) => sum + platform.w, 0), 600);
@@ -177,6 +186,21 @@ test("release constants and input codec stay coherent", () => {
   assert.equal(flowTower.walls[0].x, Math.min(...flowGround.map(platform => platform.x)));
   assert.equal(flowTower.walls[1].x + flowTower.walls[1].w, Math.max(...flowGround.map(platform => platform.x + platform.w)));
   assert.ok(Math.max(...flowTower.platforms.map(platform => platform.y)) - Math.min(...flowTower.platforms.map(platform => platform.y)) >= 300);
+  const verticalTower = game.STAGES.find(stage => stage.name === "とう（縦長）");
+  const verticalSteps = verticalTower.platforms.filter(platform => !platform.main).sort((a, b) => b.y - a.y);
+  assert.equal(verticalSteps.length, 3);
+  assert.ok(verticalSteps[0].x + verticalSteps[0].w / 2 < 640);
+  assert.ok(verticalSteps[1].x + verticalSteps[1].w / 2 > 640);
+  assert.equal(verticalSteps[2].x + verticalSteps[2].w / 2, 640);
+  assert.ok(verticalTower.fan);
+  assert.equal(verticalTower.fan.x, 640);
+  assert.equal(verticalTower.fan.startX, -120);
+  assert.equal(verticalTower.fan.y, 650);
+  assert.equal(verticalTower.fan.range, 760);
+  assert.equal(verticalTower.fan.speed, 2.6);
+  assert.ok(verticalTower.fan.x - verticalTower.fan.range < -game.FAN.housingW / 2);
+  assert.ok(verticalTower.fan.x + verticalTower.fan.range > 1280 + game.FAN.housingW / 2);
+  assert.equal(game.STAGES.filter(stage => stage.fan).length, 1);
   const skyIslands = game.STAGES.find(stage => stage.name === "うちゅう");
   assert.equal(skyIslands.gravityScale, 0.5);
   assert.equal(skyIslands.moveScale, 0.8);
@@ -192,6 +216,8 @@ test("release constants and input codec stay coherent", () => {
   assert.ok(ice);
   assert.equal(ice.theme.ice, true);
   assert.equal(ice.penguin, true);
+  assert.equal(ice.warpCandidates.length, 4);
+  assert.deepEqual([...ice.warpCandidates].map(warp => warp.platformIndex), [-1, -1, 2, 3]);
   assert.equal(game.PENGUIN.firstWait, 240);
   assert.equal(game.PENGUIN.waitTicks, 330);
   assert.equal(game.PENGUIN.appearTicks, 45);
@@ -532,10 +558,22 @@ test("space stage restrains horizontal movement and has a breakable central ceil
   assert.equal(events.filter(event => event.type === "ceiling-hit").length, 1);
   assert.equal(sky.ceilingSegments.some(segment => segment.broken), false);
 
+  // 同じ弱い衝突でも、攻撃で吹き飛ばされている間は頭から反射する。
+  player.y = ceiling.y + ceiling.h + game.PLAYER_H + 2;
+  player.vy = -6;
+  player.hitstun = 20;
+  player.stageBounceCd = 0;
+  const ceilingBounceEvents = game.stepMatch(sky, [neutral, neutral]);
+  assert.equal(ceilingBounceEvents.some(event => event.type === "body-bounce" && event.ny > 0), true);
+  assert.ok(player.vy > 0);
+  assert.equal(sky.ceilingSegments.some(segment => segment.broken), false);
+
   // 強い衝突は接触区画を壊し、上昇を続けて穴を通過できる。
   player.x = 640;
   player.y = ceiling.y + ceiling.h + game.PLAYER_H + 2;
   player.vy = -(ceiling.breakSpeed + 3);
+  player.hitstun = 0;
+  player.stageBounceCd = 0;
   player.onGround = false;
   const breakEvents = game.stepMatch(sky, [neutral, neutral]);
   const broken = breakEvents.filter(event => event.type === "ceiling-break");
@@ -631,7 +669,7 @@ test("space stage items enter from the side and vary their landing spots", () =>
   assert.ok(landingXs.size >= 6);
 });
 
-test("flow tower walls can carry a standing player with the moving ground", () => {
+test("flow tower bamboo shoots grow from the ground and can carry a standing player", () => {
   const sandbox = loadGame();
   const { UCHI: game } = sandbox;
   const stageIndex = game.STAGES.findIndex(stage => stage.name === "ながれの塔");
@@ -660,6 +698,74 @@ test("flow tower walls can carry a standing player with the moving ground", () =
   assert.equal(player.onGround, true);
   assert.equal(player.y, wall.top);
   assert.ok(Math.abs((player.x - previousX) - wall.dx) < 1e-9);
+});
+
+test("the bamboo-shoot QA URL opens the flow tower directly in match view", () => {
+  assert.match(HTML, /params\.get\("preview"\) !== "sprout"/);
+  assert.match(HTML, /previewMatch\.wallPhase = 0\.62/);
+  assert.match(HTML, /applyBambooShootPreviewFromUrl\(\)/);
+});
+
+test("the tower fan travels fully offscreen and reverses deterministically at both ends", () => {
+  const sandbox = loadGame();
+  const { UCHI: game } = sandbox;
+  const stageIndex = game.STAGES.findIndex(stage => stage.name === "とう（縦長）");
+  const match = game.makeMatchState([0, 1], stageIndex);
+  const fan = match.fan;
+
+  assert.ok(fan);
+  assert.equal(fan.x, -120);
+  const ticksToRight = Math.ceil((fan.baseX + fan.range - fan.x) / fan.speed);
+  for (let tick = 0; tick < ticksToRight; tick++) game.updateFan(match);
+  assert.equal(fan.x, fan.baseX + fan.range);
+  assert.equal(fan.dir, -1);
+  game.updateFan(match);
+  assert.ok(Math.abs(fan.x - (fan.baseX + fan.range - fan.speed)) < 1e-9);
+  assert.ok(Math.abs(fan.dx + fan.speed) < 1e-9);
+});
+
+test("the moving fan continuously lifts players in its wind without weakening faster knockback", () => {
+  const sandbox = loadGame();
+  const { UCHI: game } = sandbox;
+  const stageIndex = game.STAGES.findIndex(stage => stage.name === "とう（縦長）");
+  const match = game.makeMatchState([0, 1], stageIndex);
+  const player = match.players[0];
+  const neutral = {
+    left: false, right: false, up: false, down: false,
+    jump: false, attack: false, guard: false, balloon: false, start: false,
+  };
+  match.countdown = 0;
+  match.fan.x = match.fan.baseX;
+  player.x = match.fan.x;
+  player.y = match.groundY;
+  player.vx = 0;
+  player.vy = 0;
+  player.onGround = true;
+  player.invuln = 9999;
+
+  game.stepMatch(match, [neutral, neutral]);
+  assert.equal(player.onGround, false);
+  assert.ok(player.y < match.groundY);
+  assert.ok(player.vy < 0);
+
+  player.x = match.fan.x;
+  player.y = 400;
+  player.vy = -12;
+  assert.equal(game.applyFanWind(match, player), true);
+  assert.equal(player.vy, -12);
+
+  player.x = match.fan.x + match.fan.windWidth;
+  player.vy = 0;
+  assert.equal(game.applyFanWind(match, player), false);
+  assert.equal(player.vy, 0);
+});
+
+test("the fan QA URL opens the vertical tower directly in match view", () => {
+  assert.match(HTML, /params\.get\("preview"\) !== "fan"/);
+  assert.match(HTML, /applyFanPreviewFromUrl\(\)/);
+  assert.match(HTML, /function drawFan\(fan, theme, tick = 0\)/);
+  assert.doesNotMatch(HTML, /const windGrad = ctx\.createLinearGradient/);
+  assert.doesNotMatch(HTML, /小さな葉が風に乗る/);
 });
 
 test("only the double jump starts one somersault", () => {
@@ -839,6 +945,133 @@ test("a falling player lands on a grounded player's head", () => {
   assert.equal(upper.vy, lower.vy);
   assert.equal(upper.onGround, true);
   assert.equal(upper.airJumps, game.PHYS.airJumps);
+});
+
+test("knockback bounces the whole body from stage tops while normal landings stay unchanged", () => {
+  const { UCHI: game } = loadGame();
+  const neutral = {
+    left: false, right: false, up: false, down: false,
+    jump: false, attack: false, guard: false, balloon: false, taunt: false, start: false,
+  };
+  const makeLanding = hitstun => {
+    const match = game.makeMatchState([0, 1], 0);
+    match.countdown = 0;
+    match.itemTimer = 9999;
+    const player = match.players[0];
+    match.players[1].x = -180;
+    match.players[1].invuln = 9999;
+    player.x = 640;
+    player.y = 552;
+    player.vx = 0;
+    player.vy = 7;
+    player.hitstun = hitstun;
+    player.onGround = false;
+    player.invuln = 9999;
+    const events = game.stepMatch(match, [neutral, neutral]);
+    return { player, events };
+  };
+
+  const bounced = makeLanding(20);
+  assert.equal(bounced.events.some(event => event.type === "body-bounce"), true);
+  assert.ok(bounced.player.vy < 0);
+  assert.equal(bounced.player.onGround, false);
+  assert.equal(bounced.player.stageBounceCd, game.BODY_BOUNCE.cooldown);
+  assert.equal(bounced.player.bodyBounceTimer, game.BODY_BOUNCE.visualTicks);
+
+  const normal = makeLanding(0);
+  assert.equal(normal.events.some(event => event.type === "body-bounce"), false);
+  assert.equal(normal.player.vy, 0);
+  assert.equal(normal.player.onGround, true);
+});
+
+test("knockback rebounds from a thin platform underside and a main-stage side", () => {
+  const { UCHI: game } = loadGame();
+  const neutral = {
+    left: false, right: false, up: false, down: false,
+    jump: false, attack: false, guard: false, balloon: false, taunt: false, start: false,
+  };
+
+  const undersideMatch = game.makeMatchState([0, 1], 0);
+  undersideMatch.countdown = 0;
+  undersideMatch.itemTimer = 9999;
+  undersideMatch.players[1].x = -180;
+  undersideMatch.players[1].invuln = 9999;
+  const underside = undersideMatch.players[0];
+  underside.x = 350;
+  underside.y = 521;
+  underside.vx = 0;
+  underside.vy = -8;
+  underside.hitstun = 20;
+  underside.onGround = false;
+  underside.invuln = 9999;
+  const undersideEvents = game.stepMatch(undersideMatch, [neutral, neutral]);
+  assert.equal(undersideEvents.some(event => event.type === "body-bounce" && event.ny > 0), true);
+  assert.ok(underside.vy > 0);
+  assert.equal(underside.y, 455 + game.BODY_BOUNCE.platformThickness + game.PLAYER_H);
+
+  const sideMatch = game.makeMatchState([0, 1], 0);
+  sideMatch.countdown = 0;
+  sideMatch.itemTimer = 9999;
+  sideMatch.players[1].x = -180;
+  sideMatch.players[1].invuln = 9999;
+  const side = sideMatch.players[0];
+  side.x = 165;
+  side.y = 590;
+  side.vx = 8;
+  side.vy = 0;
+  side.hitstun = 20;
+  side.onGround = false;
+  side.invuln = 9999;
+  const sideEvents = game.stepMatch(sideMatch, [neutral, neutral]);
+  assert.equal(sideEvents.some(event => event.type === "body-bounce" && event.nx < 0), true);
+  assert.ok(side.vx < 0);
+  assert.equal(side.x, 190 - game.PLAYER_W / 2);
+});
+
+test("sloped stage surfaces reflect knockback along their angle", () => {
+  const { UCHI: game } = loadGame();
+  const iceIndex = game.STAGES.findIndex(stage => stage.name === "こおり");
+  const match = game.makeMatchState([0, 1], iceIndex);
+  const neutral = {
+    left: false, right: false, up: false, down: false,
+    jump: false, attack: false, guard: false, balloon: false, taunt: false, start: false,
+  };
+  match.countdown = 0;
+  match.itemTimer = 9999;
+  match.warps = [];
+  match.warpCandidates = [];
+  match.players[1].x = -180;
+  match.players[1].invuln = 9999;
+  const slope = match.platforms.find(platform => platform.main && platform.slope > 0);
+  const player = match.players[0];
+  player.x = 400;
+  player.y = game.platformYAt(slope, player.x) - 7;
+  player.vx = 6;
+  player.vy = 8;
+  player.hitstun = 20;
+  player.onGround = false;
+  player.invuln = 9999;
+
+  const events = game.stepMatch(match, [neutral, neutral]);
+  const bounce = events.find(event => event.type === "body-bounce");
+  assert.ok(bounce);
+  assert.ok(bounce.nx > 0 && bounce.ny < 0);
+  assert.ok(player.vy < 0);
+  assert.doesNotThrow(() => {
+    game.APP.match = match;
+    game.APP.phase = "match";
+    game.renderNow();
+  });
+});
+
+test("the body-bounce QA URL starts a visible knockback drop without lobby input", () => {
+  const { UCHI: game } = loadGame("?stage=%E3%81%B2%E3%82%8D%E3%81%B0&preview=bounce");
+  assert.equal(game.APP.phase, "match");
+  assert.equal(game.APP.match.stage.name, "ひろば");
+  assert.equal(game.APP.match.countdown, 0);
+  assert.equal(game.APP.match.players[0].hitstun, 300);
+  assert.equal(game.APP.match.players[0].vy, 10);
+  assert.doesNotThrow(() => game.renderNow());
 });
 
 test("down attacks deal 1.2x damage and launch vertically based on grounded state", () => {
@@ -1142,13 +1375,18 @@ test("lobby controls open in a modal and pause lobby input", () => {
   const helpOpen = sandbox.document.getElementById("help-open");
   const helpModal = sandbox.document.getElementById("help-modal");
   assert.match(HTML, /role="dialog" aria-modal="true"/);
-  assert.match(HTML, /参加：F（左キーボード）／ L（右キーボード）／ パッドは設定した攻撃ボタン/);
+  assert.match(HTML, /F（左キーボード）／ L（右キーボード）／ パッド：設定した攻撃ボタン/);
   assert.match(HTML, /id="gamepad-config" hidden/);
   assert.match(HTML, /data-pad-action="attack"/);
   assert.match(HTML, /data-pad-action="stagePrev"/);
   assert.match(HTML, /data-pad-action="stageNext"/);
   assert.match(HTML, /data-pad-action="start"/);
   assert.match(HTML, /rect\.height \* \(682 \/ H\)/);
+  assert.match(HTML, /width: 224px/);
+  assert.match(HTML, /min-height: 40px/);
+  assert.match(HTML, /roundRect\(220, 344, 840, 98, 11\)/);
+  assert.match(HTML, /roundRect\(400, 536, 480, 72, 11\)/);
+  assert.match(HTML, /ctx\.fillText\("オンライン対戦", 500, 565\)/);
 
   sandbox.setLobbyHelpOpen(true);
   assert.equal(helpModal.hidden, false);
@@ -1197,6 +1435,105 @@ test("circus warps choose two of four candidates and change every cycle", () => 
     assert.deepEqual([...match.warpSelection], upcoming);
     assert.equal(appearEvents[0].type, "warp-appear");
   }
+});
+
+test("the refined paired warp design renders active, vanished, and reappearing states", () => {
+  const sandbox = loadGame();
+  const pair = [
+    { x: 200, y: 300, w: 48, h: 88, link: 1 },
+    { x: 900, y: 300, w: 48, h: 88, link: 0 },
+  ];
+  assert.match(HTML, /const accents = \["#63e5ef", "#ff7a9d"\]/);
+  assert.match(HTML, /const direction = i % 2 === 0 \? 1 : -1/);
+  assert.match(HTML, /createRadialGradient\(cx, cy, 2, cx, cy, ry\)/);
+  assert.doesNotThrow(() => sandbox.drawWarps(pair, true, 180));
+  assert.doesNotThrow(() => sandbox.drawWarps(pair, false, 120));
+  assert.doesNotThrow(() => sandbox.drawWarps(pair, false, 30));
+});
+
+test("the warp QA URL opens the selected stage directly in match view", () => {
+  const { UCHI: game } = loadGame("?stage=%E3%81%93%E3%81%8A%E3%82%8A&preview=warp");
+  assert.equal(game.APP.phase, "match");
+  assert.equal(game.APP.match.stage.name, "こおり");
+  assert.equal(game.APP.match.warps.length, 2);
+  assert.equal(game.APP.match.countdown, 0);
+  assert.doesNotThrow(() => game.renderNow());
+});
+
+test("ice warps also choose a changing pair from two ground and two upper candidates", () => {
+  const sandbox = loadGame();
+  const { UCHI: game } = sandbox;
+  const stageIndex = game.STAGES.findIndex(stage => stage.name === "こおり");
+  const match = game.makeMatchState([0, 1], stageIndex);
+  assert.equal(match.warpCandidates.length, 4);
+  assert.equal(match.warps.length, 2);
+  assert.deepEqual([...match.warpCandidates].map(warp => warp.platformIndex), [-1, -1, 2, 3]);
+
+  for (let cycle = 0; cycle < 12; cycle++) {
+    const previous = [...match.warpSelection];
+    match.warpTimer = 1;
+    sandbox.updateWarps(match, []);
+    assert.equal(match.warpOn, false);
+    assert.notDeepEqual([...match.warpSelection], previous);
+    assert.equal(new Set(match.warpSelection).size, 2);
+    match.warpTimer = 1;
+    sandbox.updateWarps(match, []);
+    assert.equal(match.warpOn, true);
+  }
+});
+
+test("a charging penguin entering an ice warp exits from its pair with momentum", () => {
+  const sandbox = loadGame();
+  const { UCHI: game } = sandbox;
+  const stageIndex = game.STAGES.findIndex(stage => stage.name === "こおり");
+  const match = game.makeMatchState([0, 1], stageIndex);
+  const neutral = {
+    left: false, right: false, up: false, down: false,
+    jump: false, attack: false, guard: false, balloon: false, taunt: false, start: false,
+  };
+  match.countdown = 0;
+  match.itemTimer = 9999;
+  match.warpOn = true;
+  match.warpTimer = 999;
+  const entrance = match.warpCandidates[0];
+  const destination = match.warpCandidates[3];
+  match.warps = [
+    { ...entrance, link: 1, candidateIndex: 0 },
+    { ...destination, link: 0, candidateIndex: 3 },
+  ];
+  for (const player of match.players) {
+    player.x = -150;
+    player.y = 100;
+    player.invuln = 9999;
+  }
+  const penguin = match.penguin;
+  penguin.state = "charge";
+  penguin.dir = 1;
+  penguin.platformIndex = -1;
+  penguin.lane = "main";
+  penguin.airborne = false;
+  penguin.exitLeftEdge = 100;
+  penguin.exitRightEdge = 1180;
+  penguin.x = entrance.x + entrance.w / 2 - game.PENGUIN.speed;
+  penguin.y = game.mainSurfaceYAt(match, penguin.x);
+
+  const events = game.stepMatch(match, [neutral, neutral]);
+
+  assert.equal(penguin.x, destination.x + destination.w / 2);
+  assert.equal(penguin.y, destination.y + destination.h - 2);
+  assert.equal(penguin.dir, 1);
+  assert.equal(penguin.platformIndex, 3);
+  assert.equal(penguin.lane, "upper");
+  assert.equal(penguin.warpCd, game.WARP_CD);
+  assert.equal(events.some(event => event.type === "penguin-warp"), true);
+  sandbox.handleEvents(events);
+  assert.ok(game.fx.particles.length >= 24);
+
+  const exitX = penguin.x;
+  const secondEvents = game.stepMatch(match, [neutral, neutral]);
+  assert.ok(penguin.x > exitX, "the penguin should keep charging in the same direction");
+  assert.equal(secondEvents.some(event => event.type === "penguin-warp"), false);
+  assert.equal(penguin.warpCd, game.WARP_CD - 1);
 });
 
 test("ice slopes carry players while acceleration and stopping remain slippery", () => {
@@ -1363,6 +1700,9 @@ test("penguin appears, warns, belly-charges, and alternates between ground and u
   };
   match.countdown = 0;
   match.itemTimer = 9999;
+  // ワープ挙動は専用テストで検証し、ここでは従来の3段階と走行レーンだけを分離して確認する。
+  match.warpCandidates = [];
+  match.warps = [];
   const penguin = match.penguin;
   assert.ok(penguin);
 
