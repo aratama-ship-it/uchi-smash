@@ -170,9 +170,10 @@ const GUARD = {
 
 // ★オンライン同期の要: 決定論simに影響する変更(stepMatch/ステージ/物理/定数など)をしたら
 //   必ずこの版数を上げること。オンライン接続時に両者で照合し、食い違えば試合させず弾く。
-const GAME_VERSION = "0.9.0";
+const GAME_VERSION = "0.9.3";
 
 const PLAYER_W = 36, PLAYER_H = 48;
+const DOUBLE_JUMP_FLIP_TICKS = 30;  // 二段ジャンプ時の宙返り時間（0.5秒）
 const STOCKS = 3;
 const RESPAWN_INVULN = 150;
 const COUNTDOWN_TICKS = 180;
@@ -324,35 +325,8 @@ const STAGES = [
     spawns: [ {x:420,y:560}, {x:860,y:560}, {x:540,y:560}, {x:740,y:560} ],
   },
   {
-    // エレベーター: 左右の地面＋中央の大きな床が上下する。乗り継ぎのタイミングゲー
-    name: "エレベーター",
-    theme: { sky:["#1e2028","#30343e","#454b58"], mountain:"rgba(28,30,38,0.7)",
-             dirt:"#3a3e46", grass:"#7a8290", grass2:"#5e6672", plat:"#8a94a6", platTop:"#b0bccc" },
-    platforms: [
-      { x: 130, y: 560, w: 320, droppable: false, main: true },
-      { x: 830, y: 560, w: 320, droppable: false, main: true },
-      { x: 500, y: 500, w: 280, droppable: true, move: { axis: "y", range: 120, speed: 1.4, dir: 1 } },
-    ],
-    spawns: [ {x:290,y:560}, {x:990,y:560}, {x:230,y:560}, {x:1050,y:560} ],
-  },
-  {
-    // ワープ広場: 左右のワープ口で瞬間移動できる。横の場外は普通に残るので注意
-    name: "ワープ広場",
-    theme: { sky:["#161e2e","#22304e","#324a72"], mountain:"rgba(20,30,55,0.7)",
-             dirt:"#3a3450", grass:"#6a6ac0", grass2:"#4e4ea0", plat:"#8a8ac0", platTop:"#b0b0e0" },
-    platforms: [
-      { x: 180, y: 560, w: 920, droppable: false, main: true },
-      { x: 360, y: 430, w: 160, droppable: true },
-      { x: 760, y: 430, w: 160, droppable: true },
-    ],
-    spawns: [ {x:360,y:560}, {x:920,y:560}, {x:520,y:560}, {x:760,y:560} ],
-    warps: [
-      { x: 246, y: 466, w: 48, h: 88, link: 1 },   // 左
-      { x: 986, y: 466, w: 48, h: 88, link: 0 },   // 右（左右ワープ）
-    ],
-  },
-  {
-    // サーカステント: 中央トランポリンで高く跳ね、細いロープ足場を渡る。トラペーズ(振り子)注意
+    // サーカステント: トランポリン＋振り子＋位置が変わるワープ。
+    // ワープは左右の地面／左右の浮き島の4候補から2地点を選び、消滅するたび次の組を再抽選する。
     name: "サーカステント",
     theme: { sky:["#2a1626","#4a2038","#6a2e4a"], mountain:"rgba(45,20,35,0.6)",
              dirt:"#5a3040", grass:"#d86a86", grass2:"#b8506a", plat:"#c88aa0", platTop:"#e8b0c0" },
@@ -366,6 +340,12 @@ const STAGES = [
     ],
     spawns: [ {x:330,y:590}, {x:930,y:590}, {x:460,y:420}, {x:820,y:420} ],
     pendulums: [ { pivotX: 640, pivotY: 100, len: 205, amp: 150, period: 135, r: 18 } ],
+    warpCandidates: [
+      { x: 246, y: 496, w: 48, h: 88 },   // 左地面（初期スポーンを避けて外寄り）
+      { x: 986, y: 496, w: 48, h: 88 },   // 右地面
+      { x: 386, y: 326, w: 48, h: 88 },   // 左浮き島
+      { x: 846, y: 326, w: 48, h: 88 },   // 右浮き島
+    ],
   },
   {
     // 溶岩ふたご島（旧 ふたご島/うごく床/くずれ足場/振り子と溶岩 を統合）:
@@ -644,7 +624,7 @@ function makeMatchState(slotIndices, stageIndex) {
       lavaIndex,
     };
   }
-  return {
+  const state = {
     tick: 0,
     countdown: COUNTDOWN_TICKS,
     timeLeft: TIME_LIMIT,         // 残り時間（tick）。0で時間切れ決着
@@ -675,13 +655,17 @@ function makeMatchState(slotIndices, stageIndex) {
     }),
     lava,                         // 溶岩の矩形（静的＋せり上がり動的）
     risingLava,                   // せり上がり溶岩の状態（無いステージはnull）
-    warps: (stage.warps || []).map(w => ({ x: w.x, y: w.y, w: w.w, h: w.h, link: w.link })),
+    warpCandidates: (stage.warpCandidates || []).map(w => ({ x: w.x, y: w.y, w: w.w, h: w.h })),
+    warpSelection: [],             // 現在選ばれている候補番号2つ
+    warps: [],                     // warpCandidatesから作る現在の一対
     warpOn: true, warpTimer: WARP_CYCLE.on,   // ワープ口の出現/消滅サイクル
     rng: seed,                    // xorshift32 の状態
     items: [],                    // 落下中/設置中のアイテム
     itemTimer: ITEM.firstSpawn,   // 次の出現までのtick
     players: slotIndices.map(s => makePlayer(s, stage)),
   };
+  selectWarpPair(state);          // 試合開始時の一対を決定論的に選ぶ
+  return state;
 }
 
 // ドスン風モブを1tick更新（決定論）。rise（風船上昇）→ top到達で割れ → fall → 着地 → wait → rise
@@ -729,9 +713,8 @@ function updateMob(state, events) {
       const dir = p.x >= m.x + MOB.size / 2 ? 1 : -1;
       p.damage += MOB.damage;
       const kb = MOB.kbBase + p.damage * MOB.kbScale;
-      const rad = 45 * Math.PI / 180;
-      p.vx = Math.cos(rad) * kb * dir;
-      p.vy = -Math.sin(rad) * kb;
+      p.vx = KB45 * kb * dir;
+      p.vy = -KB45 * kb;
       p.hitstun = Math.floor(6 + kb * 2);
       p.onGround = false; p.hitFlash = 8; p.invuln = 20;
       p.chargeTimer = 0; p.attackTimer = 0; p.attackIsSpecial = false;
@@ -825,12 +808,33 @@ function stepRisingLava(state) {
   lv.h = rl.bottomY - topY;
 }
 
+// 4候補から異なる2地点を選ぶ。前回と同じ組み合わせは連続させない。
+// rngNextだけを使うため、オンラインでも全クライアントで同じ一対になる。
+function selectWarpPair(state) {
+  const candidates = state.warpCandidates;
+  if (candidates.length < 2) { state.warpSelection = []; state.warps = []; return; }
+  const pairs = [];
+  for (let i = 0; i < candidates.length; i++) {
+    for (let j = i + 1; j < candidates.length; j++) pairs.push([i, j]);
+  }
+  const prevKey = state.warpSelection.join(",");
+  const choices = pairs.filter(pair => pair.join(",") !== prevKey);
+  const pool = choices.length ? choices : pairs;
+  const pair = pool[Math.floor(rngNext(state) * pool.length)];
+  state.warpSelection = pair.slice();
+  state.warps = pair.map((candidateIndex, i) => {
+    const w = candidates[candidateIndex];
+    return { x: w.x, y: w.y, w: w.w, h: w.h, link: 1 - i, candidateIndex };
+  });
+}
+
 // ワープ: 出現↔消滅を繰り返し、出現中だけ入口に触れると対のワープへ瞬間移動
 function updateWarps(state, events) {
   // 出現/消滅サイクル
   if (--state.warpTimer <= 0) {
     state.warpOn = !state.warpOn;
     state.warpTimer = state.warpOn ? WARP_CYCLE.on : WARP_CYCLE.off;
+    if (!state.warpOn) selectWarpPair(state);   // 消滅中に次の位置を予告表示する
     events.push({ type: state.warpOn ? "warp-appear" : "warp-vanish", warps: state.warps });
   }
   if (!state.warpOn) return;   // 消えている間はワープしない
@@ -1005,6 +1009,8 @@ function stepMatch(state, samples) {
       } else if (p.airJumps > 0) {
         p.vy = PHYS.doubleJumpVel * jmul;
         p.airJumps--;
+        // 通常ジャンプと区別し、描画側だけで1回転させる。
+        events.push({ type: "double-jump", slot: p.slot, facing: p.facing });
       }
     }
 
@@ -1203,9 +1209,8 @@ function stepMatch(state, samples) {
       a.damageDealt += atk.damage;   // スコア: 与えたダメージを加算
       const powerMult = a.itemType === "giant" ? GIANT.powerMult : 1;
       const kb = (atk.kbBase + v.damage * atk.kbScale) * powerMult;
-      const rad = atk.angleDeg * Math.PI / 180;
-      v.vx = Math.cos(rad) * kb * a.facing;
-      v.vy = -Math.sin(rad) * kb;
+      v.vx = KB45 * kb * a.facing;
+      v.vy = -KB45 * kb;
       v.hitstun = Math.floor(4 + kb * 2.0);
       v.onGround = false;
       v.hitFlash = 8;
@@ -1326,7 +1331,7 @@ function stepMatch(state, samples) {
     }
   }
 
-  // --- 時間切れ（2分）---
+  // --- 時間切れ（3分）---
   if (!inCountdown && !state.ending && state.timeLeft > 0) {
     if (--state.timeLeft <= 0) {
       state.ending = true; state.timeUp = true; state.endTimer = 90;
@@ -1396,7 +1401,7 @@ const APP = {
 };
 window.APP = APP;  // デバッグ用に公開
 
-/* ==================== オンライン対戦（2人・入力同期lockstep） ====================
+/* ==================== オンライン対戦（2〜4人・入力同期lockstep） ====================
  * 方式: delay-based lockstep
  *  - 両クライアントが同一の決定論的sim(stepMatch)を実行する
  *  - 送るのは毎tickの入力(1バイト)だけ。tick Tの実行には両者の入力[T]が必須
@@ -1410,7 +1415,7 @@ window.APP = APP;  // デバッグ用に公開
 const NET = {
   peer: null, isHost: false, code: null,
   hostConn: null,          // 参加側: ホストへの接続
-  conns: [],               // ホスト側: [{conn, idx}]
+  conns: [],               // ホスト側: [{conn, idx, verified}]
   myIndex: 0,              // このクライアントのプレイヤー番号
   numPlayers: 2,
   dropped: new Set(),      // 途中退出したプレイヤー番号（以降NEUTRAL扱い）
@@ -1468,7 +1473,22 @@ function makeCode() {
 }
 const peerIdFor = code => "uchisuma-" + code;
 
-function connectedCount() { return 1 + NET.conns.length; }  // ホスト含む人数
+function connectedHostEntries() {
+  return NET.conns.filter(e => e.verified && e.conn.open);
+}
+
+function connectedCount() { return 1 + connectedHostEntries().length; }  // 版確認済み参加者＋ホスト
+
+// ロビー／再戦開始前に、残っている接続をP2から連番へ詰め直す。
+// 試合中はslotを変えず、次のstart直前にwelcomeを再送して参加側のmyIndexも揃える。
+function normalizeHostConnectionIndices() {
+  NET.conns.forEach((entry, i) => {
+    const idx = i + 1;
+    if (entry.idx === idx) return;
+    entry.idx = idx;
+    if (entry.conn.open) entry.conn.send({ y: "welcome", idx, ver: GAME_VERSION });
+  });
+}
 
 function netHost() {
   netCleanup();
@@ -1480,13 +1500,14 @@ function netHost() {
   NET.peer = peer;
   peer.on("open", () => { NET.status = "hosting"; NET.msg = ""; refreshOnlineUI(); });
   peer.on("connection", conn => {
-    if (NET.conns.length >= 3 || APP.phase === "match") { conn.close(); return; }  // 満員/試合中は拒否
+    if (NET.conns.length >= 3 || APP.phase !== "lobby") { conn.close(); return; }  // 満員/試合中・結果画面は拒否
     const idx = NET.conns.length + 1;   // 参加順に 1,2,3
-    const entry = { conn, idx };
+    const entry = { conn, idx, verified: false };
     NET.conns.push(entry);
     conn.on("open", () => {
-      conn.send({ y: "welcome", idx, ver: GAME_VERSION });   // 版数を通知（参加側が照合）
-      NET.status = "connected"; NET.msg = ""; refreshOnlineUI();
+      conn.send({ y: "welcome", idx: entry.idx, ver: GAME_VERSION });   // 版数と現在の割当番号を通知
+      NET.msg = "参加者のバージョンを確認中…";
+      refreshOnlineUI();
     });
     conn.on("data", d => netHostOnData(d, entry));
     conn.on("close", () => netHostConnClosed(entry));
@@ -1533,27 +1554,34 @@ function netHostOnData(d, entry) {
       NET.msg = "P" + (entry.idx + 1) + " は別バージョン(" + (d.ver || "?") + ")のため拒否。両者ページ更新を";
       refreshOnlineUI();
       setTimeout(() => { try { entry.conn.close(); } catch (e) {} }, 200);   // verfail送達を待って切断
+    } else {
+      entry.verified = true;
+      NET.status = "connected"; NET.msg = "";
+      refreshOnlineUI();
     }
     return;
   }
   if (d.y === "i") {
+    if (!entry.verified || d.p !== entry.idx) return;   // 割り当て外slotへの誤入力を防ぐ
     if (d.g !== NET.gen) return;
     NET.buffers[d.p] && (NET.buffers[d.p][d.t] = decodeSample(d.b));
     // 他の参加者へ中継
-    for (const e of NET.conns) if (e !== entry && e.conn.open) e.conn.send(d);
+    for (const e of connectedHostEntries()) if (e !== entry) e.conn.send(d);
   }
 }
 
 function netHostConnClosed(entry) {
   const i = NET.conns.indexOf(entry);
   if (i >= 0) NET.conns.splice(i, 1);
-  if (APP.phase === "match" || APP.phase === "result") {
+  if ((APP.phase === "match" || APP.phase === "result") && entry.verified) {
     // 試合中の退出: そのプレイヤーは以降NEUTRAL扱い、他へも通知
     NET.dropped.add(entry.idx);
     for (const e of NET.conns) if (e.conn.open) e.conn.send({ y: "drop", p: entry.idx });
     NET.msg = "P" + (entry.idx + 1) + " が退出しました";
   } else {
-    NET.status = NET.peer ? "hosting" : "idle";
+    normalizeHostConnectionIndices();
+    NET.status = connectedHostEntries().length ? "connected" : NET.peer ? "hosting" : "idle";
+    if (NET.status !== "connected") NET.msg = "";
   }
   refreshOnlineUI();
 }
@@ -1588,10 +1616,18 @@ function netGuestOnData(d) {
 }
 
 function netHostStart() {
-  if (!(NET.isHost && NET.status === "connected" && NET.conns.length >= 1)) return;
+  if (!NET.isHost) return;
+  const active = connectedHostEntries();
+  if (active.length < 1) return;
+  if (active.length !== NET.conns.length) {
+    NET.msg = "参加者のバージョン確認を待っています…";
+    refreshOnlineUI();
+    return;
+  }
+  normalizeHostConnectionIndices();
   NET.gen++;
-  const n = connectedCount();
-  for (const e of NET.conns) if (e.conn.open) e.conn.send({ y: "start", g: NET.gen, st: APP.stageIndex, n, ver: GAME_VERSION });
+  const n = 1 + active.length;
+  for (const e of active) e.conn.send({ y: "start", g: NET.gen, st: APP.stageIndex, n, ver: GAME_VERSION });
   startOnlineMatch(APP.stageIndex, n);
 }
 
@@ -1603,6 +1639,7 @@ function startOnlineMatch(stageIndex, numPlayers) {
   NET.stall = 0; NET.resultPrev = true;
   const slots = []; for (let i = 0; i < n; i++) slots.push(i);
   APP.match = makeMatchState(slots, stageIndex);   // ホスト=P1, 参加順にP2,P3,P4
+  fx.flips.fill(null);
   APP.mode = "online"; APP.phase = "match";
   document.getElementById("online").hidden = true;
 }
@@ -1624,7 +1661,7 @@ function netCleanup() {
 // 自分の入力を送信（参加者→ホスト / ホスト→全参加者）
 function netSendInput(t, sample) {
   const msg = { y: "i", g: NET.gen, t, b: encodeSample(sample), p: NET.myIndex };
-  if (NET.isHost) { for (const e of NET.conns) if (e.conn.open) e.conn.send(msg); }
+  if (NET.isHost) { for (const e of connectedHostEntries()) e.conn.send(msg); }
   else if (NET.hostConn && NET.hostConn.open) NET.hostConn.send(msg);
 }
 
@@ -1829,6 +1866,7 @@ function startMatch() {
   APP.slots.forEach((s, i) => { if (s && !s.cpu) humans.push(i); });
   APP.soloSlot = humans.length === 1 ? humans[0] : -1;
   APP.match = makeMatchState(slotIndices, APP.stageIndex);
+  fx.flips.fill(null);
   APP.phase = "match";
 }
 
@@ -1890,16 +1928,22 @@ function updateResult() {
 
 // ホストが選んだ次ステージを参加者へ通知（表示用）
 function olBroadcastStage() {
-  for (const e of NET.conns) if (e.conn.open) e.conn.send({ y: "stagesel", st: APP.stageIndex });
+  for (const e of connectedHostEntries()) e.conn.send({ y: "stagesel", st: APP.stageIndex });
 }
 
 /* ==================== 演出（非決定でOKな層） ==================== */
 
-const fx = { particles: [], shake: 0, koFlash: 0, tramp: {}, rings: [], koLabel: null };  // tramp: 床x→ビヨン揺れ
+const fx = {
+  particles: [], shake: 0, koFlash: 0, tramp: {}, rings: [], koLabel: null,
+  flips: Array(MAX_PLAYERS).fill(null),  // slotごとの二段ジャンプ宙返り
+};  // tramp: 床x→ビヨン揺れ
 
 function handleEvents(events) {
   for (const ev of events) {
-    if (ev.type === "hit") {
+    if (ev.type === "double-jump") {
+      // 向きを開始時に固定し、空中で反転入力しても回転方向を飛ばさない。
+      fx.flips[ev.slot] = { remaining: DOUBLE_JUMP_FLIP_TICKS, direction: ev.facing < 0 ? -1 : 1 };
+    } else if (ev.type === "hit") {
       fx.shake = Math.min(10, 4 + ev.dmg * 0.03);
       for (let k = 0; k < 10; k++) {
         fx.particles.push({
@@ -2066,6 +2110,10 @@ function handleEvents(events) {
 function updateFx() {
   fx.shake *= 0.85;
   if (fx.koFlash > 0) fx.koFlash--;
+  for (let i = 0; i < fx.flips.length; i++) {
+    const flip = fx.flips[i];
+    if (flip && --flip.remaining <= 0) fx.flips[i] = null;
+  }
   for (let i = fx.particles.length - 1; i >= 0; i--) {
     const pt = fx.particles[i];
     pt.x += pt.vx; pt.y += pt.vy;
@@ -2441,6 +2489,18 @@ function drawPlayer(p) {
     ctx.globalAlpha = 0.35;
   }
 
+  // 二段ジャンプ時だけ、名前・ガード・攻撃判定を除いたキャラクター本体を1回転。
+  // 右向きは時計回り、左向きは反時計回りで前方宙返りに見せる。
+  const flip = fx.flips[p.slot];
+  ctx.save();
+  if (flip) {
+    const progress = 1 - flip.remaining / DOUBLE_JUMP_FLIP_TICKS;
+    const cy = p.y - PLAYER_H / 2;
+    ctx.translate(p.x, cy);
+    ctx.rotate(progress * Math.PI * 2 * flip.direction);
+    ctx.translate(-p.x, -cy);
+  }
+
   // 短い足（体より下に。地上を動いているときはちょこちょこ交互に動く）
   const legLen = 8, bodyH = PLAYER_H - legLen;
   const moving = p.onGround && Math.abs(p.vx) > 0.4;
@@ -2477,6 +2537,7 @@ function drawPlayer(p) {
   ctx.arc(eyeX - 4 + p.facing * 1.5, by + 14, 2, 0, Math.PI * 2);
   ctx.arc(eyeX + 6 + p.facing * 1.5, by + 14, 2, 0, Math.PI * 2);
   ctx.fill();
+  ctx.restore();   // 二段ジャンプ宙返りを解除
 
   // 攻撃スイング（通常/必殺で色・大きさ、reach延長、向き別 fwd/up/down）
   const atk = p.attackIsSpecial ? SPECIAL : ATTACK;
@@ -2963,7 +3024,7 @@ function drawLobby() {
     "キーボード右: HJKU移動(H左J下K右U上) / L=攻撃 / -=ガード(卵) / .=風船",
     "★攻撃は上/下だけ入力で上下攻撃。2秒長押しで必殺技（ガードを一撃で割る）",
     "★風船=Space長押しで浮上（落下防止）。1ストック1回・使い切ると割れる。卵も使い切ると割れる",
-    "★アイテムが空から落下！ リーチ延長／移動＆ジャンプ1.5倍／長距離ビーム の3種",
+    "★アイテムが空から落下！ リーチ／速度／ビーム／巨大化／風船補充 の5種",
   ];
   lines.forEach((t, i) => ctx.fillText(t, W / 2, 380 + i * 26));
 
@@ -3106,7 +3167,8 @@ window.UCHI = {
   APP, keys, runTick, renderNow,
   makeMatchState, stepMatch, makePlayer,
   PHYS, ATTACK, SPECIAL, GUARD, STAGES, BLAST, STOCKS, ITEM, BALLOON, MOB, rngNext,
-  CRUMBLE, PENDULUM, LAVA, WARP_CD, PLAYER_W, PLAYER_H,
+  CRUMBLE, PENDULUM, LAVA, WARP_CD, PLAYER_W, PLAYER_H, DOUBLE_JUMP_FLIP_TICKS,
+  fx,
   NET, netHost, netJoin, netHostStart, encodeSample, decodeSample,
   makeCpuSource, cpuThink,
 };
