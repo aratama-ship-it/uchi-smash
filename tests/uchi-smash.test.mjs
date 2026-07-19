@@ -123,6 +123,12 @@ test("release constants and input codec stay coherent", () => {
   assert.equal(game.STAGES.some(stage => stage.name === "ワープ広場"), false);
   assert.equal(game.STAGES.some(stage => stage.name === "うごく壁"), false);
   assert.equal(game.STAGES.some(stage => stage.name === "ながれ場"), false);
+  assert.equal(game.LOBBY_CORNER_CHARACTERS.length, 4);
+  assert.deepEqual([...game.LOBBY_CORNER_CHARACTERS].map(character => character.slot), [0, 1, 2, 3]);
+  assert.equal(game.LOBBY_CORNER_CHARACTERS.filter(character => character.x < 640).length, 2);
+  assert.equal(game.LOBBY_CORNER_CHARACTERS.filter(character => character.x > 640).length, 2);
+  assert.equal(game.LOBBY_CORNER_CHARACTERS.filter(character => character.y < 360).length, 2);
+  assert.equal(game.LOBBY_CORNER_CHARACTERS.filter(character => character.y > 360).length, 2);
   const flowTower = game.STAGES.find(stage => stage.name === "ながれの塔");
   assert.ok(flowTower);
   assert.equal(flowTower.platforms.filter(platform => platform.conveyor).length, 2);
