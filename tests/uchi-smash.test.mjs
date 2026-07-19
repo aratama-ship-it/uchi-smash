@@ -6,7 +6,7 @@ import vm from "node:vm";
 const INDEX_PATH = new URL("../index.html", import.meta.url);
 const HTML = fs.readFileSync(INDEX_PATH, "utf8");
 
-function loadGame() {
+function loadGame(search = "") {
   const scripts = [...HTML.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)].map(match => match[1]);
   const gameScript = scripts.find(source => source.includes('"use strict"'));
   assert.ok(gameScript, "inline game script should exist");
@@ -58,7 +58,7 @@ function loadGame() {
     Map,
     Set,
     URLSearchParams,
-    location: { search: "", origin: "http://localhost", pathname: "/index.html" },
+    location: { search, origin: "http://localhost", pathname: "/index.html" },
     navigator: { getGamepads: () => [], clipboard: null },
     performance: { now: () => 0 },
     requestAnimationFrame: () => 1,
@@ -119,15 +119,24 @@ test("release constants and input codec stay coherent", () => {
   const { UCHI: game } = sandbox;
   assert.match(HTML, /<title>PYGMIX BONBON<\/title>/);
   assert.match(HTML, /ctx\.fillText\("PYGMIX BONBON", W \/ 2, 120\)/);
-  assert.match(HTML, /const GAME_VERSION = "0\.9\.14"/);
+  assert.match(HTML, /const GAME_VERSION = "0\.9\.19"/);
   assert.match(HTML, /リーチ・速度・ビーム・巨大化・風船補充の5種類/);
   assert.equal(game.PHYS.gravity, 0.495);
   assert.equal(game.DOWN_ATTACK.damageMult, 1.2);
   assert.equal(game.DOWN_ATTACK.groundedUpKbMult, 1.3);
+  assert.equal(game.DOWN_ATTACK.startupTicks, 1);
   assert.equal(game.BODY_COLLISION.passes, 32);
   assert.equal(game.TAUNT_TICKS, 90);
-  assert.equal(game.STAGES.length, 6);
-  assert.equal(new Set(game.STAGES.map(stage => stage.name)).size, 6);
+  assert.equal(game.MID_CHARGE, 60);
+  assert.equal(game.SPECIAL_CHARGE, 120);
+  assert.equal(game.ATTACK.damage, 8);
+  assert.equal(game.CHARGED_ATTACK.damage, 16);
+  assert.equal(game.SPECIAL.damage, 27);
+  assert.equal(game.SPECIAL.total - game.SPECIAL.activeFrom, 8);
+  assert.equal(game.SPECIAL.activeFrom - game.SPECIAL.activeTo + 1, 43);
+  assert.equal(game.SPECIAL.activeTo, 12);
+  assert.equal(game.STAGES.length, 7);
+  assert.equal(new Set(game.STAGES.map(stage => stage.name)).size, 7);
   assert.equal(game.STAGES.some(stage => stage.name === "エレベーター"), false);
   assert.equal(game.STAGES.some(stage => stage.name === "ワープ広場"), false);
   assert.equal(game.STAGES.some(stage => stage.name === "うごく壁"), false);
@@ -169,6 +178,14 @@ test("release constants and input codec stay coherent", () => {
   assert.equal(skyIslands.ceiling.segments, 14);
   assert.equal(skyIslands.ceiling.breakSpeed, 10.5);
   assert.equal(skyIslands.platforms.length, 13);
+  const ice = game.STAGES.find(stage => stage.name === "こおり");
+  assert.ok(ice);
+  assert.equal(ice.theme.ice, true);
+  assert.equal(ice.penguin, true);
+  assert.equal(ice.platforms.every(platform => platform.slope !== 0), true);
+  assert.equal(ice.platforms.filter(platform => platform.main).length, 2);
+  assert.ok(ice.icePhysics.accel < game.PHYS.groundAccel);
+  assert.ok(ice.icePhysics.friction > game.PHYS.friction);
   assert.equal(typeof sandbox.makeKeyboardSource(0).sample, "function");
   assert.equal(typeof sandbox.makeGamepadSource(0).sample, "function");
   assert.equal(game.makeMatchState([0, 1], 0).timeLeft, 10800);
@@ -649,6 +666,157 @@ test("down attacks deal 1.2x damage and launch vertically based on grounded stat
   assert.equal(grounded.events.find(event => event.type === "hit").launchY, -1);
 });
 
+test("normal down attacks become active after one startup tick", () => {
+  const sandbox = loadGame();
+  const { UCHI: game } = sandbox;
+  const match = game.makeMatchState([0, 1], 0);
+  const attacker = match.players[0];
+  const victim = match.players[1];
+  const neutral = {
+    left: false, right: false, up: false, down: false,
+    jump: false, attack: false, guard: false, balloon: false, taunt: false, start: false,
+  };
+  match.countdown = 0;
+  match.itemTimer = 9999;
+  attacker.x = victim.x = 640;
+  attacker.y = 300;
+  victim.y = 350;
+  attacker.vx = attacker.vy = victim.vx = victim.vy = 0;
+  attacker.onGround = victim.onGround = false;
+  victim.invuln = 0;
+
+  game.stepMatch(match, [{ ...neutral, down: true, attack: true }, neutral]);
+  game.stepMatch(match, [{ ...neutral, down: true }, neutral]);
+  assert.equal(attacker.attackTimer, game.ATTACK.total);
+  assert.equal(victim.damage, 0);
+
+  const events = game.stepMatch(match, [{ ...neutral, down: true }, neutral]);
+  assert.equal(attacker.attackTimer, game.ATTACK.total - game.DOWN_ATTACK.startupTicks);
+  assert.equal(victim.damage, game.ATTACK.damage * game.DOWN_ATTACK.damageMult);
+  assert.equal(events.some(event => event.type === "hit"), true);
+});
+
+test("charge release selects normal, mid, and full tiers at 50 and 100 percent", () => {
+  const neutral = {
+    left: false, right: false, up: false, down: false,
+    jump: false, attack: false, guard: false, balloon: false, taunt: false, start: false,
+  };
+
+  function chargeFor(ticks) {
+    const sandbox = loadGame();
+    const { UCHI: game } = sandbox;
+    const match = game.makeMatchState([0, 1], 0);
+    match.countdown = 0;
+    match.itemTimer = 9999;
+    for (const player of match.players) {
+      player.invuln = 9999;
+      player.x += player.slot * 400;
+    }
+    const attacker = match.players[0];
+    for (let tick = 0; tick < ticks; tick++) {
+      game.stepMatch(match, [{ ...neutral, attack: true }, neutral]);
+    }
+    if (ticks < game.SPECIAL_CHARGE) game.stepMatch(match, [neutral, neutral]);
+    return { game, attacker };
+  }
+
+  const belowHalf = chargeFor(59);
+  assert.equal(belowHalf.attacker.attackTimer, belowHalf.game.ATTACK.total);
+  assert.equal(belowHalf.attacker.attackIsCharged, false);
+  assert.equal(belowHalf.attacker.attackIsSpecial, false);
+  assert.equal(belowHalf.game.attackData(belowHalf.attacker), belowHalf.game.ATTACK);
+
+  const atHalf = chargeFor(60);
+  assert.equal(atHalf.attacker.attackTimer, atHalf.game.CHARGED_ATTACK.total);
+  assert.equal(atHalf.attacker.attackIsCharged, true);
+  assert.equal(atHalf.attacker.attackIsSpecial, false);
+  assert.equal(atHalf.game.attackData(atHalf.attacker), atHalf.game.CHARGED_ATTACK);
+
+  const belowFull = chargeFor(119);
+  assert.equal(belowFull.attacker.attackIsCharged, true);
+  assert.equal(belowFull.attacker.attackIsSpecial, false);
+
+  const full = chargeFor(120);
+  assert.equal(full.attacker.attackTimer, full.game.SPECIAL.total);
+  assert.equal(full.attacker.attackIsCharged, false);
+  assert.equal(full.attacker.attackIsSpecial, true);
+  assert.equal(full.game.attackData(full.attacker), full.game.SPECIAL);
+});
+
+test("mid charge deals 16 damage and strengthened full charge deals 27", () => {
+  function hitWithTier(tier) {
+    const sandbox = loadGame();
+    const { UCHI: game } = sandbox;
+    const match = game.makeMatchState([0, 1], 0);
+    const attacker = match.players[0];
+    const victim = match.players[1];
+    const neutral = {
+      left: false, right: false, up: false, down: false,
+      jump: false, attack: false, guard: false, balloon: false, taunt: false, start: false,
+    };
+    const attack = tier === "full" ? game.SPECIAL : tier === "mid" ? game.CHARGED_ATTACK : game.ATTACK;
+    match.countdown = 0;
+    match.itemTimer = 9999;
+    attacker.x = 600;
+    attacker.y = 560;
+    attacker.vx = attacker.vy = 0;
+    attacker.onGround = true;
+    attacker.facing = 1;
+    attacker.attackTimer = attack.activeFrom + 1;
+    attacker.attackIsSpecial = tier === "full";
+    attacker.attackIsCharged = tier === "mid";
+    attacker.attackDir = "fwd";
+    attacker.attackVictims = [];
+    victim.x = 650;
+    victim.y = 560;
+    victim.vx = victim.vy = 0;
+    victim.onGround = true;
+    victim.invuln = 0;
+
+    const events = game.stepMatch(match, [neutral, neutral]);
+    return { game, victim, events };
+  }
+
+  const normal = hitWithTier("normal");
+  const mid = hitWithTier("mid");
+  const full = hitWithTier("full");
+  assert.equal(normal.victim.damage, 8);
+  assert.equal(mid.victim.damage, 16);
+  assert.equal(full.victim.damage, 27);
+  assert.equal(mid.events.some(event => event.type === "charged-hit"), true);
+  assert.equal(full.events.some(event => event.type === "special-hit"), true);
+});
+
+test("knockouts after time up do not reduce remaining stocks", () => {
+  const { UCHI: game } = loadGame();
+  const match = game.makeMatchState([0, 1], 0);
+  const neutral = {
+    left: false, right: false, up: false, down: false,
+    jump: false, attack: false, guard: false, balloon: false, taunt: false, start: false,
+  };
+  match.countdown = 0;
+  match.timeLeft = 1;
+  match.itemTimer = 9999;
+  for (const player of match.players) {
+    player.vx = 0;
+    player.vy = 0;
+    player.invuln = 9999;
+  }
+
+  game.stepMatch(match, [neutral, neutral]);
+  assert.equal(match.timeUp, true);
+  assert.equal(match.ending, true);
+  const timedUpStocks = match.players.map(player => player.stocks);
+
+  const target = match.players[0];
+  target.x = game.BLAST.right + 1;
+  const events = game.stepMatch(match, [neutral, neutral]);
+
+  assert.equal(events.some(event => event.type === "ko" && event.slot === target.slot), true);
+  assert.deepEqual(match.players.map(player => player.stocks), timedUpStocks);
+  assert.equal(target.alive, true);
+});
+
 test("lobby controls open in a modal and pause lobby input", () => {
   const sandbox = loadGame();
   const { UCHI: game } = sandbox;
@@ -700,6 +868,113 @@ test("circus warps choose two of four candidates and change every cycle", () => 
     assert.deepEqual([...match.warpSelection], upcoming);
     assert.equal(appearEvents[0].type, "warp-appear");
   }
+});
+
+test("ice slopes carry players while acceleration and stopping remain slippery", () => {
+  const sandbox = loadGame();
+  const { UCHI: game } = sandbox;
+  const iceIndex = game.STAGES.findIndex(stage => stage.name === "こおり");
+  const ice = game.makeMatchState([0, 1], iceIndex);
+  const plaza = game.makeMatchState([0, 1], 0);
+  const neutral = {
+    left: false, right: false, up: false, down: false,
+    jump: false, attack: false, guard: false, balloon: false, taunt: false, start: false,
+  };
+  ice.countdown = plaza.countdown = 0;
+  ice.itemTimer = plaza.itemTimer = 9999;
+
+  const leftSlope = ice.platforms.find(platform => platform.main && platform.slope > 0);
+  const rightSlope = ice.platforms.find(platform => platform.main && platform.slope < 0);
+  assert.equal(game.platformYAt(leftSlope, leftSlope.x), 500);
+  assert.equal(game.platformYAt(leftSlope, leftSlope.x + leftSlope.w), 590);
+  assert.equal(game.platformYAt(rightSlope, rightSlope.x), 590);
+  assert.equal(game.platformYAt(rightSlope, rightSlope.x + rightSlope.w), 500);
+
+  const icePlayer = ice.players[0];
+  icePlayer.x = 280;
+  icePlayer.y = game.platformYAt(leftSlope, icePlayer.x);
+  icePlayer.vx = icePlayer.vy = 0;
+  icePlayer.onGround = true;
+  icePlayer.invuln = 9999;
+  const plazaPlayer = plaza.players[0];
+  plazaPlayer.x = 420;
+  plazaPlayer.y = 560;
+  plazaPlayer.vx = plazaPlayer.vy = 0;
+  plazaPlayer.onGround = true;
+  plazaPlayer.invuln = 9999;
+
+  game.stepMatch(ice, [{ ...neutral, right: true }, neutral]);
+  game.stepMatch(plaza, [{ ...neutral, right: true }, neutral]);
+  assert.ok(icePlayer.vx < plazaPlayer.vx, "ice should build speed more slowly");
+  assert.equal(icePlayer.onGround, true);
+  assert.ok(Math.abs(icePlayer.y - game.platformYAt(leftSlope, icePlayer.x)) < 1e-9);
+
+  icePlayer.vx = plazaPlayer.vx = 5;
+  icePlayer.prev = plazaPlayer.prev = neutral;
+  game.stepMatch(ice, [neutral, neutral]);
+  game.stepMatch(plaza, [neutral, neutral]);
+  assert.ok(icePlayer.vx > plazaPlayer.vx, "ice should retain more momentum while stopping");
+  game.stepMatch(ice, [{ ...neutral, left: true }, neutral]);
+  assert.ok(icePlayer.vx > 0, "one reverse input should not instantly reverse an ice slide");
+});
+
+test("ice stage can be opened directly from its preview URL", () => {
+  const { UCHI: game } = loadGame("?stage=%E3%81%93%E3%81%8A%E3%82%8A");
+  assert.equal(game.STAGES[game.APP.stageIndex].name, "こおり");
+});
+
+test("third-party penguin warns, charges along the ice, and knocks players away", () => {
+  const sandbox = loadGame();
+  const { UCHI: game } = sandbox;
+  const iceIndex = game.STAGES.findIndex(stage => stage.name === "こおり");
+  const match = game.makeMatchState([0, 1], iceIndex);
+  const neutral = {
+    left: false, right: false, up: false, down: false,
+    jump: false, attack: false, guard: false, balloon: false, taunt: false, start: false,
+  };
+  match.countdown = 0;
+  match.itemTimer = 9999;
+  const penguin = match.penguin;
+  assert.ok(penguin);
+  penguin.state = "warn";
+  penguin.timer = 1;
+  penguin.dir = 1;
+  penguin.x = 80;
+  penguin.y = game.mainSurfaceYAt(match, penguin.x);
+  for (const player of match.players) {
+    player.x = 900;
+    player.y = game.mainSurfaceYAt(match, player.x);
+    player.vx = player.vy = 0;
+    player.onGround = true;
+    player.invuln = 9999;
+  }
+
+  const chargeEvents = game.stepMatch(match, [neutral, neutral]);
+  assert.equal(penguin.state, "charge");
+  assert.equal(chargeEvents.some(event => event.type === "penguin-charge"), true);
+
+  const target = match.players[0];
+  target.x = penguin.x + 30;
+  target.y = game.mainSurfaceYAt(match, target.x);
+  target.invuln = 0;
+  const hitEvents = game.stepMatch(match, [neutral, neutral]);
+  assert.equal(target.damage, game.PENGUIN.damage);
+  assert.ok(target.vx > 0);
+  assert.ok(target.vy < 0);
+  assert.equal(hitEvents.some(event => event.type === "penguin-hit"), true);
+
+  game.APP.match = match;
+  game.APP.phase = "match";
+  assert.doesNotThrow(() => game.renderNow());
+
+  penguin.x = 1280;
+  penguin.state = "charge";
+  penguin.dir = 1;
+  match.hitstop = 0;
+  game.stepMatch(match, [neutral, neutral]);
+  assert.equal(penguin.state, "wait");
+  assert.equal(penguin.dir, -1);
+  assert.equal(penguin.passes, 1);
 });
 
 test("all stages remain deterministic and finite for four players", () => {

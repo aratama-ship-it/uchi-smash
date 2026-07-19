@@ -255,10 +255,11 @@
     </div>
     <div class="help-notes">
       <p><strong>1人・オンライン操作</strong><br>移動は WASD / 矢印、攻撃 J、ガード K、風船 Space、アピール Y。</p>
-      <p><strong>攻撃の使い分け</strong><br>上か下だけを入力しながら攻撃で上下攻撃。2秒長押しで必殺技。</p>
+      <p><strong>攻撃の使い分け</strong><br>上か下だけを入力しながら攻撃で上下攻撃。1秒以上で中間溜め、2秒でフルチャージ。</p>
       <p><strong>風船</strong><br>長押しで浮上。1ストックにつき1回で、使い切ると割れます。</p>
       <p><strong>しゃがみ</strong><br>通常の地面で下入力すると高さが半分になり、正面レーザーを避けられます。</p>
       <p><strong>アイテム</strong><br>リーチ・速度・ビーム・巨大化・風船補充の5種類です。</p>
+      <p><strong>タイムアップ</strong><br>時間切れになった瞬間の残ストックで判定し、その後の撃墜ではストックが減りません。</p>
     </div>
     <div class="help-footer">背景の暗い部分をクリックしても閉じられます。</div>
   </section>
@@ -348,23 +349,53 @@ const ATTACK = {
   special: false,
 };
 
-// 必殺技: 攻撃ボタン長押し2秒でチャージ完了 → 発動。破壊力抜群＆ガード一撃粉砕
+// 1秒(50%)以上2秒未満で離す中間溜め。通常とフルのちょうど中間のダメージ。
+const CHARGED_ATTACK = {
+  total: 26, activeFrom: 20, activeTo: 11,
+  range: 60, height: 54,
+  damage: 16,
+  kbBase: 6.3, kbScale: 0.132,
+  angleDeg: 45,
+  hitstopFrames: 10,
+  charged: true,
+  special: false,
+};
+
+// フルチャージ: 攻撃ボタン長押し2秒で自動発動。従来より少し強く、ガードを一撃粉砕する。
 const SPECIAL_CHARGE = 120;  // 2秒（60fps）
+const MID_CHARGE = SPECIAL_CHARGE / 2;  // 50%＝1秒
 const SPECIAL = {
-  total: 32, activeFrom: 24, activeTo: 12,
+  // 発生8F・後隙12Fは維持し、攻撃判定だけ従来13Fから43F（+0.5秒）へ延長。
+  total: 62, activeFrom: 54, activeTo: 12,
   range: 74, height: 68,
-  damage: 24,
-  kbBase: 9.5, kbScale: 0.16,
+  damage: 27,
+  kbBase: 10.2, kbScale: 0.17,
   angleDeg: 45,
   hitstopFrames: 16,
   special: true,
 };
 
+function attackData(player) {
+  if (player.attackIsSpecial) return SPECIAL;
+  if (player.attackIsCharged) return CHARGED_ATTACK;
+  return ATTACK;
+}
+
 // 下攻撃: ダメージ1.2倍。空中の相手は真下、接地中の相手は真上へ強く打ち上げる。
 const DOWN_ATTACK = {
   damageMult: 1.2,
   groundedUpKbMult: 1.3,
+  startupTicks: 1,  // 通常の下攻撃だけ素早く発生（正面・上攻撃は4Fのまま）
 };
+
+// 下通常攻撃は発生だけを早め、攻撃判定の持続フレーム数は通常攻撃と揃える。
+function attackActiveWindow(player, attack) {
+  if (!attack.special && player.attackDir === "down") {
+    const activeFrom = attack.total - DOWN_ATTACK.startupTicks;
+    return { activeFrom, activeTo: activeFrom - (attack.activeFrom - attack.activeTo) };
+  }
+  return { activeFrom: attack.activeFrom, activeTo: attack.activeTo };
+}
 
 // ガード（卵型シールド）: 使うと縮む（被弾＋時間経過）。使い切ったら復活まで終わり。
 //   ガード中は移動不可。通常攻撃は防げるが必殺技は一撃で割れる。
@@ -377,7 +408,7 @@ const GUARD = {
 
 // ★オンライン同期の要: 決定論simに影響する変更(stepMatch/ステージ/物理/定数など)をしたら
 //   必ずこの版数を上げること。オンライン接続時に両者で照合し、食い違えば試合させず弾く。
-const GAME_VERSION = "0.9.14";
+const GAME_VERSION = "0.9.19";
 
 const PLAYER_W = 36, PLAYER_H = 48;
 // キャラクター同士の物理衝突。複数人が同時に密集しても、反復して体の重なりを解消する。
@@ -467,6 +498,19 @@ const MOB = {
   kbBase: 5, kbScale: 0.10,
 };
 
+// 氷ステージの第三者ペンギン。左右の入口で予告してから、斜面に沿って一気に横断する。
+const PENGUIN = {
+  width: 58,
+  height: 46,
+  firstWait: 150,
+  waitTicks: 210,
+  warnTicks: 72,
+  speed: 11.5,
+  damage: 11,
+  kbBase: 5.8,
+  kbScale: 0.11,
+};
+
 // 45度ふっとばしの係数（√2/2）。Math.cos/sinを避け決定論を担保
 const KB45 = 0.7071067811865476;
 
@@ -478,6 +522,13 @@ const WARP_CD = 30;                                            // ワープ後�
 const WARP_CYCLE = { on: 300, off: 210 };                     // ワープ口の出現(5s)↔消滅(3.5s)サイクル
 
 const BLAST = { left: -250, right: W + 250, top: -350, bottom: H + 330 };
+
+// slope は足場の左端から右端までの高さ差。正なら右へ下り、負なら右へ上る。
+function platformYAt(platform, x) {
+  if (!platform.slope) return platform.y;
+  const t = Math.max(0, Math.min(1, (x - platform.x) / platform.w));
+  return platform.y + platform.slope * t;
+}
 
 // ============================ ステージ ============================
 // platforms: 全て上からのみ乗れる（droppable=薄い足場で下からすり抜け・降下可、
@@ -583,6 +634,22 @@ const STAGES = [
       { x: 386, y: 326, w: 48, h: 88 },   // 左浮き島
       { x: 846, y: 326, w: 48, h: 88 },   // 右浮き島
     ],
+  },
+  {
+    // こおり: 左右から中央へ下るV字の氷床。加速・減速・切り返しが鈍く、中央へ少し滑る。
+    // 第三者ペンギンは左右交互に予告してから斜面を横断する。
+    name: "こおり",
+    icePhysics: { accel: 0.28, turnAccel: 0.18, friction: 0.972, slopeSlide: 0.035 },
+    penguin: true,
+    theme: { sky:["#07182a","#17435c","#77b8c8"], mountain:"rgba(12,38,58,0.78)", ice:true,
+             dirt:"#1f4b66", grass:"#dff9ff", grass2:"#7fd5ea", plat:"#75c7dc", platTop:"#e8fbff" },
+    platforms: [
+      { x: 100, y: 500, w: 540, slope:  90, droppable: false, main: true },
+      { x: 640, y: 590, w: 540, slope: -90, droppable: false, main: true },
+      { x: 300, y: 330, w: 260, slope:  45, droppable: true },
+      { x: 720, y: 375, w: 260, slope: -45, droppable: true },
+    ],
+    spawns: [ {x:280,y:530}, {x:1000,y:530}, {x:460,y:560}, {x:820,y:560} ],
   },
   {
     // 溶岩ふたご島（旧 ふたご島/うごく床/くずれ足場/振り子と溶岩 を統合）:
@@ -761,9 +828,13 @@ function cpuThink(src, slot, m) {
   if (adx > 30) {
     const probeX = me.x + face * (PLAYER_W / 2 + 14);
     const outerEdge = me.onGround && ((me.x < 120 && face < 0) || (me.x > W - 120 && face > 0));
-    const groundAhead = m.platforms.some(pl => probeX > pl.x && probeX < pl.x + pl.w && Math.abs(me.y - pl.y) < 2);
+    const groundAhead = m.platforms.some(pl => probeX > pl.x && probeX < pl.x + pl.w
+      && Math.abs(me.y - platformYAt(pl, probeX)) < 18);
     // 進む先の下方に着地できる地面があるか（薄い足場から降りて回り込む用）
-    const groundBelow = m.platforms.some(pl => probeX > pl.x && probeX < pl.x + pl.w && pl.y > me.y + 4 && pl.y < me.y + 220);
+    const groundBelow = m.platforms.some(pl => {
+      const surfaceY = platformYAt(pl, probeX);
+      return probeX > pl.x && probeX < pl.x + pl.w && surfaceY > me.y + 4 && surfaceY < me.y + 220;
+    });
     if (outerEdge) {
       // 外周の崖: 歩いて出ない（攻撃だけ）
     } else if (me.onGround && !groundAhead) {
@@ -822,7 +893,8 @@ function makePlayer(slotIdx, stage) {
     invuln: 90,
     hitstun: 0,
     attackTimer: 0,
-    attackIsSpecial: false,       // 現在の攻撃が必殺技か
+    attackIsSpecial: false,       // 現在の攻撃がフルチャージ必殺技か
+    attackIsCharged: false,       // 現在の攻撃が50〜99%の中間溜めか
     attackVictims: [],
     chargeTimer: 0,               // 必殺技チャージ経過tick（攻撃長押し）
     guardHp: GUARD.max,           // 卵の残量（0で使い切り＝復活まで使えない）
@@ -852,7 +924,8 @@ function makeMatchState(slotIndices, stageIndex) {
   if (seed === 0) seed = 1;
   // 足場は可変（動く床）なのでライブなコピーを作る（静的STAGESは書き換えない）
   const platforms = stage.platforms.map(pl => {
-    const c = { x: pl.x, y: pl.y, w: pl.w, droppable: pl.droppable, main: pl.main, dx: 0, dy: 0 };
+    const c = { x: pl.x, y: pl.y, w: pl.w, slope: pl.slope || 0,
+      droppable: pl.droppable, main: pl.main, dx: 0, dy: 0 };
     if (pl.move) {
       c.baseX = pl.x; c.baseY = pl.y;
       c.moveAxis = pl.move.axis; c.moveRange = pl.move.range;
@@ -865,7 +938,7 @@ function makeMatchState(slotIndices, stageIndex) {
   });
   // 地面の高さ（動く壁の基準）
   const mains = stage.platforms.filter(p => p.main);
-  const groundY = mains.length ? Math.max(...mains.map(p => p.y)) : 585;
+  const groundY = mains.length ? Math.max(...mains.map(p => Math.max(p.y, p.y + (p.slope || 0)))) : 585;
   // 動く壁のライブコピー
   const walls = (stage.walls || []).map(w => ({
     x: w.x, w: w.w, height: w.height, side: w.side,
@@ -906,6 +979,8 @@ function makeMatchState(slotIndices, stageIndex) {
     wallVel: stage.wallSpeed || 0,
     // ドスン風モブ（stage.mob フラグのあるステージのみ）
     mob: stage.mob ? { x: stage.mobX || 640, homeX: stage.mobX || 640, y: groundY - MOB.size, vy: 0, state: "rise", timer: 0, swayOff: 0, swayVel: MOB.swaySpeed, victims: [] } : null,
+    // 氷ステージの第三者ペンギン。最初は左側から現れ、その後は左右交互に突進する。
+    penguin: stage.penguin ? { x: 66, y: groundY, dir: 1, state: "wait", timer: PENGUIN.firstWait, passes: 0 } : null,
     // 振り子（振れる球のハザード）。調和振動で下(off=0)が最速＝本物の振り子挙動
     pendulums: (stage.pendulums || []).map(pd => {
       const om = 2 * Math.PI / (pd.period || 130);   // Math.PIは定数＝決定論的
@@ -958,7 +1033,8 @@ function updateMob(state, events) {
     for (const plat of state.platforms) {
       if (plat.crumbleState === "gone") continue;
       if (m.x + MOB.size <= plat.x || m.x >= plat.x + plat.w) continue;
-      if (prevBottom <= plat.y && m.y + MOB.size >= plat.y) { landedY = plat.y; break; }
+      const surfaceY = platformYAt(plat, m.x + MOB.size / 2);
+      if (prevBottom <= surfaceY && m.y + MOB.size >= surfaceY) { landedY = surfaceY; break; }
     }
     if (landedY !== null) {
       m.y = landedY - MOB.size; m.vy = 0; m.state = "wait"; m.timer = MOB.waitTicks;
@@ -981,10 +1057,90 @@ function updateMob(state, events) {
       p.vy = -KB45 * kb;
       p.hitstun = Math.floor(6 + kb * 2);
       p.onGround = false; p.hitFlash = 8; p.invuln = 20;
-      p.chargeTimer = 0; p.attackTimer = 0; p.attackIsSpecial = false;
+      p.chargeTimer = 0; p.attackTimer = 0; p.attackIsSpecial = false; p.attackIsCharged = false;
       state.hitstop = 6;
       events.push({ type: "mob-hit", x: p.x, y: p.y - PLAYER_H / 2, dir, dmg: p.damage });
     }
+  }
+}
+
+// main床のうちxに最も近い斜面上の高さ。ペンギンがV字床を外れず走るために使う。
+function mainSurfaceYAt(state, x) {
+  const mains = state.platforms.filter(platform => platform.main);
+  if (!mains.length) return state.groundY;
+  let nearest = mains[0], nearestX = Math.max(nearest.x, Math.min(nearest.x + nearest.w, x));
+  let nearestDistance = Math.abs(x - nearestX);
+  for (let i = 0; i < mains.length; i++) {
+    const platform = mains[i];
+    if (x >= platform.x && x <= platform.x + platform.w) return platformYAt(platform, x);
+    const clampedX = Math.max(platform.x, Math.min(platform.x + platform.w, x));
+    const distance = Math.abs(x - clampedX);
+    if (distance < nearestDistance) { nearest = platform; nearestX = clampedX; nearestDistance = distance; }
+  }
+  return platformYAt(nearest, nearestX);
+}
+
+// 第三者ペンギン: 待機→入口で予告→斜面に沿って突進→反対側へ退場、を左右交互に繰り返す。
+function updatePenguin(state, events) {
+  const penguin = state.penguin;
+  if (!penguin) return;
+  const mains = state.platforms.filter(platform => platform.main);
+  const leftEdge = Math.min(...mains.map(platform => platform.x));
+  const rightEdge = Math.max(...mains.map(platform => platform.x + platform.w));
+  const entryX = penguin.dir > 0 ? leftEdge - PENGUIN.width * 0.35 : rightEdge + PENGUIN.width * 0.35;
+
+  if (penguin.state === "wait") {
+    if (--penguin.timer <= 0) {
+      penguin.state = "warn";
+      penguin.timer = PENGUIN.warnTicks;
+      penguin.x = entryX;
+      penguin.y = mainSurfaceYAt(state, penguin.x);
+      events.push({ type: "penguin-warn", x: penguin.x, y: penguin.y, dir: penguin.dir });
+    }
+    return;
+  }
+
+  penguin.y = mainSurfaceYAt(state, penguin.x);
+  if (penguin.state === "warn") {
+    if (--penguin.timer <= 0) {
+      penguin.state = "charge";
+      events.push({ type: "penguin-charge", x: penguin.x, y: penguin.y, dir: penguin.dir });
+    }
+    return;
+  }
+
+  penguin.x += PENGUIN.speed * penguin.dir;
+  penguin.y = mainSurfaceYAt(state, penguin.x);
+  for (const player of state.players) {
+    if (!player.alive || player.invuln > 0) continue;
+    if (!rectsOverlap(penguin.x - PENGUIN.width / 2, penguin.y - PENGUIN.height,
+                      PENGUIN.width, PENGUIN.height,
+                      player.x - pHW(player), player.y - pH(player), pHW(player) * 2, pH(player))) continue;
+    player.damage += PENGUIN.damage;
+    const knockback = PENGUIN.kbBase + player.damage * PENGUIN.kbScale;
+    player.vx = knockback * penguin.dir;
+    player.vy = -knockback * 0.42;
+    player.hitstun = Math.floor(5 + knockback * 1.7);
+    player.onGround = false;
+    player.crouching = false;
+    player.tauntTimer = 0;
+    player.hitFlash = 8;
+    player.invuln = 26;
+    player.chargeTimer = 0;
+    player.attackTimer = 0;
+    player.attackIsSpecial = false;
+    player.attackIsCharged = false;
+    state.hitstop = 5;
+    events.push({ type: "penguin-hit", x: player.x, y: player.y - pH(player) / 2,
+      dir: penguin.dir, dmg: player.damage });
+  }
+
+  if ((penguin.dir > 0 && penguin.x > rightEdge + PENGUIN.width)
+      || (penguin.dir < 0 && penguin.x < leftEdge - PENGUIN.width)) {
+    penguin.passes++;
+    penguin.dir *= -1;
+    penguin.state = "wait";
+    penguin.timer = PENGUIN.waitTicks;
   }
 }
 
@@ -1019,7 +1175,7 @@ function updatePendulums(state, events) {
         p.vx = KB45 * kb * dir; p.vy = -KB45 * kb;
         p.hitstun = Math.floor(6 + kb * 2);
         p.onGround = false; p.hitFlash = 8; p.invuln = 18;
-        p.chargeTimer = 0; p.attackTimer = 0; p.attackIsSpecial = false;
+        p.chargeTimer = 0; p.attackTimer = 0; p.attackIsSpecial = false; p.attackIsCharged = false;
         state.hitstop = 5;
         events.push({ type: "mob-hit", x: p.x, y: p.y - PLAYER_H / 2, dir, dmg: p.damage });
       }
@@ -1356,17 +1512,26 @@ function stepMatch(state, samples) {
 
     // 水平移動（speedアイテムで1.5倍 / giantで1/2）。うちゅうは長い滞空ぶんだけ横移動を抑える。
     const moveScale = state.stage.moveScale || 1;
+    const icePhysics = state.stage.icePhysics;
     const spd = p.itemType === "speed" ? ITEM.speedMult : p.itemType === "giant" ? GIANT.speedMult : 1;
     const maxRun = PHYS.maxRun * spd * moveScale, maxAir = PHYS.maxAir * spd * moveScale;
     if (p.onGround) {
       if (dir !== 0) {
         if (p.vx * dir < maxRun) {
-          p.vx += PHYS.groundAccel * spd * moveScale * dir;
+          const baseAccel = icePhysics
+            ? (p.vx * dir < 0 ? icePhysics.turnAccel : icePhysics.accel)
+            : PHYS.groundAccel;
+          p.vx += baseAccel * spd * moveScale * dir;
           if (p.vx * dir > maxRun) p.vx = maxRun * dir;
         }
       } else {
-        p.vx *= PHYS.friction;
+        p.vx *= icePhysics ? icePhysics.friction : PHYS.friction;
         if (Math.abs(p.vx) < 0.05) p.vx = 0;
+      }
+      // 氷の斜面では重力の代わりにごく弱い横滑りを加え、左右とも中央へ寄っていく。
+      if (icePhysics && standingPlatform && standingPlatform.slope) {
+        p.vx += Math.sign(standingPlatform.slope) * icePhysics.slopeSlide;
+        p.vx = Math.max(-maxRun, Math.min(maxRun, p.vx));
       }
     } else {
       if (dir !== 0) {
@@ -1435,9 +1600,9 @@ function stepMatch(state, samples) {
       if (p.vy > cap) p.vy = cap;
     }
 
-    // --- 攻撃 / 必殺技チャージ ---
-    // 攻撃ボタン押しっぱなしでチャージ。2秒(SPECIAL_CHARGE)で必殺技が自動発動。
-    // 2秒未満で離すと通常攻撃。ガード中・攻撃硬直中はチャージしない。
+    // --- 攻撃 / 3段階チャージ ---
+    // 50%未満で離すと通常、50〜99%で離すと中間溜め、2秒でフルチャージが自動発動。
+    // ガード中・攻撃硬直中はチャージしない。
     // 攻撃方向: 上下だけ入力しているときは上/下攻撃、それ以外は正面(左右)。
     const atkDir = ((cur.up || cur.down) && !cur.left && !cur.right) ? (cur.up ? "up" : "down") : "fwd";
     if (canAct && !locked && p.attackTimer === 0) {
@@ -1446,15 +1611,19 @@ function stepMatch(state, samples) {
         if (p.chargeTimer >= SPECIAL_CHARGE) {
           p.attackTimer = SPECIAL.total;
           p.attackIsSpecial = true;
+          p.attackIsCharged = false;
           p.attackDir = atkDir;
           p.attackVictims = [];
           p.chargeTimer = 0;
           events.push({ type: "special", x: p.x, y: p.y - PLAYER_H / 2, slot: p.slot });
         }
       } else {
-        if (p.chargeTimer > 0) {       // 離した＝通常攻撃
-          p.attackTimer = ATTACK.total;
+        if (p.chargeTimer > 0) {
+          const charged = p.chargeTimer >= MID_CHARGE;
+          const releasedAttack = charged ? CHARGED_ATTACK : ATTACK;
+          p.attackTimer = releasedAttack.total;
           p.attackIsSpecial = false;
+          p.attackIsCharged = charged;
           p.attackDir = atkDir;
           p.attackVictims = [];
         }
@@ -1503,11 +1672,13 @@ function stepMatch(state, samples) {
         if (plat.droppable && p.dropTimer > 0) continue;
         if (plat.crumbleState === "gone") continue;   // 崩れて消えた床は乗れない
         if (p.x + pHW(p) <= plat.x || p.x - pHW(p) >= plat.x + plat.w) continue;
-        if (prevY <= plat.y && p.y >= plat.y) {
-          p.y = plat.y;
+        const surfaceY = platformYAt(plat, p.x);
+        const followsSlope = p.onGround && standingPlatform === plat;
+        if (followsSlope || (prevY <= surfaceY && p.y >= surfaceY)) {
+          p.y = surfaceY;
           if (plat.bounce) {                           // トランポリン: 上へ跳ねる
             p.vy = -plat.bounce; bounced = true; p.airJumps = PHYS.airJumps;
-            events.push({ type: "bounce", x: p.x, y: plat.y, px: plat.x, pw: plat.w, strength: plat.bounce });
+            events.push({ type: "bounce", x: p.x, y: surfaceY, px: plat.x, pw: plat.w, strength: plat.bounce });
           } else {
             p.vy = 0; landed = true;
             if (plat.crumble && plat.crumbleState === "solid") { plat.crumbleState = "crack"; plat.crumbleTimer = CRUMBLE.crackTicks; }
@@ -1577,8 +1748,9 @@ function stepMatch(state, samples) {
   for (let i = 0; i < ps.length; i++) {
     const a = ps[i];
     if (!a.alive) continue;
-    const atk = a.attackIsSpecial ? SPECIAL : ATTACK;
-    if (a.attackTimer > atk.activeFrom || a.attackTimer < atk.activeTo || a.attackTimer === 0) continue;
+    const atk = attackData(a);
+    const activeWindow = attackActiveWindow(a, atk);
+    if (a.attackTimer > activeWindow.activeFrom || a.attackTimer < activeWindow.activeTo || a.attackTimer === 0) continue;
     // beamアイテム=長距離ビーム / reachアイテム=リーチ延長 / 通常
     const isBeam = a.itemType === "beam";
     const len = isBeam ? ITEM.beamRange : atk.range * (a.itemType === "reach" ? ITEM.reachMult : 1);
@@ -1656,8 +1828,10 @@ function stepMatch(state, samples) {
       v.chargeTimer = 0;             // 被弾でチャージ中断
       v.attackTimer = 0;
       v.attackIsSpecial = false;
+      v.attackIsCharged = false;
       state.hitstop = atk.hitstopFrames;
-      events.push({ type: atk.special ? "special-hit" : "hit", x: (a.x + v.x) / 2, y: v.y - PLAYER_H / 2,
+      const hitType = atk.special ? "special-hit" : atk.charged ? "charged-hit" : "hit";
+      events.push({ type: hitType, x: (a.x + v.x) / 2, y: v.y - PLAYER_H / 2,
         dir: a.facing, launchX, launchY, dmg: v.damage });
     }
   }
@@ -1683,7 +1857,7 @@ function stepMatch(state, samples) {
           const x = enterFromLeft ? -ITEM.radius - 8 : W + ITEM.radius + 8;
           const y = 80 + rngNext(state) * 50;
           const vy = -(5.0 + rngNext(state) * 1.6);
-          const flightTicks = itemArcFlightTicks(y, vy, targetPlatform.y);
+          const flightTicks = itemArcFlightTicks(y, vy, platformYAt(targetPlatform, targetX));
           const vx = (targetX - x) / flightTicks;
           state.items.push({ type, x, y, vx, vy, arc: true, landed: false,
             targetX, targetPlatformIndex });
@@ -1714,8 +1888,9 @@ function stepMatch(state, samples) {
         it.y += it.vy;
         for (const plat of state.platforms) {
           if (it.x <= plat.x || it.x >= plat.x + plat.w) continue;
-          if (prevY <= plat.y && it.y >= plat.y) {
-            it.y = plat.y - ITEM.radius; it.vy = 0; it.landed = true;
+          const surfaceY = platformYAt(plat, it.x);
+          if (prevY <= surfaceY && it.y >= surfaceY) {
+            it.y = surfaceY - ITEM.radius; it.vy = 0; it.landed = true;
             events.push({ type: "item-land", x: it.x, y: it.y });
             break;
           }
@@ -1751,9 +1926,10 @@ function stepMatch(state, samples) {
     }
   }
 
-  // --- ハザード類（うごく床のモブ / 振り子 / 溶岩 / ワープ）---
+  // --- ハザード類（モブ / ペンギン / 振り子 / 溶岩 / ワープ）---
   if (!inCountdown && !state.ending) {
     updateMob(state, events);
+    updatePenguin(state, events);
     if (state.pendulums.length) updatePendulums(state, events);
     if (state.lava.length) updateLava(state, events);
     if (state.warps.length) updateWarps(state, events);
@@ -1767,7 +1943,8 @@ function stepMatch(state, samples) {
   for (const p of ps) {
     if (!p.alive) continue;
     if (p.x < BLAST.left || p.x > BLAST.right || p.y < BLAST.top || p.y > BLAST.bottom) {
-      p.stocks--;
+      // タイムアップ後も決着演出中の撃墜エフェクトは出すが、確定済みの残ストックは変えない。
+      if (!state.timeUp) p.stocks--;
       // 撃墜方向（画面のどの辺から出たか）を派手エフェクト用に伝える
       const koDir = p.x < 0 ? "L" : p.x > W ? "R" : p.y < 0 ? "U" : "D";
       events.push({ type: "ko", slot: p.slot, x: Math.max(40, Math.min(W - 40, p.x)), y: Math.max(40, Math.min(H - 40, p.y)), dir: koDir });
@@ -1776,7 +1953,7 @@ function stepMatch(state, samples) {
         p.x = sp.x; p.y = RESPAWN_TOP;         // 画面上部から
         p.vx = 0; p.vy = 0;
         p.damage = 0;
-        p.hitstun = 0; p.attackTimer = 0; p.attackIsSpecial = false;
+        p.hitstun = 0; p.attackTimer = 0; p.attackIsSpecial = false; p.attackIsCharged = false;
         p.chargeTimer = 0;
         p.guardHp = GUARD.max; p.guarding = false; p.guardBreakFlash = 0;  // 卵は復活で全回復
         p.itemType = null; p.itemTimer = 0;                                // アイテム効果もリセット
@@ -1841,12 +2018,20 @@ function decideByScore(ps) {
 
 function platformUnder(p, platforms) {
   for (const plat of platforms) {
-    if (p.y === plat.y &&
+    if (Math.abs(p.y - platformYAt(plat, p.x)) < 1.5 &&
         p.x + pHW(p) > plat.x && p.x - pHW(p) < plat.x + plat.w) {
       return plat;
     }
   }
   return null;
+}
+
+// 確認用URLの ?stage=ステージ名 で、ロビーを直接その面のプレビューから開ける。
+function initialStageIndex() {
+  const requested = new URLSearchParams(location.search).get("stage");
+  if (!requested) return 0;
+  const index = STAGES.findIndex(stage => stage.name === requested);
+  return index >= 0 ? index : 0;
 }
 
 /* ==================== アプリ状態（ロビー等） ==================== */
@@ -1856,7 +2041,7 @@ const APP = {
   mode: "local",            // local | online
   slots: [null, null, null, null],   // {source} を格納
   match: null,
-  stageIndex: 0,            // ロビーで選択中のステージ
+  stageIndex: initialStageIndex(), // ロビーで選択中のステージ（?stage=名前 で直接プレビュー可）
   soloSlot: -1,             // 人間1人(ソロ)のときその人のslot（オンライン操作を使う）
   lobbyPrev: new Map(),     // sourceId -> 前フレームsample（参加検出用）
   resultInfo: null,
@@ -1899,7 +2084,7 @@ function decodeSample(b) {
 
 // オンライン時のキー配置（1人が片手で移動WASD/矢印、もう片手でJ/K/Space）
 //   移動: WASD または 矢印（従来通り） / ジャンプ: W・↑ / 急降下: S・↓
-//   攻撃: J（長押し2秒で必殺技） / 防御(卵ガード): K / 風船: Space / アピール: Y
+//   攻撃: J（1秒で中間溜め／2秒でフル） / 防御(卵ガード): K / 風船: Space / アピール: Y
 //   ゲームパッドも併用可
 function sampleLocalMerged() {
   const k = keys;
@@ -2436,9 +2621,10 @@ function handleEvents(events) {
     if (ev.type === "double-jump") {
       // 向きを開始時に固定し、空中で反転入力しても回転方向を飛ばさない。
       fx.flips[ev.slot] = { remaining: DOUBLE_JUMP_FLIP_TICKS, direction: ev.facing < 0 ? -1 : 1 };
-    } else if (ev.type === "hit") {
-      fx.shake = Math.min(10, 4 + ev.dmg * 0.03);
-      for (let k = 0; k < 10; k++) {
+    } else if (ev.type === "hit" || ev.type === "charged-hit") {
+      const charged = ev.type === "charged-hit";
+      fx.shake = charged ? 11 : Math.min(10, 4 + ev.dmg * 0.03);
+      for (let k = 0; k < (charged ? 15 : 10); k++) {
         const sp = Math.random() * 6 + 2;
         fx.particles.push({
           x: ev.x, y: ev.y,
@@ -2446,7 +2632,7 @@ function handleEvents(events) {
           vy: sp * ev.launchY + (Math.random() - 0.5) * 4,
           life: 18 + Math.random() * 10,
           size: 3 + Math.random() * 3,
-          color: "#fff",
+          color: charged && k % 2 === 0 ? "#ffd34d" : "#fff",
         });
       }
     } else if (ev.type === "ko") {
@@ -2596,6 +2782,24 @@ function handleEvents(events) {
           life: 16 + Math.random() * 8, size: 3 + Math.random() * 3, color: "#fff",
         });
       }
+    } else if (ev.type === "penguin-warn" || ev.type === "penguin-charge") {
+      for (let k = 0; k < (ev.type === "penguin-charge" ? 12 : 6); k++) {
+        fx.particles.push({
+          x: ev.x - ev.dir * (8 + Math.random() * 20), y: ev.y - Math.random() * 12,
+          vx: -ev.dir * (1 + Math.random() * 4), vy: -(1 + Math.random() * 3),
+          life: 14 + Math.random() * 10, size: 2 + Math.random() * 4, color: "#dff9ff",
+        });
+      }
+    } else if (ev.type === "penguin-hit") {
+      fx.shake = 11;
+      for (let k = 0; k < 16; k++) {
+        fx.particles.push({
+          x: ev.x, y: ev.y,
+          vx: ev.dir * (2 + Math.random() * 7) + (Math.random() - 0.5) * 3,
+          vy: -(1 + Math.random() * 6), life: 16 + Math.random() * 10,
+          size: 2 + Math.random() * 4, color: k % 3 === 0 ? "#7fd5ea" : "#effcff",
+        });
+      }
     } else if (ev.type === "lava-hit") {
       fx.shake = 8;
       for (let k = 0; k < 14; k++) {
@@ -2705,6 +2909,46 @@ function drawBackground(stage) {
     ctx.restore();
     return;
   }
+  // 氷面は極夜の青い空、遠い氷壁、細かな雪で「滑る場所」を一目で伝える。
+  if (th.ice) {
+    ctx.save();
+    const aurora = ctx.createLinearGradient(0, 70, W, 360);
+    aurora.addColorStop(0, "rgba(75,212,205,0)");
+    aurora.addColorStop(0.42, "rgba(97,226,213,0.16)");
+    aurora.addColorStop(0.7, "rgba(121,182,240,0.10)");
+    aurora.addColorStop(1, "rgba(80,140,205,0)");
+    ctx.fillStyle = aurora;
+    ctx.beginPath();
+    ctx.moveTo(0, 145); ctx.bezierCurveTo(300, 65, 510, 240, 790, 130);
+    ctx.bezierCurveTo(1020, 45, 1150, 120, 1280, 75);
+    ctx.lineTo(1280, 210); ctx.bezierCurveTo(980, 260, 780, 180, 520, 285);
+    ctx.bezierCurveTo(260, 360, 120, 215, 0, 270); ctx.closePath(); ctx.fill();
+
+    ctx.fillStyle = "rgba(9,35,55,0.78)";
+    ctx.beginPath();
+    ctx.moveTo(0, 570); ctx.lineTo(90, 420); ctx.lineTo(180, 510); ctx.lineTo(300, 300);
+    ctx.lineTo(395, 500); ctx.lineTo(525, 365); ctx.lineTo(650, 550);
+    ctx.lineTo(790, 335); ctx.lineTo(900, 510); ctx.lineTo(1030, 285);
+    ctx.lineTo(1130, 485); ctx.lineTo(1230, 375); ctx.lineTo(1280, 455);
+    ctx.lineTo(1280, H); ctx.lineTo(0, H); ctx.closePath(); ctx.fill();
+
+    ctx.fillStyle = "rgba(122,198,220,0.24)";
+    ctx.beginPath();
+    ctx.moveTo(0, 620); ctx.lineTo(155, 490); ctx.lineTo(255, 590); ctx.lineTo(430, 455);
+    ctx.lineTo(610, 620); ctx.lineTo(825, 445); ctx.lineTo(990, 600);
+    ctx.lineTo(1150, 470); ctx.lineTo(1280, 560); ctx.lineTo(1280, H); ctx.lineTo(0, H);
+    ctx.closePath(); ctx.fill();
+
+    for (let i = 0; i < 58; i++) {
+      const snowX = (31 + i * 197 + (i % 6) * 41) % W;
+      const snowY = (24 + i * 83 + (i % 5) * 29) % 470;
+      const radius = i % 9 === 0 ? 2.2 : i % 3 === 0 ? 1.4 : 0.8;
+      ctx.fillStyle = i % 4 === 0 ? "rgba(235,252,255,0.82)" : "rgba(210,242,250,0.52)";
+      ctx.beginPath(); ctx.arc(snowX, snowY, radius, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.restore();
+    return;
+  }
   // 遠景の山
   ctx.fillStyle = th.mountain;
   ctx.beginPath();
@@ -2747,6 +2991,48 @@ function drawStage(platforms, theme) {
     // 崩れかけは揺れる
     let sx = 0;
     if (plat.crumbleState === "crack") sx = Math.sin(now / 40 + plat.x) * 1.6;
+    if (plat.slope) {
+      const leftY = platformYAt(plat, plat.x);
+      const rightY = platformYAt(plat, plat.x + plat.w);
+      const thickness = plat.main ? 22 : 14;
+      ctx.save();
+      ctx.translate(sx, 0);
+      ctx.fillStyle = plat.main ? th.dirt : th.plat;
+      ctx.beginPath();
+      ctx.moveTo(plat.x, leftY);
+      ctx.lineTo(plat.x + plat.w, rightY);
+      if (plat.main) {
+        ctx.lineTo(plat.x + plat.w, H);
+        ctx.lineTo(plat.x, H);
+      } else {
+        ctx.lineTo(plat.x + plat.w, rightY + thickness);
+        ctx.lineTo(plat.x, leftY + thickness);
+      }
+      ctx.closePath(); ctx.fill();
+
+      // 厚い氷の縁と白い上面。線そのものが実際の当たり判定面と一致する。
+      ctx.strokeStyle = plat.main ? th.grass2 : th.plat;
+      ctx.lineWidth = plat.main ? 15 : 10;
+      ctx.beginPath(); ctx.moveTo(plat.x, leftY + 5); ctx.lineTo(plat.x + plat.w, rightY + 5); ctx.stroke();
+      ctx.strokeStyle = plat.main ? th.grass : th.platTop;
+      ctx.lineWidth = plat.main ? 7 : 4;
+      ctx.beginPath(); ctx.moveTo(plat.x, leftY); ctx.lineTo(plat.x + plat.w, rightY); ctx.stroke();
+
+      // 斜面に沿う短い反射線で、水平床との違いと滑りやすさを見せる。
+      if (th.ice) {
+        ctx.strokeStyle = "rgba(255,255,255,0.43)";
+        ctx.lineWidth = 2;
+        for (let glintX = plat.x + 42; glintX < plat.x + plat.w - 25; glintX += 92) {
+          const glintY = platformYAt(plat, glintX) + 7;
+          ctx.beginPath();
+          ctx.moveTo(glintX - 14, glintY + 3);
+          ctx.lineTo(glintX + 15, platformYAt(plat, glintX + 15) + 3);
+          ctx.stroke();
+        }
+      }
+      ctx.restore();
+      continue;
+    }
     if (plat.main) {
       ctx.fillStyle = th.dirt;
       ctx.fillRect(plat.x, plat.y, plat.w, H - plat.y);
@@ -3068,6 +3354,78 @@ function drawMob(m) {
   ctx.stroke();
 }
 
+// 氷ステージの第三者ペンギン。予告中は入口で身構え、突進中は雪煙を引く。
+function drawPenguin(penguin) {
+  if (!penguin || penguin.state === "wait") return;
+  const now = performance.now();
+  const charging = penguin.state === "charge";
+  const bob = charging ? Math.sin(now / 45) * 2.2 : Math.sin(now / 150) * 1.2;
+
+  if (charging) {
+    ctx.fillStyle = "rgba(225,249,255,0.62)";
+    for (let i = 0; i < 4; i++) {
+      const trailX = penguin.x - penguin.dir * (32 + i * 15);
+      const trailY = penguin.y - 5 - (i % 2) * 5;
+      ctx.beginPath();
+      ctx.arc(trailX, trailY, 8 - i * 1.2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  ctx.save();
+  ctx.translate(penguin.x, penguin.y + bob);
+  ctx.scale(penguin.dir, 1);
+  if (charging) ctx.rotate(-0.11);
+
+  // 後ろへ流れるフリッパー。
+  ctx.fillStyle = "#111d2b";
+  ctx.beginPath();
+  ctx.ellipse(-18, -24, 15, 7, -0.55, 0, Math.PI * 2);
+  ctx.fill();
+
+  // 黒い体と白い腹。
+  ctx.fillStyle = "#101b29";
+  ctx.strokeStyle = "#07101b";
+  ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.ellipse(0, -24, 22, 25, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = "#edfaff";
+  ctx.beginPath(); ctx.ellipse(4, -18, 14, 16, -0.12, 0, Math.PI * 2); ctx.fill();
+
+  // 進行方向を見る目と小さなくちばし。
+  ctx.fillStyle = "#fff";
+  ctx.beginPath();
+  ctx.arc(7, -34, 5, 0, Math.PI * 2);
+  ctx.arc(16, -32, 4.5, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = "#15202b";
+  ctx.beginPath();
+  ctx.arc(9, -34, 2.2, 0, Math.PI * 2);
+  ctx.arc(18, -32, 2.1, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = "#f2a43b";
+  ctx.beginPath(); ctx.moveTo(19, -29); ctx.lineTo(31, -25); ctx.lineTo(19, -21); ctx.closePath(); ctx.fill();
+
+  ctx.strokeStyle = "#e9a23a";
+  ctx.lineWidth = 5;
+  ctx.lineCap = "round";
+  ctx.beginPath();
+  ctx.moveTo(-8, -2); ctx.lineTo(-13, 1);
+  ctx.moveTo(8, -2); ctx.lineTo(13, 1);
+  ctx.stroke();
+  ctx.restore();
+
+  if (penguin.state === "warn") {
+    const pulse = 0.65 + Math.sin(now / 90) * 0.25;
+    ctx.globalAlpha = pulse;
+    ctx.fillStyle = "#ffd34d";
+    ctx.font = "bold 28px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("!", penguin.x, penguin.y - PENGUIN.height - 17);
+    ctx.globalAlpha = 1;
+  }
+  ctx.lineCap = "butt";
+}
+
 // アピール専用ポーズ。仰向けの本体から両足だけを上へ出し、交互にバタバタさせる。
 // 攻撃判定・移動・当たり判定には影響しない純粋な描画演出。
 function drawTauntPose(p) {
@@ -3192,9 +3550,10 @@ function drawPlayer(p) {
   }
 
   // 攻撃スイング（通常/必殺で色・大きさ、reach延長、向き別 fwd/up/down）
-  const atk = p.attackIsSpecial ? SPECIAL : ATTACK;
-  if (p.attackTimer <= atk.activeFrom && p.attackTimer >= atk.activeTo && p.attackTimer > 0) {
-    const prog = (atk.activeFrom - p.attackTimer) / (atk.activeFrom - atk.activeTo);
+  const atk = attackData(p);
+  const activeWindow = attackActiveWindow(p, atk);
+  if (p.attackTimer <= activeWindow.activeFrom && p.attackTimer >= activeWindow.activeTo && p.attackTimer > 0) {
+    const prog = (activeWindow.activeFrom - p.attackTimer) / (activeWindow.activeFrom - activeWindow.activeTo);
     if (p.itemType === "beam") {
       // ビーム: 長距離の光線を描く
       const len = ITEM.beamRange, th = ITEM.beamThick;
@@ -3219,10 +3578,13 @@ function drawPlayer(p) {
     const drawRange = atk.range * (hasReach ? ITEM.reachMult : 1);
     if (hasReach) {
       ctx.strokeStyle = "rgba(255,150,60," + (0.95 - prog * 0.4) + ")";
-      ctx.lineWidth = p.attackIsSpecial ? 15 : 10;
+      ctx.lineWidth = p.attackIsSpecial ? 15 : p.attackIsCharged ? 12 : 10;
     } else if (p.attackIsSpecial) {
       ctx.strokeStyle = "rgba(255,180,60," + (0.95 - prog * 0.4) + ")";
       ctx.lineWidth = 13;
+    } else if (p.attackIsCharged) {
+      ctx.strokeStyle = "rgba(255,215,80," + (0.95 - prog * 0.4) + ")";
+      ctx.lineWidth = 10;
     } else {
       ctx.strokeStyle = "rgba(255,255,255," + (0.9 - prog * 0.5) + ")";
       ctx.lineWidth = 7;
@@ -3278,12 +3640,12 @@ function drawPlayer(p) {
     ctx.beginPath(); ctx.ellipse(bx - 4, byTop - 5, 3, 4, 0, 0, Math.PI * 2); ctx.fill();
   }
 
-  // 必殺技チャージ中のオーラ
+  // チャージ中のオーラ。50%を越えると中間溜め成立として色が濃くなる。
   if (p.chargeTimer > 0) {
     const t = Math.min(1, p.chargeTimer / SPECIAL_CHARGE);
     const r = PLAYER_W * 0.9 + t * 26;
     ctx.globalAlpha = 0.35 + 0.4 * t;
-    ctx.strokeStyle = t >= 1 ? "#ff5030" : "#ffb43c";
+    ctx.strokeStyle = t >= 1 ? "#ff5030" : t >= 0.5 ? "#ff9f32" : "#ffd34d";
     ctx.lineWidth = 2 + 4 * t;
     ctx.beginPath();
     ctx.arc(p.x, p.y - PLAYER_H / 2, r, 0, Math.PI * 2);
@@ -3293,8 +3655,10 @@ function drawPlayer(p) {
     const gw = 44, gx = p.x - gw / 2, gy = by - 26;
     ctx.fillStyle = "rgba(0,0,0,0.5)";
     ctx.fillRect(gx, gy, gw, 6);
-    ctx.fillStyle = t >= 1 ? "#ff5030" : "#ffd34d";
+    ctx.fillStyle = t >= 1 ? "#ff5030" : t >= 0.5 ? "#ff9f32" : "#ffd34d";
     ctx.fillRect(gx, gy, gw * t, 6);
+    ctx.fillStyle = "rgba(255,255,255,0.8)";
+    ctx.fillRect(gx + gw / 2 - 1, gy - 1, 2, 8);  // 50%境界
   }
 
   // アイテム所持中: 足元の光るリング（残り時間で細くなる）＋取得フラッシュ
@@ -3447,15 +3811,15 @@ function drawHUD(m) {
 }
 
 function controlLinesFor(sourceId) {
-  if (sourceId === "kb0") return ["移動: A / D", "ジャンプ: W / 下: S（地上でしゃがむ）", "攻撃: F（上/下だけ入力で上下攻撃・長押し必殺）", "ガード（卵）: G", "風船: Space", "アピール: Y"];
-  if (sourceId === "kb1") return ["移動: H(左) / K(右)", "ジャンプ: U / 下: J（地上でしゃがむ）", "攻撃: L（上/下だけ入力で上下攻撃・長押し必殺）", "ガード（卵）: -（ハイフン）", "風船: .（ピリオド）", "アピール: I"];
-  return ["移動: スティック/十字", "ジャンプ: A(×) / 下: しゃがみ・急降下", "攻撃: X(□)（上/下入力で上下攻撃・長押し必殺）", "ガード（卵）: L/R", "風船: Y(△)", "アピール: B(○)"];
+  if (sourceId === "kb0") return ["移動: A / D", "ジャンプ: W / 下: S（地上でしゃがむ）", "攻撃: F（1秒で中溜め / 2秒でフル）", "ガード（卵）: G", "風船: Space", "アピール: Y"];
+  if (sourceId === "kb1") return ["移動: H(左) / K(右)", "ジャンプ: U / 下: J（地上でしゃがむ）", "攻撃: L（1秒で中溜め / 2秒でフル）", "ガード（卵）: -（ハイフン）", "風船: .（ピリオド）", "アピール: I"];
+  return ["移動: スティック/十字", "ジャンプ: A(×) / 下: しゃがみ・急降下", "攻撃: X(□)（1秒で中溜め / 2秒でフル）", "ガード（卵）: L/R", "風船: Y(△)", "アピール: B(○)"];
 }
 
 // カード表示用の内容（ローカル: 入力ソース別 / オンライン: 自分・相手）
 function cardInfoFor(p) {
   // オンライン操作の説明（オンライン本人 or ローカルのソロ本人）
-  const onlineControls = { label: "あなた", lines: ["移動: A/D または ←/→（W・↑ジャンプ / 下でしゃがみ）", "攻撃: J（上/下だけ入力で上下攻撃・長押し必殺）", "ガード（卵）: K", "風船: Space（浮上・落下防止）", "アピール: Y / B(○)"] };
+  const onlineControls = { label: "あなた", lines: ["移動: A/D または ←/→（W・↑ジャンプ / 下でしゃがみ）", "攻撃: J（1秒で中溜め / 2秒でフル）", "ガード（卵）: K", "風船: Space（浮上・落下防止）", "アピール: Y / B(○)"] };
   if (APP.mode === "online") {
     if (p.slot === NET.myIndex) return onlineControls;
     return { label: "相手（オンライン）", lines: ["リモートプレイヤー", "", "", "", "", ""] };
@@ -3515,6 +3879,7 @@ function drawMatch() {
   for (const it of m.items) drawItem(it);
   for (const p of m.players) drawPlayer(p);
   if (m.mob) drawMob(m.mob);
+  if (m.penguin) drawPenguin(m.penguin);
   if (m.pendulums.length) drawPendulums(m.pendulums);
 
   // 撃墜リング（拡がる輪）
@@ -3689,6 +4054,12 @@ function drawLobby() {
     const snap = wallSnapshot(selStage, 0.75);
     drawWalls(snap.walls, snap.groundY, selStage.theme);
   }
+  if (selStage.penguin) {
+    const previewX = 150;
+    const previewFloor = selStage.platforms.find(platform => platform.main
+      && previewX >= platform.x && previewX <= platform.x + platform.w);
+    drawPenguin({ x: previewX, y: platformYAt(previewFloor, previewX), dir: 1, state: "warn", timer: 30 });
+  }
   for (const character of LOBBY_CORNER_CHARACTERS) drawLobbyCornerCharacter(character);
 
   ctx.textAlign = "center";
@@ -3794,6 +4165,7 @@ function drawResult() {
   drawCeiling(rStage.ceiling, rStage.theme, APP.match ? APP.match.ceilingSegments : null);
   if (APP.match && APP.match.walls.length) drawWalls(APP.match.walls, APP.match.groundY, rStage.theme);
   else if (!APP.match && rStage.walls) { const s = wallSnapshot(rStage, 0.75); drawWalls(s.walls, s.groundY, rStage.theme); }
+  if (APP.match && APP.match.penguin) drawPenguin(APP.match.penguin);
   ctx.fillStyle = "rgba(0,0,0,0.6)";
   ctx.fillRect(0, 0, W, H);
   ctx.textAlign = "center";
@@ -3803,7 +4175,7 @@ function drawResult() {
   ctx.font = "bold 66px sans-serif";
   if (ws !== null) { ctx.fillStyle = COLORS[ws]; ctx.fillText(NAMES[ws] + " の勝ち！", W / 2, 130); }
   else { ctx.fillStyle = "#fff"; ctx.fillText("引き分け！", W / 2, 130); }
-  if (info.timeUp) { ctx.fillStyle = "#ffd34d"; ctx.font = "bold 22px sans-serif"; ctx.fillText("タイムアップ（残ストック→与ダメージで判定）", W / 2, 168); }
+  if (info.timeUp) { ctx.fillStyle = "#ffd34d"; ctx.font = "bold 22px sans-serif"; ctx.fillText("タイムアップ（時間切れ時点の残ストック→与ダメージで判定）", W / 2, 168); }
 
   // スコア表（各プレイヤーの与ダメージ）
   const scores = (info.scores || []).slice().sort((a, b) => (b.stocks - a.stocks) || (b.dealt - a.dealt));
@@ -3887,10 +4259,11 @@ requestAnimationFrame(frame);
 window.UCHI = {
   APP, keys, runTick, renderNow,
   makeMatchState, stepMatch, makePlayer,
-  PHYS, ATTACK, SPECIAL, DOWN_ATTACK, GUARD, STAGES, BLAST, STOCKS, ITEM, BALLOON, MOB, rngNext,
+  PHYS, ATTACK, CHARGED_ATTACK, SPECIAL, MID_CHARGE, SPECIAL_CHARGE, DOWN_ATTACK, GUARD,
+  STAGES, BLAST, STOCKS, ITEM, BALLOON, MOB, PENGUIN, rngNext,
   LOBBY_CORNER_CHARACTERS,
   CRUMBLE, PENDULUM, LAVA, WARP_CD, PLAYER_W, PLAYER_H, BODY_COLLISION, DOUBLE_JUMP_FLIP_TICKS, TAUNT_TICKS,
-  resolvePlayerCollisions, pH,
+  resolvePlayerCollisions, pH, attackData, attackActiveWindow, platformYAt, mainSurfaceYAt, updatePenguin,
   fx,
   NET, netHost, netJoin, netHostStart, encodeSample, decodeSample,
   makeCpuSource, cpuThink,
