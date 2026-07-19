@@ -127,7 +127,7 @@ test("release constants and input codec stay coherent", () => {
   const { UCHI: game } = sandbox;
   assert.match(HTML, /<title>PYGMIX BONBON<\/title>/);
   assert.match(HTML, /ctx\.fillText\("PYGMIX BONBON", W \/ 2, 120\)/);
-  assert.match(HTML, /const GAME_VERSION = "0\.9\.27"/);
+  assert.match(HTML, /const GAME_VERSION = "0\.9\.29"/);
   assert.match(HTML, /リーチ・速度・ビーム・巨大化・風船補充の5種類/);
   assert.equal(game.PHYS.gravity, 0.495);
   assert.equal(game.DOWN_ATTACK.damageMult, 1.2);
@@ -1044,6 +1044,98 @@ test("knockouts after time up do not reduce remaining stocks", () => {
   assert.equal(target.alive, true);
 });
 
+test("the result gives one large highlight title to the winner only", () => {
+  const { UCHI: game } = loadGame();
+  const match = game.makeMatchState([0, 1], 0);
+  const [winner, loser] = match.players;
+  match.winnerSlot = winner.slot;
+  winner.highlights.penguinTurns = 2;
+  loser.highlights.specialHits = 9;
+
+  const result = game.buildResultInfo(match);
+  assert.deepEqual({ ...result.winnerTitle }, {
+    title: "ペンギン調教師",
+    detail: "2回、ペンギンの突進を反転",
+  });
+  assert.equal(result.scores.every(score => !("title" in score)), true);
+  assert.match(HTML, /drawLobbyCornerCharacter\(\{ slot: ws/);
+  assert.match(HTML, /ctx\.font = "bold 62px sans-serif"/);
+  assert.match(HTML, /ctx\.fillText\("称号", 472, 150\)/);
+  game.APP.match = match;
+  game.APP.resultInfo = result;
+  game.APP.phase = "result";
+  assert.doesNotThrow(() => game.renderNow());
+
+  match.winnerSlot = null;
+  assert.equal(game.buildResultInfo(match).winnerTitle, null);
+});
+
+test("winner titles cover stage play, defense, items, movement, and combat", () => {
+  const { UCHI: game } = loadGame();
+  const titleFor = highlights => {
+    const player = game.makeMatchState([0], 0).players[0];
+    Object.assign(player.highlights, highlights);
+    return game.selectWinnerTitle(player).title;
+  };
+
+  const cases = [
+    [{ lavaHits: 2 }, "溶岩帰り"],
+    [{ itemTypesMask: 31 }, "五色コレクター"],
+    [{ bounces: 3 }, "跳ねるスター"],
+    [{ iceSlideTicks: 120 }, "氷上ドリフター"],
+    [{ conveyorTicks: 120 }, "流れ乗り名人"],
+    [{ guardBreaks: 2 }, "シールドクラッシャー"],
+    [{ beamHits: 2 }, "ビームマスター"],
+    [{ reachHits: 3 }, "ロングリーチ"],
+    [{ giantHits: 3 }, "巨大戦士"],
+    [{ speedTicks: 180 }, "超速ランナー"],
+    [{ kos: 2 }, "撃墜王"],
+    [{ blocks: 4 }, "鉄壁ガード"],
+    [{ upHits: 3 }, "上空の狙撃手"],
+    [{ forwardHits: 8 }, "正面突破"],
+    [{ refills: 2 }, "風船整備士"],
+    [{ oneStockTicks: 300 }, "崖っぷちの王者"],
+    [{ highDamageTicks: 300 }, "不屈のBONBON"],
+  ];
+  for (const [highlights, expected] of cases) assert.equal(titleFor(highlights), expected);
+});
+
+test("a recent attacker receives KO credit for the winner-title record", () => {
+  const { UCHI: game } = loadGame();
+  const match = game.makeMatchState([0, 1], 0);
+  const [attacker, target] = match.players;
+  const neutral = {
+    left: false, right: false, up: false, down: false,
+    jump: false, attack: false, guard: false, balloon: false, taunt: false, start: false,
+  };
+  match.countdown = 0;
+  match.itemTimer = 9999;
+  target.lastHitBy = attacker.slot;
+  target.lastHitTimer = 30;
+  target.x = game.BLAST.right + 1;
+
+  game.stepMatch(match, [neutral, neutral]);
+
+  assert.equal(attacker.highlights.kos, 1);
+  assert.equal(target.lastHitBy, null);
+  assert.equal(target.lastHitTimer, 0);
+});
+
+test("the result-screen QA URL opens a four-player winner award preview", () => {
+  const { UCHI: game } = loadGame("?stage=%E3%81%93%E3%81%8A%E3%82%8A&preview=result&winner=2");
+  assert.equal(game.APP.phase, "result");
+  assert.equal(game.APP.resultInfo.winnerSlot, 2);
+  assert.equal(game.APP.resultInfo.winnerTitle.title, "ペンギン調教師");
+  assert.equal(game.APP.resultInfo.scores.length, 4);
+  assert.doesNotThrow(() => game.renderNow());
+});
+
+test("the result-screen QA URL can preview newly added titles", () => {
+  const { UCHI: game } = loadGame("?preview=result&winner=0&award=beam");
+  assert.equal(game.APP.resultInfo.winnerTitle.title, "ビームマスター");
+  assert.doesNotThrow(() => game.renderNow());
+});
+
 test("lobby controls open in a modal and pause lobby input", () => {
   const sandbox = loadGame();
   const { UCHI: game } = sandbox;
@@ -1257,6 +1349,7 @@ test("landing on a charging penguin from above reverses it without taking damage
   assert.equal(player.onGround, false);
   assert.equal(events.some(event => event.type === "penguin-turn" && event.slot === player.slot), true);
   assert.equal(events.some(event => event.type === "penguin-hit"), false);
+  assert.equal(player.highlights.penguinTurns, 1);
 });
 
 test("penguin appears, warns, belly-charges, and alternates between ground and upper ice", () => {

@@ -488,7 +488,7 @@ const GUARD = {
 
 // ★オンライン同期の要: 決定論simに影響する変更(stepMatch/ステージ/物理/定数など)をしたら
 //   必ずこの版数を上げること。オンライン接続時に両者で照合し、食い違えば試合させず弾く。
-const GAME_VERSION = "0.9.27";
+const GAME_VERSION = "0.9.29";
 
 const PLAYER_W = 36, PLAYER_H = 48;
 // キャラクター同士の物理衝突。複数人が同時に密集しても、反復して体の重なりを解消する。
@@ -524,7 +524,8 @@ const ITEM = {
   chargedBeamRangeMult: 2,             // 50%以上の正面溜めビームは横方向2倍
   chargedBeamThick: 64,                // しゃがみも覆う縦幅（地面すれすれまで判定）
 };
-const ITEM_TYPES = ["reach", "speed", "beam"];
+const ITEM_TYPES = ["reach", "speed", "beam", "giant", "refill"];
+const ITEM_TYPE_BITS = Object.fromEntries(ITEM_TYPES.map((type, index) => [type, 1 << index]));
 
 // 風船（Space）: 1ストックにつき1回。押している間だけ少しずつ浮上し落下を防ぐ。
 //   燃料を使い切ると割れて復活まで使えない。浮上中も横移動は可能。
@@ -1089,6 +1090,17 @@ function makePlayer(slotIdx, stage) {
     dropTimer: 0,                 // すり抜け降下中の無視時間
     damage: 0,
     damageDealt: 0,               // このプレイヤーが与えた総ダメージ（スコア）
+    // リザルト称号用。勝敗には影響せず、優勝者の特徴的な行動を1つ選ぶためだけに集計する。
+    highlights: {
+      hits: 0, chargedHits: 0, specialHits: 0, downHits: 0,
+      items: 0, warps: 0, penguinTurns: 0, ceilingBreaks: 0,
+      doubleJumps: 0, taunts: 0, balloonTicks: 0,
+      kos: 0, blocks: 0, guardBreaks: 0, bounces: 0,
+      beamHits: 0, reachHits: 0, giantHits: 0, speedTicks: 0,
+      iceSlideTicks: 0, conveyorTicks: 0, lavaHits: 0,
+      upHits: 0, forwardHits: 0, refills: 0, itemTypesMask: 0,
+      oneStockTicks: 0, highDamageTicks: 0,
+    },
     stocks: STOCKS,
     alive: true,
     invuln: 90,
@@ -1113,6 +1125,8 @@ function makePlayer(slotIdx, stage) {
     warpCd: 0,                    // ワープ後クールダウン
     stepPhase: 0,                 // 足のちょこちょこアニメ位相
     hitFlash: 0,
+    lastHitBy: null,                // 最後に攻撃を当てた相手（5秒以内の場外KOを撃墜として記録）
+    lastHitTimer: 0,
     prev: NEUTRAL,                // 前フレーム入力（エッジ検出用・状態の一部として保持）
   };
 }
@@ -1435,6 +1449,7 @@ function updatePenguin(state, events, playerMotionOrigins = []) {
       if (!turnedThisTick) {
         penguin.dir *= -1;
         turnedThisTick = true;
+        player.highlights.penguinTurns++;
         events.push({ type: "penguin-turn", x: penguin.x, y: penguin.y - PENGUIN.chargeHeight,
           dir: penguin.dir, slot: player.slot });
       }
@@ -1516,6 +1531,7 @@ function updateLava(state, events) {
     for (const p of state.players) {
       if (!p.alive || p.invuln > 0) continue;
       if (rectsOverlap(lv.x, lv.y, lv.w, lv.h, p.x - pHW(p), p.y - pH(p), pHW(p) * 2, pH(p))) {
+        p.highlights.lavaHits++;
         p.damage += LAVA.damage;
         const kb = LAVA.kbBase + p.damage * LAVA.kbScale;
         p.vx = (p.x >= lv.x + lv.w / 2 ? 1 : -1) * kb * 0.5;
@@ -1597,6 +1613,7 @@ function updateWarps(state, events) {
         p.y = dest.y + dest.h - 2;
         p.vy = Math.min(p.vy, 0);
         p.warpCd = WARP_CD;
+        p.highlights.warps++;
         events.push({ type: "warp", x: dest.x + dest.w / 2, y: dest.y + dest.h / 2 });
         break;
       }
@@ -1862,6 +1879,15 @@ function stepMatch(state, samples) {
     if (p.itemGetFlash > 0) p.itemGetFlash--;
     if (p.tauntTimer > 0) p.tauntTimer--;
     if (p.itemTimer > 0) { p.itemTimer--; if (p.itemTimer === 0) p.itemType = null; }
+    if (p.lastHitTimer > 0) {
+      p.lastHitTimer--;
+      if (p.lastHitTimer === 0) p.lastHitBy = null;
+    }
+    if (!inCountdown && !state.ending) {
+      if (p.itemType === "speed" && Math.abs(p.vx) >= 1.5) p.highlights.speedTicks++;
+      if (p.stocks === 1) p.highlights.oneStockTicks++;
+      if (p.damage >= 100) p.highlights.highDamageTicks++;
+    }
     if (!canAct) { p.tauntTimer = 0; p.crouching = false; }
 
     // --- ガード（卵型シールド）---
@@ -1891,6 +1917,7 @@ function stepMatch(state, samples) {
     if (tauntEdge && canAct && !locked && p.onGround && !p.respawning) {
       p.tauntTimer = TAUNT_TICKS;
       p.crouching = false;
+      p.highlights.taunts++;
       events.push({ type: "taunt", x: p.x, y: p.y, slot: p.slot });
     }
 
@@ -1922,6 +1949,9 @@ function stepMatch(state, samples) {
         p.vx += Math.sign(standingPlatform.slope) * icePhysics.slopeSlide;
         p.vx = Math.max(-maxRun, Math.min(maxRun, p.vx));
       }
+      if (!inCountdown && !state.ending && icePhysics && Math.abs(p.vx) >= 1.5) {
+        p.highlights.iceSlideTicks++;
+      }
     } else {
       if (dir !== 0) {
         if (p.vx * dir < maxAir) {
@@ -1944,6 +1974,7 @@ function stepMatch(state, samples) {
       } else if (p.airJumps > 0) {
         p.vy = PHYS.doubleJumpVel * jmul;
         p.airJumps--;
+        p.highlights.doubleJumps++;
         // 通常ジャンプと区別し、描画側だけで1回転させる。
         events.push({ type: "double-jump", slot: p.slot, facing: p.facing });
       }
@@ -1972,6 +2003,7 @@ function stepMatch(state, samples) {
     // --- 風船（1ストック1回。押している間だけ浮上、燃料を使い切ると割れて復活まで無し）---
     p.ballooning = cur.balloon && canAct && !locked && !p.respawning && p.balloonFuel > 0;
     if (p.ballooning) {
+      p.highlights.balloonTicks++;
       p.balloonFuel -= p.itemType === "giant" ? BALLOON.giantDrain : 1;  // 巨大化中は燃費2倍
       if (p.balloonFuel < 0) p.balloonFuel = 0;       // 奇数残量から2消費しても確実に0で割れる
       p.onGround = false;                             // 浮き上がる
@@ -2041,6 +2073,7 @@ function stepMatch(state, samples) {
         if (hitSegments.length) {
           const impactSpeed = -p.vy;
           if (impactSpeed >= ceiling.breakSpeed) {
+            p.highlights.ceilingBreaks += hitSegments.length;
             for (const segment of hitSegments) {
               segment.broken = true;
               events.push({ type: "ceiling-break", x: segment.x + segment.w / 2, y: ceilingBottom,
@@ -2078,6 +2111,7 @@ function stepMatch(state, samples) {
         if (followsSlope || transfersSlope || crossedSurface) {
           p.y = surfaceY;
           if (plat.bounce) {                           // トランポリン: 上へ跳ねる
+            if (!inCountdown && !state.ending) p.highlights.bounces++;
             p.vy = -plat.bounce; bounced = true; p.airJumps = PHYS.airJumps;
             events.push({ type: "bounce", x: p.x, y: surfaceY, px: plat.x, pw: plat.w, strength: plat.bounce });
           } else {
@@ -2124,7 +2158,11 @@ function stepMatch(state, samples) {
     if (!p.alive || !p.onGround) continue;
     for (const plat of state.platforms) {
       if (!plat.conveyor) continue;
-      if (Math.abs(p.y - plat.y) < 2 && p.x > plat.x && p.x < plat.x + plat.w) { p.x += plat.conveyor; break; }
+      if (Math.abs(p.y - plat.y) < 2 && p.x > plat.x && p.x < plat.x + plat.w) {
+        p.x += plat.conveyor;
+        if (!inCountdown && !state.ending) p.highlights.conveyorTicks++;
+        break;
+      }
     }
   }
 
@@ -2194,8 +2232,10 @@ function stepMatch(state, samples) {
         if (v.guardHp <= 0) {
           v.guardHp = 0; v.guarding = false;
           v.guardBreakFlash = 20; v.hitstun = GUARD.breakStun;
+          a.highlights.guardBreaks++;
           events.push({ type: "guardbreak", x: v.x, y: v.y - PLAYER_H / 2, slot: v.slot });
         } else {
+          v.highlights.blocks++;
           events.push({ type: "block", x: v.x + a.facing * 16, y: v.y - PLAYER_H / 2 });
         }
         continue;
@@ -2203,6 +2243,7 @@ function stepMatch(state, samples) {
       // 必殺技はガードを一撃で粉砕して当たる
       if (v.guarding && atk.special) {
         v.guardHp = 0; v.guarding = false; v.guardBreakFlash = 24;
+        a.highlights.guardBreaks++;
         events.push({ type: "guardbreak", x: v.x, y: v.y - PLAYER_H / 2, slot: v.slot });
       }
 
@@ -2212,6 +2253,17 @@ function stepMatch(state, samples) {
       const hitDamage = atk.damage * (isDownAttack ? DOWN_ATTACK.damageMult : 1);
       v.damage += hitDamage;
       a.damageDealt += hitDamage;   // スコア: 与えたダメージを加算
+      a.highlights.hits++;
+      if (atk.special) a.highlights.specialHits++;
+      else if (atk.charged) a.highlights.chargedHits++;
+      if (isDownAttack) a.highlights.downHits++;
+      else if (a.attackDir === "up") a.highlights.upHits++;
+      else a.highlights.forwardHits++;
+      if (a.itemType === "beam") a.highlights.beamHits++;
+      else if (a.itemType === "reach") a.highlights.reachHits++;
+      else if (a.itemType === "giant") a.highlights.giantHits++;
+      v.lastHitBy = a.slot;
+      v.lastHitTimer = 300;
       const powerMult = a.itemType === "giant" ? GIANT.powerMult : 1;
       const kb = (atk.kbBase + v.damage * atk.kbScale) * powerMult;
       let launchX, launchY;
@@ -2321,10 +2373,13 @@ function stepMatch(state, samples) {
         const p = ps[taken];
         if (it.type === "refill") {
           p.balloonFuel = BALLOON.fuel;   // 風船ゲージを満タンに（即時）
+          p.highlights.refills++;
         } else {
           p.itemType = it.type;
           p.itemTimer = ITEM.duration[it.type];
         }
+        p.highlights.items++;
+        p.highlights.itemTypesMask |= ITEM_TYPE_BITS[it.type] || 0;
         p.itemGetFlash = 24;
         state.items.splice(k, 1);
         events.push({ type: "item-get", x: p.x, y: p.y - PLAYER_H, slot: p.slot, itemType: it.type });
@@ -2352,7 +2407,15 @@ function stepMatch(state, samples) {
     if (!p.alive) continue;
     if (p.x < BLAST.left || p.x > BLAST.right || p.y < BLAST.top || p.y > BLAST.bottom) {
       // タイムアップ後も決着演出中の撃墜エフェクトは出すが、確定済みの残ストックは変えない。
-      if (!state.timeUp) p.stocks--;
+      if (!state.timeUp) {
+        p.stocks--;
+        if (p.lastHitTimer > 0 && p.lastHitBy !== null && p.lastHitBy !== p.slot) {
+          const attacker = ps.find(player => player.slot === p.lastHitBy);
+          if (attacker) attacker.highlights.kos++;
+        }
+      }
+      p.lastHitBy = null;
+      p.lastHitTimer = 0;
       // 撃墜方向（画面のどの辺から出たか）を派手エフェクト用に伝える
       const koDir = p.x < 0 ? "L" : p.x > W ? "R" : p.y < 0 ? "U" : "D";
       events.push({ type: "ko", slot: p.slot, x: Math.max(40, Math.min(W - 40, p.x)), y: Math.max(40, Math.min(H - 40, p.y)), dir: koDir });
@@ -2404,10 +2467,113 @@ function stepMatch(state, samples) {
   return events;
 }
 
-// リザルト用の情報（勝者＋各プレイヤーのスコア）を作る
+// 優勝者の行動から称号を1つ選ぶ。珍しいステージ固有アクションを優先し、
+// 該当しない場合も戦い方や生存結果から必ず1つ返す。
+function selectWinnerTitle(player) {
+  if (!player) return null;
+  const h = player.highlights || {};
+  const itemVariety = ((h.itemTypesMask || 0).toString(2).match(/1/g) || []).length;
+  if ((h.penguinTurns || 0) > 0) return {
+    title: "ペンギン調教師", detail: h.penguinTurns + "回、ペンギンの突進を反転",
+  };
+  if ((h.ceilingBreaks || 0) > 0) return {
+    title: "天井解体屋", detail: h.ceilingBreaks + "枚の天井を破壊",
+  };
+  if ((h.lavaHits || 0) >= 2) return {
+    title: "溶岩帰り", detail: h.lavaHits + "回、溶岩から生還",
+  };
+  if (itemVariety >= 5) return {
+    title: "五色コレクター", detail: itemVariety + "種類のアイテムを獲得",
+  };
+  if ((h.bounces || 0) >= 3) return {
+    title: "跳ねるスター", detail: h.bounces + "回トランポリンで跳躍",
+  };
+  if ((h.iceSlideTicks || 0) >= 120) return {
+    title: "氷上ドリフター", detail: (h.iceSlideTicks / 60).toFixed(1) + "秒、氷上を高速滑走",
+  };
+  if ((h.conveyorTicks || 0) >= 120) return {
+    title: "流れ乗り名人", detail: (h.conveyorTicks / 60).toFixed(1) + "秒、流れる床を攻略",
+  };
+  if ((h.warps || 0) >= 2) return {
+    title: "ワープの常連客", detail: h.warps + "回ワープを利用",
+  };
+  if ((h.guardBreaks || 0) >= 2) return {
+    title: "シールドクラッシャー", detail: h.guardBreaks + "回ガードを粉砕",
+  };
+  if ((h.beamHits || 0) >= 2) return {
+    title: "ビームマスター", detail: h.beamHits + "回ビームを命中",
+  };
+  if ((h.reachHits || 0) >= 3) return {
+    title: "ロングリーチ", detail: h.reachHits + "回リーチ強化攻撃を命中",
+  };
+  if ((h.giantHits || 0) >= 3) return {
+    title: "巨大戦士", detail: h.giantHits + "回、巨大化中に攻撃を命中",
+  };
+  if ((h.speedTicks || 0) >= 180) return {
+    title: "超速ランナー", detail: (h.speedTicks / 60).toFixed(1) + "秒、スピード状態で疾走",
+  };
+  if ((h.kos || 0) >= 2) return {
+    title: "撃墜王", detail: h.kos + "回の撃墜を記録",
+  };
+  if ((h.specialHits || 0) > 0) return {
+    title: "フルチャージ職人", detail: h.specialHits + "回フルチャージを命中",
+  };
+  if ((h.downHits || 0) >= 2) return {
+    title: "真下の支配者", detail: h.downHits + "回の下攻撃を命中",
+  };
+  if ((h.blocks || 0) >= 4) return {
+    title: "鉄壁ガード", detail: h.blocks + "回の攻撃をガード",
+  };
+  if ((h.upHits || 0) >= 3) return {
+    title: "上空の狙撃手", detail: h.upHits + "回の上攻撃を命中",
+  };
+  if ((h.forwardHits || 0) >= 8) return {
+    title: "正面突破", detail: h.forwardHits + "回の正面攻撃を命中",
+  };
+  if ((h.refills || 0) >= 2) return {
+    title: "風船整備士", detail: h.refills + "回、風船を補充",
+  };
+  if ((h.balloonTicks || 0) >= 60) return {
+    title: "風船パイロット", detail: (h.balloonTicks / 60).toFixed(1) + "秒、風船で飛行",
+  };
+  if ((h.taunts || 0) >= 2) return {
+    title: "アピール大賞", detail: h.taunts + "回アピールを披露",
+  };
+  if ((h.doubleJumps || 0) >= 5) return {
+    title: "空中の達人", detail: h.doubleJumps + "回の二段ジャンプ",
+  };
+  if ((h.chargedHits || 0) >= 2) return {
+    title: "ため撃ち名人", detail: h.chargedHits + "回の中間チャージを命中",
+  };
+  if ((h.oneStockTicks || 0) >= 300) return {
+    title: "崖っぷちの王者", detail: (h.oneStockTicks / 60).toFixed(1) + "秒、残り1ストックで奮闘",
+  };
+  if ((h.highDamageTicks || 0) >= 300) return {
+    title: "不屈のBONBON", detail: (h.highDamageTicks / 60).toFixed(1) + "秒、100%以上で生存",
+  };
+  if ((h.items || 0) >= 2) return {
+    title: "アイテム磁石", detail: h.items + "個のアイテムを獲得",
+  };
+  if (player.stocks === STOCKS) return {
+    title: "パーフェクトBONBON", detail: "ストックを一度も失わず優勝",
+  };
+  if (player.damageDealt >= 120) return {
+    title: "攻めのBONBON", detail: Math.floor(player.damageDealt) + "%のダメージを与えた",
+  };
+  if ((h.hits || 0) >= 8) return {
+    title: "ラッシュファイター", detail: h.hits + "回の攻撃を命中",
+  };
+  return {
+    title: "生き残り名人", detail: "最後まで勝ち残って優勝",
+  };
+}
+
+// リザルト用の情報（勝者＋優勝者だけの称号＋各プレイヤーのスコア）を作る
 function buildResultInfo(m) {
+  const winner = m.players.find(player => player.slot === m.winnerSlot) || null;
   return {
     winnerSlot: m.winnerSlot,
+    winnerTitle: selectWinnerTitle(winner),
     timeUp: !!m.timeUp,
     scores: m.players.map(p => ({ slot: p.slot, dealt: Math.floor(p.damageDealt), stocks: Math.max(0, p.stocks), taken: Math.floor(p.damage) })),
   };
@@ -2455,6 +2621,38 @@ const APP = {
   resultInfo: null,
 };
 window.APP = APP;  // デバッグ用に公開
+
+// 結果画面を直接確認するQA用URL（?preview=result）。通常起動には一切影響しない。
+// 実際と同じbuildResultInfo/drawResultを通すため、称号や4人分の表が崩れていないか確認できる。
+function applyResultPreviewFromUrl() {
+  const params = new URLSearchParams(location.search);
+  if (params.get("preview") !== "result") return;
+  const previewMatch = makeMatchState([0, 1, 2, 3], APP.stageIndex);
+  const requestedWinner = Number(params.get("winner"));
+  const winnerSlot = Number.isInteger(requestedWinner) && requestedWinner >= 0 && requestedWinner < 4
+    ? requestedWinner : 0;
+  previewMatch.winnerSlot = winnerSlot;
+  previewMatch.ending = true;
+  previewMatch.finished = true;
+  for (const player of previewMatch.players) {
+    player.stocks = player.slot === winnerSlot ? 2 : 0;
+    player.damageDealt = [186, 142, 97, 64][player.slot];
+    player.damage = [74, 128, 116, 151][player.slot];
+  }
+  const winner = previewMatch.players.find(player => player.slot === winnerSlot);
+  // ?award=beam / guard / ice / collector で追加称号の見た目も直接確認できる。
+  const previewAward = params.get("award") || "penguin";
+  if (previewAward === "beam") winner.highlights.beamHits = 4;
+  else if (previewAward === "guard") winner.highlights.guardBreaks = 3;
+  else if (previewAward === "ice") winner.highlights.iceSlideTicks = 240;
+  else if (previewAward === "collector") winner.highlights.itemTypesMask = 31;
+  else if (previewAward === "ko") winner.highlights.kos = 3;
+  else winner.highlights.penguinTurns = 3;
+  APP.match = previewMatch;
+  APP.resultInfo = buildResultInfo(previewMatch);
+  APP.phase = "result";
+}
+applyResultPreviewFromUrl();
 
 /* ==================== オンライン対戦（2〜4人・入力同期lockstep） ====================
  * 方式: delay-based lockstep
@@ -4807,25 +5005,56 @@ function drawResult() {
   ctx.textAlign = "center";
   const info = APP.resultInfo;
   const ws = info.winnerSlot;
-  // 勝者
-  ctx.font = "bold 66px sans-serif";
-  if (ws !== null) { ctx.fillStyle = COLORS[ws]; ctx.fillText(NAMES[ws] + " の勝ち！", W / 2, 130); }
-  else { ctx.fillStyle = "#fff"; ctx.fillText("引き分け！", W / 2, 130); }
-  if (info.timeUp) { ctx.fillStyle = "#ffd34d"; ctx.font = "bold 22px sans-serif"; ctx.fillText("タイムアップ（時間切れ時点の残ストック→与ダメージで判定）", W / 2, 168); }
+  // 優勝者だけを大きな表彰カードで見せ、その試合の特徴的な行動から称号を1つ付ける。
+  let scoreStartY;
+  if (ws !== null) {
+    const award = info.winnerTitle || { title: "生き残り名人", detail: "最後まで勝ち残って優勝" };
+    ctx.fillStyle = "rgba(12,14,28,0.88)";
+    roundRect(230, 28, 820, 200, 22); ctx.fill();
+    ctx.strokeStyle = COLORS[ws]; ctx.lineWidth = 4;
+    roundRect(230, 28, 820, 200, 22); ctx.stroke();
+    drawLobbyCornerCharacter({ slot: ws, x: 350, y: 178, scale: 1.9, tilt: -0.035, pose: "cheer" });
+
+    ctx.textAlign = "left";
+    ctx.fillStyle = "rgba(255,255,255,0.7)"; ctx.font = "bold 16px sans-serif";
+    ctx.fillText("WINNER", 470, 60);
+    ctx.fillStyle = COLORS[ws]; ctx.font = "bold 62px sans-serif";
+    ctx.fillText(NAMES[ws] + " 優勝！", 470, 119);
+    ctx.fillStyle = "#ffd34d"; ctx.font = "bold 15px sans-serif";
+    ctx.fillText("称号", 472, 150);
+    ctx.font = "bold 31px sans-serif";
+    ctx.fillText("「" + award.title + "」", 470, 184);
+    ctx.fillStyle = "rgba(255,255,255,0.78)"; ctx.font = "16px sans-serif";
+    ctx.fillText(award.detail, 472, 211);
+    ctx.textAlign = "center";
+    if (info.timeUp) {
+      ctx.fillStyle = "#ffd34d"; ctx.font = "bold 19px sans-serif";
+      ctx.fillText("タイムアップ（残ストック→与ダメージで判定）", W / 2, 258);
+    }
+    scoreStartY = info.timeUp ? 300 : 274;
+  } else {
+    ctx.fillStyle = "#fff"; ctx.font = "bold 66px sans-serif";
+    ctx.fillText("引き分け！", W / 2, 130);
+    if (info.timeUp) {
+      ctx.fillStyle = "#ffd34d"; ctx.font = "bold 22px sans-serif";
+      ctx.fillText("タイムアップ（時間切れ時点の残ストック→与ダメージで判定）", W / 2, 168);
+    }
+    scoreStartY = 230;
+  }
 
   // スコア表（各プレイヤーの与ダメージ）
   const scores = (info.scores || []).slice().sort((a, b) => (b.stocks - a.stocks) || (b.dealt - a.dealt));
   const rowH = 46, tableW = 560, x0 = (W - tableW) / 2;
-  let y = 230;
+  let y = scoreStartY;
   ctx.font = "bold 16px sans-serif"; ctx.textAlign = "left";
   ctx.fillStyle = "rgba(255,255,255,0.6)";
   ctx.fillText("プレイヤー", x0 + 14, y - 12);
   ctx.textAlign = "center"; ctx.fillText("与えたダメージ", x0 + 300, y - 12);
   ctx.fillText("残ストック", x0 + 450, y - 12);
   for (const s of scores) {
-    ctx.fillStyle = "rgba(15,15,28,0.8)";
+    ctx.fillStyle = s.slot === ws ? "rgba(255,255,255,0.16)" : "rgba(15,15,28,0.8)";
     roundRect(x0, y, tableW, rowH - 8, 8); ctx.fill();
-    ctx.strokeStyle = COLORS[s.slot]; ctx.lineWidth = 2.5; roundRect(x0, y, tableW, rowH - 8, 8); ctx.stroke();
+    ctx.strokeStyle = COLORS[s.slot]; ctx.lineWidth = s.slot === ws ? 4 : 2.5; roundRect(x0, y, tableW, rowH - 8, 8); ctx.stroke();
     ctx.fillStyle = COLORS[s.slot]; ctx.font = "bold 20px sans-serif"; ctx.textAlign = "left";
     let nm = NAMES[s.slot];
     if (APP.mode === "online") nm += (s.slot === NET.myIndex ? " (あなた)" : "");
@@ -4902,7 +5131,7 @@ window.UCHI = {
   CRUMBLE, PENDULUM, LAVA, WARP_CD, PLAYER_W, PLAYER_H, BODY_COLLISION, DOUBLE_JUMP_FLIP_TICKS, TAUNT_TICKS,
   resolvePlayerCollisions, resolveFloorPenetrations, playerSupportedByWorld,
   pH, attackData, attackActiveWindow, itemTimeFraction,
-  platformYAt, mainSurfaceYAt, updatePenguin,
+  platformYAt, mainSurfaceYAt, updatePenguin, selectWinnerTitle, buildResultInfo,
   fx,
   NET, netHost, netJoin, netHostStart, encodeSample, decodeSample,
   makeCpuSource, cpuThink,
