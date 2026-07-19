@@ -314,7 +314,7 @@ const TICK_MS = 1000 / 60;
 const MAX_PLAYERS = 4;
 
 const PHYS = {
-  gravity: 0.55,
+  gravity: 0.495,  // 基本重力を従来の90%に調整（急降下重力は維持）
   fastFallGravity: 1.0,
   maxFall: 12,
   maxFastFall: 17,
@@ -367,7 +367,7 @@ const GUARD = {
 
 // ★オンライン同期の要: 決定論simに影響する変更(stepMatch/ステージ/物理/定数など)をしたら
 //   必ずこの版数を上げること。オンライン接続時に両者で照合し、食い違えば試合させず弾く。
-const GAME_VERSION = "0.9.3";
+const GAME_VERSION = "0.9.4";
 
 const PLAYER_W = 36, PLAYER_H = 48;
 const DOUBLE_JUMP_FLIP_TICKS = 30;  // 二段ジャンプ時の宙返り時間（0.5秒）
@@ -476,23 +476,26 @@ const STAGES = [
     spawns: [ {x:470,y:500}, {x:810,y:500}, {x:440,y:600}, {x:840,y:600} ],
   },
   {
-    // 第4の変化系: メイン地面の両隅に上下する壁。左が上がると右は下がって見えない（逆位相）
-    // 壁が上がっている側は場外に飛ばされにくく、下がっている側が狙い目になる
-    name: "うごく壁",
-    theme: { sky:["#1c2430","#2a3646","#3a4a5e"], mountain:"rgba(25,35,50,0.7)",
-             dirt:"#3a4450", grass:"#6a8098", grass2:"#54687e", plat:"#8a94a6", platTop:"#b0bccc",
-             wall:"#9aa6ba", wallTop:"#cdd8e8" },
+    // ながれの塔: 中央へ流れる地面と、逆位相で上下する壁を縦長の登り構造へ統合。
+    // 地上では中央へ運ばれ、左右どちらかの壁がせり上がって登り口／攻防の間合いを変える。
+    name: "ながれの塔",
+    theme: { sky:["#15272c","#203b40","#31565a"], mountain:"rgba(18,42,46,0.72)",
+             dirt:"#3c4544", grass:"#c4a34a", grass2:"#9d8038", plat:"#657b7c", platTop:"#91aa9f",
+             wall:"#b47c42", wallTop:"#e0b56d" },
     platforms: [
-      { x: 220, y: 585, w: 840, droppable: false, main: true },
-      { x: 390, y: 460, w: 170, droppable: true },
-      { x: 720, y: 460, w: 170, droppable: true },
+      { x: 260, y: 610, w: 380, droppable: false, main: true, conveyor: 2.0 },
+      { x: 640, y: 610, w: 380, droppable: false, main: true, conveyor: -2.0 },
+      { x: 315, y: 505, w: 230, droppable: true },
+      { x: 735, y: 505, w: 230, droppable: true },
+      { x: 525, y: 400, w: 230, droppable: true },
+      { x: 550, y: 295, w: 180, droppable: true },
     ],
-    spawns: [ {x:360,y:585}, {x:920,y:585}, {x:500,y:585}, {x:780,y:585} ],
+    spawns: [ {x:430,y:505}, {x:850,y:505}, {x:500,y:610}, {x:780,y:610} ],
     walls: [
-      { x: 232, w: 60, height: 150, side: "left" },
-      { x: 968, w: 60, height: 150, side: "right" },
+      { x: 455, w: 60, height: 180, side: "left" },
+      { x: 765, w: 60, height: 180, side: "right" },
     ],
-    wallSpeed: 0.007,   // 位相の毎tick変化（三角波 0..1、約2.4秒で上下反転）
+    wallSpeed: 0.006,   // 位相の毎tick変化（三角波 0..1、約2.8秒で上下反転）
   },
   {
     // 空中島群: メイン地面なし。小さな足場が点在。落ちたら即場外の上級ステージ
@@ -507,19 +510,6 @@ const STAGES = [
       { x: 550, y: 340, w: 180, droppable: true },
     ],
     spawns: [ {x:240,y:520}, {x:1060,y:520}, {x:510,y:470}, {x:770,y:470} ],
-  },
-  {
-    // ながれ場: 地面が外側へ流れるコンベア。踏ん張らないと端へ流されて落ちる
-    name: "ながれ場",
-    theme: { sky:["#2a2418","#4a3e22","#6a5a30"], mountain:"rgba(50,42,25,0.7)",
-             dirt:"#4a4030", grass:"#c0a850", grass2:"#a08838", plat:"#9a8a6a", platTop:"#c0b088" },
-    platforms: [
-      { x: 180, y: 560, w: 460, droppable: false, main: true, conveyor: 2.0 },   // 左半分: 右へ流れる（中央へ）
-      { x: 640, y: 560, w: 460, droppable: false, main: true, conveyor: -2.0 },  // 右半分: 左へ流れる（中央へ）
-      { x: 330, y: 440, w: 160, droppable: true },   // 逃げ場の浮き足場
-      { x: 790, y: 440, w: 160, droppable: true },
-    ],
-    spawns: [ {x:420,y:560}, {x:860,y:560}, {x:540,y:560}, {x:740,y:560} ],
   },
   {
     // サーカステント: トランポリン＋振り子＋位置が変わるワープ。
