@@ -367,7 +367,7 @@ const GUARD = {
 
 // ★オンライン同期の要: 決定論simに影響する変更(stepMatch/ステージ/物理/定数など)をしたら
 //   必ずこの版数を上げること。オンライン接続時に両者で照合し、食い違えば試合させず弾く。
-const GAME_VERSION = "0.9.5";
+const GAME_VERSION = "0.9.9";
 
 const PLAYER_W = 36, PLAYER_H = 48;
 const DOUBLE_JUMP_FLIP_TICKS = 30;  // 二段ジャンプ時の宙返り時間（0.5秒）
@@ -477,37 +477,49 @@ const STAGES = [
   },
   {
     // ながれの塔: 中央へ流れる地面と、逆位相で上下する壁を縦長の登り構造へ統合。
-    // 地上では中央へ運ばれ、外縁の低い壁がゆっくり交互にせり上がって場外際の攻防を変える。
+    // 最下段だけが壁ごと左右へ動き、上空は左→右→中央の互い違い3段で登る。
     name: "ながれの塔",
     theme: { sky:["#15272c","#203b40","#31565a"], mountain:"rgba(18,42,46,0.72)",
              dirt:"#3c4544", grass:"#c4a34a", grass2:"#9d8038", plat:"#657b7c", platTop:"#91aa9f",
              wall:"#b47c42", wallTop:"#e0b56d" },
     platforms: [
-      { x: 260, y: 610, w: 380, droppable: false, main: true, conveyor: 2.0 },
-      { x: 640, y: 610, w: 380, droppable: false, main: true, conveyor: -2.0 },
-      { x: 315, y: 505, w: 230, droppable: true },
-      { x: 735, y: 505, w: 230, droppable: true },
-      { x: 525, y: 400, w: 230, droppable: true },
-      { x: 550, y: 295, w: 180, droppable: true },
+      { x: 340, y: 610, w: 300, droppable: false, main: true, conveyor: 2.0,
+        move: { axis: "x", range: 80, speed: 0.55, dir: 1 } },
+      { x: 640, y: 610, w: 300, droppable: false, main: true, conveyor: -2.0,
+        move: { axis: "x", range: 80, speed: 0.55, dir: 1 } },
+      { x: 340, y: 505, w: 230, droppable: true },   // 下段: 左
+      { x: 710, y: 400, w: 230, droppable: true },   // 中段: 右
+      { x: 525, y: 295, w: 230, droppable: true },   // 上段: 中央
     ],
-    spawns: [ {x:430,y:505}, {x:850,y:505}, {x:500,y:610}, {x:780,y:610} ],
+    spawns: [ {x:455,y:505}, {x:825,y:400}, {x:500,y:610}, {x:780,y:610} ],
     walls: [
-      { x: 260, w: 60, height: 90, side: "left" },
-      { x: 960, w: 60, height: 90, side: "right" },
+      { x: 340, w: 60, height: 90, side: "left", platformIndex: 0 },
+      { x: 880, w: 60, height: 90, side: "right", platformIndex: 1 },
     ],
     wallSpeed: 0.00396,   // 旧速度0.006の66%（三角波0..1、約4.2秒で上下反転）
   },
   {
-    // 空中島群: メイン地面なし。小さな足場が点在。落ちたら即場外の上級ステージ
+    // 月夜の空中島群: メイン地面なし。重力50%の小さな足場が点在する上級ステージ
     name: "そらの島",
-    theme: { sky:["#182838","#243c58","#356084"], mountain:"rgba(20,45,70,0.6)",
-             dirt:"#5a6a48", grass:"#8fc860", grass2:"#6fa848", plat:"#7a9a6a", platTop:"#a0c088" },
+    gravityScale: 0.5,
+    itemArc: true,
+    theme: { sky:["#070a18","#10172e","#203052"], mountain:"rgba(8,16,34,0.74)",
+             dirt:"#465060", grass:"#9db2be", grass2:"#788d9b", plat:"#5d7180", platTop:"#a8c4ce",
+             moon: { x: 1010, y: 145, r: 88 } },
     platforms: [
+      { x: 550, y: 585, w: 180, droppable: true },
       { x: 150, y: 520, w: 180, droppable: true },
       { x: 430, y: 470, w: 160, droppable: true },
       { x: 690, y: 470, w: 160, droppable: true },
       { x: 970, y: 520, w: 180, droppable: true },
+      { x: 300, y: 390, w: 150, droppable: true },
+      { x: 830, y: 390, w: 150, droppable: true },
       { x: 550, y: 340, w: 180, droppable: true },
+      { x: 160, y: 310, w: 150, droppable: true },
+      { x: 970, y: 310, w: 150, droppable: true },
+      { x: 350, y: 245, w: 150, droppable: true },
+      { x: 780, y: 245, w: 150, droppable: true },
+      { x: 550, y: 165, w: 180, droppable: true },
     ],
     spawns: [ {x:240,y:520}, {x:1060,y:520}, {x:510,y:470}, {x:770,y:470} ],
   },
@@ -809,7 +821,9 @@ function makeMatchState(slotIndices, stageIndex) {
   // 動く壁のライブコピー
   const walls = (stage.walls || []).map(w => ({
     x: w.x, w: w.w, height: w.height, side: w.side,
-    top: groundY + 8, bottom: groundY + 40, raise: 0,
+    platformIndex: Number.isInteger(w.platformIndex) ? w.platformIndex : -1,
+    platformOffsetX: Number.isInteger(w.platformIndex) ? w.x - stage.platforms[w.platformIndex].x : 0,
+    top: groundY + 8, bottom: groundY + 40, raise: 0, dx: 0, dy: 0,
   }));
   // 溶岩（静的 or せり上がり）。せり上がりステージは動的矩形を1つ足し、risingLavaで毎tick駆動する
   const lava = (stage.lava || []).map(l => ({ x: l.x, y: l.y, w: l.w, h: l.h }));
@@ -1066,10 +1080,17 @@ function updateWalls(state) {
   else if (state.wallPhase <= 0) { state.wallPhase = 0; state.wallVel = -state.wallVel; }
   const g = state.groundY;
   for (const w of state.walls) {
+    const oldX = w.x, oldTop = w.top;
+    if (w.platformIndex >= 0) {
+      const carrier = state.platforms[w.platformIndex];
+      w.x = carrier.x + w.platformOffsetX;   // 最下段の地面と一緒に左右移動
+    }
     const raise = w.side === "left" ? state.wallPhase : 1 - state.wallPhase;
     w.raise = raise;
     w.top = g + 8 - (w.height + 8) * raise;  // raise=1→g-height(上), raise=0→g+8(地面下＝隠れる)
     w.bottom = g + 40;
+    w.dx = w.x - oldX;
+    w.dy = w.top - oldTop;
   }
 }
 
@@ -1096,6 +1117,19 @@ function rngNext(state) {
   x ^= x << 5;  x |= 0;
   state.rng = x;
   return (x >>> 0) / 4294967296;
+}
+
+// 横から飛来するアイテムが指定した高さへ降りてくるまでのtick数。
+// 実際の落下処理と同じ重力・終端速度で予測し、狙う足場に合わせて水平速度を決める。
+function itemArcFlightTicks(startY, startVy, targetY) {
+  let y = startY, vy = startVy;
+  for (let ticks = 1; ticks <= 240; ticks++) {
+    vy = Math.min(vy + ITEM.gravity, ITEM.maxFall);
+    const prevY = y;
+    y += vy;
+    if (prevY <= targetY && y >= targetY && vy > 0) return ticks;
+  }
+  return 120;
 }
 
 function rectsOverlap(ax, ay, aw, ah, bx, by, bw, bh) {
@@ -1127,6 +1161,15 @@ function stepMatch(state, samples) {
     }
     return null;
   });
+  // 壁上にいるプレイヤーも、壁の上下＋地面由来の左右移動へ追従させる。
+  const wallCarriers = ps.map(p => {
+    if (!p.alive || !p.onGround) return null;
+    for (const w of state.walls) {
+      if (w.raise <= 0.02) continue;
+      if (p.x + pHW(p) > w.x && p.x - pHW(p) < w.x + w.w && Math.abs(p.y - w.top) < 1.5) return w;
+    }
+    return null;
+  });
   // 2) 床を動かす（決定論的）
   updateMovingPlatforms(state);
   updateWalls(state);
@@ -1136,7 +1179,9 @@ function stepMatch(state, samples) {
   //    縦方向は床top(plat.y)へスナップ＝floatズレで着地判定が外れて落ちるのを防ぐ。
   for (let i = 0; i < ps.length; i++) {
     const plat = carriers[i];
+    const wall = wallCarriers[i];
     if (plat) { ps[i].x += plat.dx; ps[i].y = plat.y; }
+    else if (wall) { ps[i].x += wall.dx; ps[i].y = wall.top; }
   }
 
   // --- 各プレイヤーの入力・移動 ---
@@ -1249,7 +1294,8 @@ function stepMatch(state, samples) {
     // 重力（風船中・復活降下中はスキップ。空中で下入力＝急降下）
     if (!p.onGround && !p.ballooning && !p.respawning) {
       const fast = cur.down && p.vy > 0;
-      p.vy += fast ? PHYS.fastFallGravity : PHYS.gravity;
+      const gravityScale = state.stage.gravityScale || 1;
+      p.vy += (fast ? PHYS.fastFallGravity : PHYS.gravity) * gravityScale;
       const cap = fast ? PHYS.maxFastFall : PHYS.maxFall;
       if (p.vy > cap) p.vy = cap;
     }
@@ -1304,6 +1350,19 @@ function stepMatch(state, samples) {
             if (plat.crumble && plat.crumbleState === "solid") { plat.crumbleState = "crack"; plat.crumbleTimer = CRUMBLE.crackTicks; }
           }
           break;
+        }
+      }
+      // せり上がる壁の上面も着地可能。壁に乗った後は次tickから壁と一緒に移動する。
+      if (!landed && !bounced) {
+        for (const w of state.walls) {
+          if (w.raise <= 0.02) continue;
+          if (p.x + pHW(p) <= w.x || p.x - pHW(p) >= w.x + w.w) continue;
+          if (prevY <= w.top && p.y >= w.top) {
+            p.y = w.top;
+            p.vy = 0;
+            landed = true;
+            break;
+          }
         }
       }
       if (landed) {
@@ -1433,7 +1492,23 @@ function stepMatch(state, samples) {
         // reach/speed/beam/giant=各weight2、refill=weight1（半分の頻度）
         const roll = rngNext(state) * 9;
         const type = roll < 2 ? "reach" : roll < 4 ? "speed" : roll < 6 ? "beam" : roll < 8 ? "giant" : "refill";
-        if (type === "refill") {
+        if (state.stage.itemArc) {
+          // 空島だけ: 13枚の足場から着地点を抽選し、近い画面端から放物線で投げ込む。
+          const targetPlatformIndex = Math.floor(rngNext(state) * state.platforms.length);
+          const targetPlatform = state.platforms[targetPlatformIndex];
+          const landingMargin = Math.min(ITEM.radius + 8, targetPlatform.w * 0.25);
+          const targetX = targetPlatform.x + landingMargin
+            + rngNext(state) * (targetPlatform.w - landingMargin * 2);
+          const enterFromLeft = targetX < W * 0.5;
+          const x = enterFromLeft ? -ITEM.radius - 8 : W + ITEM.radius + 8;
+          const y = 80 + rngNext(state) * 50;
+          const vy = -(5.0 + rngNext(state) * 1.6);
+          const flightTicks = itemArcFlightTicks(y, vy, targetPlatform.y);
+          const vx = (targetX - x) / flightTicks;
+          state.items.push({ type, x, y, vx, vy, arc: true, landed: false,
+            targetX, targetPlatformIndex });
+          events.push({ type: "item-spawn", x, itemType: type });
+        } else if (type === "refill") {
           // 風船なのでふわふわ浮いて、風で左右に流れて横切る
           const dir = rngNext(state) < 0.5 ? 1 : -1;
           const y = 170 + rngNext(state) * 170;
@@ -1452,6 +1527,7 @@ function stepMatch(state, samples) {
     for (const it of state.items) {
       if (it.float) { it.x += it.vx; continue; }   // 風船アイテムは水平ドリフト（上下バブは描画で）
       if (!it.landed) {
+        it.x += it.vx || 0;
         it.vy += ITEM.gravity;
         if (it.vy > ITEM.maxFall) it.vy = ITEM.maxFall;
         const prevY = it.y;
@@ -2379,6 +2455,28 @@ function drawBackground(stage) {
   g.addColorStop(1, th.sky[2]);
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, W, H);
+  // そらの島の月夜。乱数を使わず、対戦シミュレーションと無関係な固定遠景として描く。
+  if (th.moon) {
+    const moon = th.moon;
+    const stars = [[95,90],[180,165],[285,72],[410,150],[535,88],[680,170],[810,62],[1135,82],[1210,190]];
+    ctx.save();
+    ctx.fillStyle = "rgba(205,225,255,0.7)";
+    for (const [sx, sy] of stars) {
+      ctx.beginPath(); ctx.arc(sx, sy, 1.8, 0, Math.PI * 2); ctx.fill();
+    }
+    const glow = ctx.createRadialGradient(moon.x, moon.y, moon.r * 0.65, moon.x, moon.y, moon.r * 1.45);
+    glow.addColorStop(0, "rgba(226,235,224,0.28)");
+    glow.addColorStop(1, "rgba(226,235,224,0)");
+    ctx.fillStyle = glow;
+    ctx.beginPath(); ctx.arc(moon.x, moon.y, moon.r * 1.45, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "#e7ead9";
+    ctx.beginPath(); ctx.arc(moon.x, moon.y, moon.r, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "rgba(137,151,143,0.22)";
+    for (const [ox, oy, rx, ry] of [[-31,-22,17,12],[27,-34,12,9],[18,22,22,15],[-38,31,10,8]]) {
+      ctx.beginPath(); ctx.ellipse(moon.x + ox, moon.y + oy, rx, ry, -0.25, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.restore();
+  }
   // 遠景の山
   ctx.fillStyle = th.mountain;
   ctx.beginPath();
@@ -2593,6 +2691,17 @@ const ITEM_STYLE = {
 function drawItem(it) {
   const st = ITEM_STYLE[it.type];
   const r = ITEM.radius;
+  if (it.arc && !it.landed) {
+    ctx.save();
+    ctx.fillStyle = st.color;
+    for (let k = 3; k >= 1; k--) {
+      ctx.globalAlpha = 0.1 + (3 - k) * 0.08;
+      ctx.beginPath();
+      ctx.arc(it.x - it.vx * k * 2.2, it.y - it.vy * k * 2.2, 3 + (3 - k), 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
   // 風船満タンアイテム: ふわふわ浮く風船の姿
   if (it.type === "refill") {
     const bob = Math.sin(performance.now() / 260 + it.x / 40) * 5;

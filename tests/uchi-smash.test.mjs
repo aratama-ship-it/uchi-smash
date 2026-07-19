@@ -114,7 +114,7 @@ test("release constants and input codec stay coherent", () => {
   const { UCHI: game } = sandbox;
   assert.match(HTML, /<title>PYGMIX BONBON<\/title>/);
   assert.match(HTML, /ctx\.fillText\("PYGMIX BONBON", W \/ 2, 120\)/);
-  assert.match(HTML, /const GAME_VERSION = "0\.9\.5"/);
+  assert.match(HTML, /const GAME_VERSION = "0\.9\.9"/);
   assert.match(HTML, /リーチ・速度・ビーム・巨大化・風船補充の5種類/);
   assert.equal(game.PHYS.gravity, 0.495);
   assert.equal(game.STAGES.length, 6);
@@ -130,15 +130,143 @@ test("release constants and input codec stay coherent", () => {
   assert.equal(flowTower.wallSpeed, 0.00396);
   assert.equal(flowTower.walls.every(wall => wall.height === 90), true);
   const flowGround = flowTower.platforms.filter(platform => platform.main);
+  const flowSteps = flowTower.platforms.filter(platform => !platform.main).sort((a, b) => b.y - a.y);
+  assert.equal(flowGround.reduce((sum, platform) => sum + platform.w, 0), 600);
+  assert.equal(flowGround.every(platform => platform.move?.axis === "x"), true);
+  assert.equal(flowSteps.length, 3);
+  assert.ok(flowSteps[0].x + flowSteps[0].w / 2 < 640);
+  assert.ok(flowSteps[1].x + flowSteps[1].w / 2 > 640);
+  assert.equal(flowSteps[2].x + flowSteps[2].w / 2, 640);
   assert.equal(flowTower.walls[0].x, Math.min(...flowGround.map(platform => platform.x)));
   assert.equal(flowTower.walls[1].x + flowTower.walls[1].w, Math.max(...flowGround.map(platform => platform.x + platform.w)));
   assert.ok(Math.max(...flowTower.platforms.map(platform => platform.y)) - Math.min(...flowTower.platforms.map(platform => platform.y)) >= 300);
+  const skyIslands = game.STAGES.find(stage => stage.name === "そらの島");
+  assert.equal(skyIslands.gravityScale, 0.5);
+  assert.equal(skyIslands.itemArc, true);
+  assert.ok(skyIslands.theme.moon);
+  assert.equal(skyIslands.platforms.length, 13);
   assert.equal(typeof sandbox.makeKeyboardSource(0).sample, "function");
   assert.equal(typeof sandbox.makeGamepadSource(0).sample, "function");
   assert.equal(game.makeMatchState([0, 1], 0).timeLeft, 10800);
   for (let byte = 0; byte < 256; byte++) {
     assert.equal(game.encodeSample(game.decodeSample(byte)), byte);
   }
+});
+
+test("sky islands apply half gravity to normal and fast falling", () => {
+  const sandbox = loadGame();
+  const { UCHI: game } = sandbox;
+  const stageIndex = game.STAGES.findIndex(stage => stage.name === "そらの島");
+  const match = game.makeMatchState([0, 1], stageIndex);
+  const player = match.players[0];
+  const neutral = {
+    left: false, right: false, up: false, down: false,
+    jump: false, attack: false, guard: false, balloon: false, start: false,
+  };
+  match.countdown = 0;
+  player.x = 640;
+  player.y = 200;
+  player.vy = 0;
+  player.onGround = false;
+  player.invuln = 9999;
+
+  game.stepMatch(match, [neutral, neutral]);
+  assert.equal(player.vy, game.PHYS.gravity * 0.5);
+
+  player.vy = 1;
+  game.stepMatch(match, [{ ...neutral, down: true }, neutral]);
+  assert.equal(player.vy, 1 + game.PHYS.fastFallGravity * 0.5);
+});
+
+test("sky island items enter from the side and vary their landing spots", () => {
+  const sandbox = loadGame();
+  const { UCHI: game } = sandbox;
+  const stageIndex = game.STAGES.findIndex(stage => stage.name === "そらの島");
+  const match = game.makeMatchState([0, 1], stageIndex);
+  const neutral = {
+    left: false, right: false, up: false, down: false,
+    jump: false, attack: false, guard: false, balloon: false, start: false,
+  };
+  match.countdown = 0;
+  match.itemTimer = 1;
+
+  game.stepMatch(match, [neutral, neutral]);
+  assert.equal(match.items.length, 1);
+  const item = match.items[0];
+  assert.equal(item.arc, true);
+  assert.ok(item.x < 0 || item.x > 1280);
+  assert.equal(Math.sign(item.vx), item.x < 0 ? 1 : -1);
+  assert.ok(item.vy < 0);
+  const targetPlatform = match.platforms[item.targetPlatformIndex];
+  assert.ok(targetPlatform);
+  assert.ok(item.targetX > targetPlatform.x);
+  assert.ok(item.targetX < targetPlatform.x + targetPlatform.w);
+
+  const previousX = item.x;
+  const previousY = item.y;
+  const previousVy = item.vy;
+  game.stepMatch(match, [neutral, neutral]);
+  assert.equal(item.x, previousX + item.vx);
+  assert.equal(item.vy, previousVy + game.ITEM.gravity);
+  assert.equal(item.y, previousY + item.vy);
+
+  const landingXs = new Set();
+  const targetPlatforms = new Set();
+  for (let spawn = 0; spawn < 12; spawn++) {
+    match.items.length = 0;
+    match.itemTimer = 1;
+    game.stepMatch(match, [neutral, neutral]);
+    const flyingItem = match.items[0];
+    assert.ok(flyingItem);
+    targetPlatforms.add(flyingItem.targetPlatformIndex);
+
+    for (let tick = 0; tick < 240 && !flyingItem.landed; tick++) {
+      for (const player of match.players) {
+        player.x = -220;
+        player.y = 0;
+        player.vx = 0;
+        player.vy = 0;
+        player.onGround = true;
+        player.invuln = 9999;
+      }
+      game.stepMatch(match, [neutral, neutral]);
+    }
+    assert.equal(flyingItem.landed, true);
+    landingXs.add(Math.round(flyingItem.x));
+  }
+  assert.ok(targetPlatforms.size >= 6);
+  assert.ok(landingXs.size >= 6);
+});
+
+test("flow tower walls can carry a standing player with the moving ground", () => {
+  const sandbox = loadGame();
+  const { UCHI: game } = sandbox;
+  const stageIndex = game.STAGES.findIndex(stage => stage.name === "ながれの塔");
+  const match = game.makeMatchState([0, 1], stageIndex);
+  const player = match.players[0];
+  const neutral = {
+    left: false, right: false, up: false, down: false,
+    jump: false, attack: false, guard: false, balloon: false, start: false,
+  };
+  match.countdown = 0;
+  match.wallPhase = 0.8;
+  match.wallVel = match.stage.wallSpeed;
+  player.x = 370;
+  player.y = 536;
+  player.vy = 5;
+  player.onGround = false;
+  player.invuln = 9999;
+
+  game.stepMatch(match, [neutral, neutral]);
+  const wall = match.walls[0];
+  assert.equal(player.onGround, true);
+  assert.equal(player.y, wall.top);
+
+  const previousX = player.x;
+  game.stepMatch(match, [neutral, neutral]);
+  assert.equal(player.onGround, true);
+  assert.equal(player.y, wall.top);
+  assert.ok(Math.abs((player.x - previousX) - wall.dx) < 1e-9);
 });
 
 test("only the double jump starts one somersault", () => {
