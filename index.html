@@ -153,11 +153,58 @@
     font-size: 12px;
     text-align: right;
   }
+  #pad-config-open {
+    width: 100%; margin-top: 12px; padding: 9px 10px;
+    border: 1px solid #8fd3ff; border-radius: 7px;
+    background: #202f48; color: #fff; font-family: inherit; font-size: 13px; font-weight: 700; cursor: pointer;
+  }
+  #pad-config-open:hover, #pad-config-open:focus-visible { background: #294262; outline: 2px solid rgba(143,211,255,0.35); }
+  #gamepad-config[hidden] { display: none; }
+  #gamepad-config {
+    position: fixed; inset: 0; z-index: 12;
+    display: flex; align-items: center; justify-content: center;
+    box-sizing: border-box; padding: 16px; background: rgba(5,7,16,0.9);
+  }
+  .pad-config-panel {
+    width: min(840px, 100%); max-height: calc(100vh - 32px); overflow-y: auto; box-sizing: border-box;
+    border: 2px solid #8fd3ff; border-radius: 14px;
+    background: #18182c; color: #fff; padding: 22px 26px;
+    box-shadow: 0 24px 72px rgba(0,0,0,0.68);
+  }
+  .pad-config-panel h2 { margin: 0 0 6px; color: #8fd3ff; font-size: 24px; }
+  .pad-config-panel > p { margin: 0 0 16px; color: #bcbcd0; font-size: 13px; line-height: 1.6; }
+  #pad-config-device {
+    width: 100%; box-sizing: border-box; margin-bottom: 14px; padding: 9px 10px;
+    border: 1px solid #555779; border-radius: 7px; background: #101021; color: #fff;
+    font-family: inherit; font-size: 14px; font-weight: 700;
+  }
+  .pad-config-groups { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+  .pad-config-group h3 { margin: 0 0 4px; color: #ffd34d; font-size: 14px; }
+  .pad-config-group-note { margin: 8px 0 0; color: #9292aa; font-size: 11px; line-height: 1.5; }
+  .pad-map-row {
+    display: grid; grid-template-columns: 1fr 190px; align-items: center; gap: 14px;
+    padding: 8px 0; border-top: 1px solid rgba(255,255,255,0.1);
+  }
+  .pad-map-row span { font-size: 14px; font-weight: 700; }
+  .pad-map-row button, .pad-config-actions button {
+    border: 1px solid rgba(255,255,255,0.3); border-radius: 7px;
+    background: #292942; color: #fff; padding: 8px 10px;
+    font-family: inherit; font-size: 13px; font-weight: 700; cursor: pointer;
+  }
+  .pad-map-row button.listening { border-color: #ffd34d; background: #4b3b20; color: #ffd34d; }
+  .pad-map-row button:disabled { opacity: 0.45; cursor: default; }
+  #pad-config-status { min-height: 22px; margin-top: 12px; color: #ffd34d; font-size: 13px; }
+  .pad-config-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+  .pad-config-actions #pad-config-reset { margin-right: auto; color: #ffd0d0; }
   @media (max-width: 820px), (max-height: 620px) {
     .help-panel { max-height: calc(100vh - 24px); }
     .help-grid { grid-template-columns: 1fr; }
     .control-sheet + .control-sheet { border-left: 0; border-top: 1px solid rgba(255,255,255,0.16); }
     .help-notes { grid-template-columns: 1fr; }
+  }
+  @media (max-width: 700px) {
+    .pad-config-panel { padding: 18px; }
+    .pad-config-groups { grid-template-columns: 1fr; gap: 18px; }
   }
   /* オンライン対戦メニュー */
   #online {
@@ -211,7 +258,7 @@
       </div>
       <button id="help-close" type="button" aria-label="操作方法を閉じる">閉じる　Esc</button>
     </header>
-    <p class="help-lead">参加キー：キーボード左は F、キーボード右は L、ゲームパッドは X。2人以上で Enter / Start を押すと開始します。</p>
+    <p class="help-lead">参加キー：キーボード左は F、キーボード右は L、ゲームパッドは設定した攻撃ボタン（初期 X / □）。2人以上で Enter、または設定した決定ボタン（初期 Start / Options）を押すと開始します。</p>
     <div class="help-grid">
       <article class="control-sheet">
         <h3>キーボード左</h3>
@@ -244,13 +291,16 @@
         <p class="device">一般的な4ボタンパッド</p>
         <dl>
           <div><dt>移動</dt><dd>スティック / 十字</dd></div>
-          <div><dt>ジャンプ</dt><dd>A / ×</dd></div>
+          <div><dt>ジャンプ</dt><dd>A / ×（変更可）</dd></div>
           <div><dt>急降下</dt><dd>下入力</dd></div>
-          <div><dt>攻撃</dt><dd>X</dd></div>
-          <div><dt>ガード</dt><dd>L / R</dd></div>
-          <div><dt>風船</dt><dd>Y</dd></div>
-          <div><dt>アピール</dt><dd>B / ○</dd></div>
+          <div><dt>攻撃</dt><dd>X / □（変更可）</dd></div>
+          <div><dt>ガード</dt><dd>L / R（変更可）</dd></div>
+          <div><dt>風船</dt><dd>Y / △（変更可）</dd></div>
+          <div><dt>アピール</dt><dd>B / ○（変更可）</dd></div>
+          <div><dt>ステージ選択</dt><dd>左右 / 設定ボタン</dd></div>
+          <div><dt>試合開始</dt><dd>Start / Options（変更可）</dd></div>
         </dl>
+        <button id="pad-config-open" type="button">ゲームパッドのボタン設定</button>
       </article>
     </div>
     <div class="help-notes">
@@ -258,10 +308,40 @@
       <p><strong>攻撃の使い分け</strong><br>上か下だけを入力しながら攻撃で上下攻撃。1秒以上で中間溜め、2秒でフルチャージ。</p>
       <p><strong>風船</strong><br>長押しで浮上。1ストックにつき1回で、使い切ると割れます。</p>
       <p><strong>しゃがみ</strong><br>通常の地面で下入力すると高さが半分になり、正面レーザーを避けられます。</p>
-      <p><strong>アイテム</strong><br>リーチ・速度・ビーム・巨大化・風船補充の5種類です。</p>
+      <p><strong>アイテム</strong><br>リーチ・速度・ビーム・巨大化・風船補充の5種類。ビームは溜め攻撃で太く長くなります。</p>
       <p><strong>タイムアップ</strong><br>時間切れになった瞬間の残ストックで判定し、その後の撃墜ではストックが減りません。</p>
     </div>
     <div class="help-footer">背景の暗い部分をクリックしても閉じられます。</div>
+  </section>
+</div>
+
+<div id="gamepad-config" hidden>
+  <section class="pad-config-panel" role="dialog" aria-modal="true" aria-labelledby="pad-config-title">
+    <h2 id="pad-config-title">ゲームパッドのボタン設定</h2>
+    <p>設定するゲームパッドと操作を選び、割り当てたいボタンを押してください。移動と急降下はスティック／十字キー固定です。</p>
+    <select id="pad-config-device" aria-label="設定するゲームパッド"></select>
+    <div class="pad-config-groups">
+      <section class="pad-config-group" aria-labelledby="pad-game-actions-title">
+        <h3 id="pad-game-actions-title">試合中の操作</h3>
+        <div class="pad-map-row"><span>ジャンプ</span><button id="pad-map-jump" type="button" data-pad-action="jump"></button></div>
+        <div class="pad-map-row"><span>攻撃・ロビー参加</span><button id="pad-map-attack" type="button" data-pad-action="attack"></button></div>
+        <div class="pad-map-row"><span>ガード</span><button id="pad-map-guard" type="button" data-pad-action="guard"></button></div>
+        <div class="pad-map-row"><span>風船</span><button id="pad-map-balloon" type="button" data-pad-action="balloon"></button></div>
+        <div class="pad-map-row"><span>アピール</span><button id="pad-map-taunt" type="button" data-pad-action="taunt"></button></div>
+      </section>
+      <section class="pad-config-group" aria-labelledby="pad-menu-actions-title">
+        <h3 id="pad-menu-actions-title">ロビー・結果画面の操作</h3>
+        <div class="pad-map-row"><span>ステージ前へ</span><button id="pad-map-stage-prev" type="button" data-pad-action="stagePrev"></button></div>
+        <div class="pad-map-row"><span>ステージ次へ</span><button id="pad-map-stage-next" type="button" data-pad-action="stageNext"></button></div>
+        <div class="pad-map-row"><span>試合開始・再戦</span><button id="pad-map-start" type="button" data-pad-action="start"></button></div>
+        <p class="pad-config-group-note">ステージはスティック／十字キーの左右でも選べます。試合開始・再戦が Enter キー相当です。</p>
+      </section>
+    </div>
+    <div id="pad-config-status" role="status"></div>
+    <div class="pad-config-actions">
+      <button id="pad-config-reset" type="button">初期設定に戻す</button>
+      <button id="pad-config-close" type="button">閉じる</button>
+    </div>
   </section>
 </div>
 
@@ -408,7 +488,7 @@ const GUARD = {
 
 // ★オンライン同期の要: 決定論simに影響する変更(stepMatch/ステージ/物理/定数など)をしたら
 //   必ずこの版数を上げること。オンライン接続時に両者で照合し、食い違えば試合させず弾く。
-const GAME_VERSION = "0.9.19";
+const GAME_VERSION = "0.9.25";
 
 const PLAYER_W = 36, PLAYER_H = 48;
 // キャラクター同士の物理衝突。複数人が同時に密集しても、反復して体の重なりを解消する。
@@ -441,6 +521,8 @@ const ITEM = {
   beamRange: 460,       // beam効果: ビームの長さ
   beamThick: 26,        // beamの太さ
   beamGroundClearance: PLAYER_H * 0.5, // 通常地面の半身しゃがみが下をくぐれる高さ
+  chargedBeamRangeMult: 2,             // 50%以上の正面溜めビームは横方向2倍
+  chargedBeamThick: 64,                // しゃがみも覆う縦幅（地面すれすれまで判定）
 };
 const ITEM_TYPES = ["reach", "speed", "beam"];
 
@@ -498,14 +580,18 @@ const MOB = {
   kbBase: 5, kbScale: 0.10,
 };
 
-// 氷ステージの第三者ペンギン。左右の入口で予告してから、斜面に沿って一気に横断する。
+// 氷ステージの第三者ペンギン。出現→警告→腹ばい突撃の3段階で、地面と上段を交互に襲う。
 const PENGUIN = {
   width: 58,
   height: 46,
-  firstWait: 150,
-  waitTicks: 210,
-  warnTicks: 72,
+  chargeHeight: 30,
+  firstWait: 240,
+  waitTicks: 330,
+  appearTicks: 45,
+  warnTicks: 60,
   speed: 11.5,
+  fallGravity: 0.55,
+  maxFall: 12,
   damage: 11,
   kbBase: 5.8,
   kbScale: 0.11,
@@ -637,7 +723,7 @@ const STAGES = [
   },
   {
     // こおり: 左右から中央へ下るV字の氷床。加速・減速・切り返しが鈍く、中央へ少し滑る。
-    // 第三者ペンギンは左右交互に予告してから斜面を横断する。
+    // 第三者ペンギンは地面と上段へ交互に現れ、警告後に腹ばいで斜面を横断する。
     name: "こおり",
     icePhysics: { accel: 0.28, turnAccel: 0.18, friction: 0.972, slopeSlide: 0.035 },
     penguin: true,
@@ -694,6 +780,7 @@ const LOBBY_CORNER_CHARACTERS = [
 // 押下中キーの集合（ブラウザイベント → ここに集約）
 const keys = new Set();
 let lobbyHelpOpen = false;
+let gamepadConfigOpen = false;
 const USED_CODES = new Set([
   "KeyW","KeyA","KeyS","KeyD","KeyF","KeyG","KeyH","KeyO","KeyJ","KeyK","KeyC","KeyX",
   "KeyU","KeyL","KeyY","KeyI","Minus","Tab",
@@ -707,6 +794,13 @@ function typingInField() {
 }
 window.addEventListener("keydown", e => {
   if (typingInField()) return;                 // コード入力中はそのまま入力欄へ
+  if (gamepadConfigOpen) {
+    e.stopImmediatePropagation();
+    if (e.code === "Tab") return;
+    e.preventDefault();
+    if (e.code === "Escape" && !e.repeat) closeGamepadConfig();
+    return;
+  }
   if (lobbyHelpOpen) {
     e.stopImmediatePropagation();              // モーダル中はロビー操作へ入力を渡さない
     if (e.code === "Tab") return;             // フォーカス移動はブラウザ標準のまま
@@ -726,13 +820,115 @@ window.addEventListener("keydown", e => {
 window.addEventListener("keyup", e => { if (typingInField()) return; keys.delete(e.code); });
 window.addEventListener("blur", () => keys.clear());
 
-const NEUTRAL = Object.freeze({ left:false,right:false,up:false,down:false,jump:false,attack:false,guard:false,balloon:false,taunt:false,start:false });
+const NEUTRAL = Object.freeze({ left:false,right:false,up:false,down:false,jump:false,attack:false,guard:false,balloon:false,taunt:false,stagePrev:false,stageNext:false,start:false });
 
 // キーボード2系統のマッピング
 const KB_MAPS = [
   { left:"KeyA", right:"KeyD", up:"KeyW", down:"KeyS", jump:"KeyW", attack:"KeyF", guard:"KeyG", balloon:"Space", taunt:"KeyY" },
   { left:"KeyH", right:"KeyK", up:"KeyU", down:"KeyJ", jump:"KeyU", attack:"KeyL", guard:"Minus", balloon:"Period", taunt:"KeyI" },
 ];
+
+const GAMEPAD_GAME_ACTIONS = ["jump", "attack", "guard", "balloon", "taunt"];
+const GAMEPAD_MENU_ACTIONS = ["stagePrev", "stageNext", "start"];
+const GAMEPAD_ACTIONS = [...GAMEPAD_GAME_ACTIONS, ...GAMEPAD_MENU_ACTIONS];
+const GAMEPAD_MAPPING_STORAGE_KEY = "pygmix-bonbon-gamepad-mappings-v1";
+const DEFAULT_GAMEPAD_MAPPING = Object.freeze({
+  jump: Object.freeze([0]),
+  attack: Object.freeze([2]),
+  guard: Object.freeze([4, 5, 6, 7]),
+  balloon: Object.freeze([3]),
+  taunt: Object.freeze([1]),
+  stagePrev: Object.freeze([14]),
+  stageNext: Object.freeze([15]),
+  start: Object.freeze([9]),
+});
+
+function normalizeGamepadButtonList(value, fallback) {
+  const source = Array.isArray(value) ? value : Number.isInteger(value) ? [value] : fallback;
+  const normalized = [...new Set(source.filter(index => Number.isInteger(index) && index >= 0 && index < 32))];
+  return normalized.length ? normalized : [...fallback];
+}
+
+function normalizeGamepadMapping(value) {
+  const raw = value && typeof value === "object" ? value : {};
+  const mapping = {};
+  for (const action of GAMEPAD_ACTIONS) {
+    mapping[action] = normalizeGamepadButtonList(raw[action], DEFAULT_GAMEPAD_MAPPING[action]);
+  }
+  return mapping;
+}
+
+function loadGamepadMappings() {
+  try {
+    if (typeof localStorage === "undefined") return {};
+    const raw = JSON.parse(localStorage.getItem(GAMEPAD_MAPPING_STORAGE_KEY) || "{}");
+    const loaded = {};
+    for (const [key, mapping] of Object.entries(raw)) loaded[key] = normalizeGamepadMapping(mapping);
+    return loaded;
+  } catch (error) { return {}; }
+}
+
+let GAMEPAD_MAPPINGS = loadGamepadMappings();
+
+function gamepadStorageId(gamepad, index) {
+  return ((gamepad && gamepad.id) || "gamepad") + "::" + index;
+}
+
+function getGamepadMapping(index) {
+  const gamepad = navigator.getGamepads()[index];
+  const key = gamepadStorageId(gamepad, index);
+  if (!GAMEPAD_MAPPINGS[key]) GAMEPAD_MAPPINGS[key] = normalizeGamepadMapping(null);
+  return GAMEPAD_MAPPINGS[key];
+}
+
+function persistGamepadMappings() {
+  try {
+    if (typeof localStorage !== "undefined") {
+      localStorage.setItem(GAMEPAD_MAPPING_STORAGE_KEY, JSON.stringify(GAMEPAD_MAPPINGS));
+    }
+  } catch (error) {}
+}
+
+function setGamepadMapping(index, mapping) {
+  const gamepad = navigator.getGamepads()[index];
+  const normalized = normalizeGamepadMapping(mapping);
+  GAMEPAD_MAPPINGS[gamepadStorageId(gamepad, index)] = normalized;
+  persistGamepadMappings();
+  return normalized;
+}
+
+function resetGamepadMapping(index) {
+  return setGamepadMapping(index, DEFAULT_GAMEPAD_MAPPING);
+}
+
+// 同じボタンが別の単独操作に使われていた場合は、変更前のボタンと入れ替えて操作不能を防ぐ。
+function remapGamepadButton(mapping, action, buttonIndex) {
+  const next = normalizeGamepadMapping(mapping);
+  if (!GAMEPAD_ACTIONS.includes(action) || !Number.isInteger(buttonIndex) || buttonIndex < 0 || buttonIndex >= 32) return next;
+  const previousTarget = [...next[action]];
+  const actionGroup = GAMEPAD_GAME_ACTIONS.includes(action) ? GAMEPAD_GAME_ACTIONS : GAMEPAD_MENU_ACTIONS;
+  for (const other of actionGroup) {
+    if (other === action || !next[other].includes(buttonIndex)) continue;
+    next[other] = next[other].filter(index => index !== buttonIndex);
+    if (!next[other].length) next[other] = previousTarget.length ? [previousTarget[0]] : [...DEFAULT_GAMEPAD_MAPPING[other]];
+  }
+  next[action] = [buttonIndex];
+  return next;
+}
+
+function gamepadButtonName(index) {
+  const names = ["A / ×", "B / ○", "X / □", "Y / △", "LB / L1", "RB / R1", "LT / L2", "RT / R2",
+    "Select / Share", "Start / Options", "L3", "R3", "十字 上", "十字 下", "十字 左", "十字 右"];
+  return names[index] || ("ボタン " + index);
+}
+
+function gamepadMappingLabel(mapping, action) {
+  return (mapping[action] || []).map(gamepadButtonName).join(" / ");
+}
+
+function gamepadActionPressed(gamepad, mapping, action) {
+  return !!gamepad && (mapping[action] || []).some(index => !!(gamepad.buttons[index] && gamepad.buttons[index].pressed));
+}
 
 // 入力ソース: sample() が InputSample を返す。将来 NetworkSource を足すだけでオンライン化できる
 function makeKeyboardSource(mapIdx) {
@@ -762,17 +958,20 @@ function makeGamepadSource(index) {
       if (!gp) return NEUTRAL;
       const ax = gp.axes[0] || 0;
       const btn = i => !!(gp.buttons[i] && gp.buttons[i].pressed);
+      const mapping = getGamepadMapping(index);
       return {
         left:  ax < -0.4 || btn(14),
         right: ax >  0.4 || btn(15),
         up:    (gp.axes[1] || 0) < -0.5 || btn(12),
         down:  (gp.axes[1] || 0) >  0.5 || btn(13),
-        jump:  btn(0),                    // A (×)
-        attack: btn(2),                   // X (□)
-        balloon: btn(3),                  // Y (△) = 風船
-        guard: btn(4) || btn(5) || btn(6) || btn(7),  // L/R (ショルダー/トリガー)
-        taunt: btn(1),                    // B (○) = アピール
-        start: btn(9),
+        jump: gamepadActionPressed(gp, mapping, "jump"),
+        attack: gamepadActionPressed(gp, mapping, "attack"),
+        balloon: gamepadActionPressed(gp, mapping, "balloon"),
+        guard: gamepadActionPressed(gp, mapping, "guard"),
+        taunt: gamepadActionPressed(gp, mapping, "taunt"),
+        stagePrev: gamepadActionPressed(gp, mapping, "stagePrev"),
+        stageNext: gamepadActionPressed(gp, mapping, "stageNext"),
+        start: gamepadActionPressed(gp, mapping, "start"),
       };
     },
   };
@@ -980,7 +1179,10 @@ function makeMatchState(slotIndices, stageIndex) {
     // ドスン風モブ（stage.mob フラグのあるステージのみ）
     mob: stage.mob ? { x: stage.mobX || 640, homeX: stage.mobX || 640, y: groundY - MOB.size, vy: 0, state: "rise", timer: 0, swayOff: 0, swayVel: MOB.swaySpeed, victims: [] } : null,
     // 氷ステージの第三者ペンギン。最初は左側から現れ、その後は左右交互に突進する。
-    penguin: stage.penguin ? { x: 66, y: groundY, dir: 1, state: "wait", timer: PENGUIN.firstWait, passes: 0 } : null,
+    penguin: stage.penguin ? {
+      x: 66, y: groundY, dir: 1, state: "wait", timer: PENGUIN.firstWait,
+      passes: 0, platformIndex: -1, lane: "main", airborne: false, vy: 0,
+    } : null,
     // 振り子（振れる球のハザード）。調和振動で下(off=0)が最速＝本物の振り子挙動
     pendulums: (stage.pendulums || []).map(pd => {
       const om = 2 * Math.PI / (pd.period || 130);   // Math.PIは定数＝決定論的
@@ -1080,41 +1282,129 @@ function mainSurfaceYAt(state, x) {
   return platformYAt(nearest, nearestX);
 }
 
-// 第三者ペンギン: 待機→入口で予告→斜面に沿って突進→反対側へ退場、を左右交互に繰り返す。
+// ペンギンが走る床面。platformIndex=-1は左右のmain床をつないだV字地面、
+// それ以外は選ばれた上段足場だけを走る。
+function penguinSurfaceYAt(state, penguin, x) {
+  if (penguin.platformIndex >= 0) return platformYAt(state.platforms[penguin.platformIndex], x);
+  return mainSurfaceYAt(state, x);
+}
+
+// 地面→左上段→地面→右上段の順で出現場所を切り替える。
+// 上段は画面外側から中央へ、地面は左右交互に横断する。
+function preparePenguinEntry(state, penguin) {
+  const upperIndices = state.platforms
+    .map((platform, index) => ({ platform, index }))
+    .filter(entry => !entry.platform.main)
+    .map(entry => entry.index);
+  const useUpper = penguin.passes % 2 === 1 && upperIndices.length > 0;
+
+  let leftEdge, rightEdge;
+  const mains = state.platforms.filter(platform => platform.main);
+  penguin.exitLeftEdge = Math.min(...mains.map(platform => platform.x));
+  penguin.exitRightEdge = Math.max(...mains.map(platform => platform.x + platform.w));
+  if (useUpper) {
+    const upperCycle = Math.floor(penguin.passes / 2) % upperIndices.length;
+    penguin.platformIndex = upperIndices[upperCycle];
+    penguin.lane = "upper";
+    const platform = state.platforms[penguin.platformIndex];
+    leftEdge = platform.x;
+    rightEdge = platform.x + platform.w;
+    penguin.dir = platform.x + platform.w / 2 < W / 2 ? 1 : -1;
+  } else {
+    penguin.platformIndex = -1;
+    penguin.lane = "main";
+    leftEdge = Math.min(...mains.map(platform => platform.x));
+    rightEdge = Math.max(...mains.map(platform => platform.x + platform.w));
+    penguin.dir = Math.floor(penguin.passes / 2) % 2 === 0 ? 1 : -1;
+  }
+
+  penguin.leftEdge = leftEdge;
+  penguin.rightEdge = rightEdge;
+  penguin.x = penguin.dir > 0
+    ? leftEdge - PENGUIN.width * 0.35
+    : rightEdge + PENGUIN.width * 0.35;
+  penguin.y = penguinSurfaceYAt(state, penguin, penguin.x);
+  penguin.airborne = false;
+  penguin.vy = 0;
+}
+
+// 第三者ペンギン: 待機→姿を現す→「!」で警告→腹ばい突進→退場、を繰り返す。
 function updatePenguin(state, events) {
   const penguin = state.penguin;
   if (!penguin) return;
-  const mains = state.platforms.filter(platform => platform.main);
-  const leftEdge = Math.min(...mains.map(platform => platform.x));
-  const rightEdge = Math.max(...mains.map(platform => platform.x + platform.w));
-  const entryX = penguin.dir > 0 ? leftEdge - PENGUIN.width * 0.35 : rightEdge + PENGUIN.width * 0.35;
 
   if (penguin.state === "wait") {
     if (--penguin.timer <= 0) {
+      preparePenguinEntry(state, penguin);
+      penguin.state = "appear";
+      penguin.timer = PENGUIN.appearTicks;
+      events.push({ type: "penguin-appear", x: penguin.x, y: penguin.y,
+        dir: penguin.dir, lane: penguin.lane });
+    }
+    return;
+  }
+
+  if (penguin.state === "appear") {
+    penguin.y = penguinSurfaceYAt(state, penguin, penguin.x);
+    if (--penguin.timer <= 0) {
       penguin.state = "warn";
       penguin.timer = PENGUIN.warnTicks;
-      penguin.x = entryX;
-      penguin.y = mainSurfaceYAt(state, penguin.x);
-      events.push({ type: "penguin-warn", x: penguin.x, y: penguin.y, dir: penguin.dir });
+      events.push({ type: "penguin-warn", x: penguin.x, y: penguin.y,
+        dir: penguin.dir, lane: penguin.lane });
     }
     return;
   }
 
-  penguin.y = mainSurfaceYAt(state, penguin.x);
   if (penguin.state === "warn") {
+    penguin.y = penguinSurfaceYAt(state, penguin, penguin.x);
     if (--penguin.timer <= 0) {
       penguin.state = "charge";
-      events.push({ type: "penguin-charge", x: penguin.x, y: penguin.y, dir: penguin.dir });
+      events.push({ type: "penguin-charge", x: penguin.x, y: penguin.y,
+        dir: penguin.dir, lane: penguin.lane });
     }
     return;
   }
 
-  penguin.x += PENGUIN.speed * penguin.dir;
-  penguin.y = mainSurfaceYAt(state, penguin.x);
+  const nextX = penguin.x + PENGUIN.speed * penguin.dir;
+  if (penguin.platformIndex >= 0 && !penguin.airborne) {
+    const platform = state.platforms[penguin.platformIndex];
+    const farEdge = penguin.dir > 0 ? platform.x + platform.w : platform.x;
+    const leftPlatform = penguin.dir > 0 ? nextX > farEdge : nextX < farEdge;
+    penguin.x = nextX;
+    if (leftPlatform) {
+      // 上段の斜面を飛び出した時の上下速度も引き継ぎ、そのまま地面へ落ちる。
+      penguin.airborne = true;
+      penguin.vy = (platform.slope || 0) / platform.w * PENGUIN.speed * penguin.dir;
+      penguin.y += penguin.vy;
+    } else {
+      penguin.y = platformYAt(platform, penguin.x);
+    }
+  } else if (penguin.airborne) {
+    const previousY = penguin.y;
+    penguin.x = nextX;
+    penguin.vy = Math.min(PENGUIN.maxFall, penguin.vy + PENGUIN.fallGravity);
+    penguin.y += penguin.vy;
+    for (const platform of state.platforms) {
+      if (!platform.main || penguin.x < platform.x || penguin.x > platform.x + platform.w) continue;
+      const surfaceY = platformYAt(platform, penguin.x);
+      if (previousY <= surfaceY && penguin.y >= surfaceY) {
+        penguin.y = surfaceY;
+        penguin.vy = 0;
+        penguin.airborne = false;
+        penguin.platformIndex = -1;
+        penguin.lane = "main";
+        events.push({ type: "penguin-land", x: penguin.x, y: penguin.y, dir: penguin.dir });
+        break;
+      }
+    }
+  } else {
+    penguin.x = nextX;
+    penguin.y = mainSurfaceYAt(state, penguin.x);
+  }
   for (const player of state.players) {
     if (!player.alive || player.invuln > 0) continue;
-    if (!rectsOverlap(penguin.x - PENGUIN.width / 2, penguin.y - PENGUIN.height,
-                      PENGUIN.width, PENGUIN.height,
+    if (!rectsOverlap(penguin.x - PENGUIN.width / 2, penguin.y - PENGUIN.chargeHeight,
+                      PENGUIN.width, PENGUIN.chargeHeight,
                       player.x - pHW(player), player.y - pH(player), pHW(player) * 2, pH(player))) continue;
     player.damage += PENGUIN.damage;
     const knockback = PENGUIN.kbBase + player.damage * PENGUIN.kbScale;
@@ -1135,10 +1425,9 @@ function updatePenguin(state, events) {
       dir: penguin.dir, dmg: player.damage });
   }
 
-  if ((penguin.dir > 0 && penguin.x > rightEdge + PENGUIN.width)
-      || (penguin.dir < 0 && penguin.x < leftEdge - PENGUIN.width)) {
+  if ((penguin.dir > 0 && penguin.x > penguin.exitRightEdge + PENGUIN.width)
+      || (penguin.dir < 0 && penguin.x < penguin.exitLeftEdge - PENGUIN.width)) {
     penguin.passes++;
-    penguin.dir *= -1;
     penguin.state = "wait";
     penguin.timer = PENGUIN.waitTicks;
   }
@@ -1634,6 +1923,7 @@ function stepMatch(state, samples) {
     }
 
     // 位置の積分 + 足場着地
+    const prevX = p.x;
     const prevY = p.y;
     p.x += p.vx;
     p.y += p.vy;
@@ -1673,8 +1963,19 @@ function stepMatch(state, samples) {
         if (plat.crumbleState === "gone") continue;   // 崩れて消えた床は乗れない
         if (p.x + pHW(p) <= plat.x || p.x - pHW(p) >= plat.x + plat.w) continue;
         const surfaceY = platformYAt(plat, p.x);
-        const followsSlope = p.onGround && standingPlatform === plat;
-        if (followsSlope || (prevY <= surfaceY && p.y >= surfaceY)) {
+        const prevSurfaceY = platformYAt(plat, prevX);
+        // 斜面では前後それぞれのX地点の床高と比較する。移動後の床高だけで比較すると、
+        // 攻撃で横へ大きく飛ばされた際に上り斜面の内側へ潜り、着地を失っていた。
+        const centerOnSurface = !plat.slope || (p.x >= plat.x && p.x <= plat.x + plat.w);
+        const crossedSurface = centerOnSurface && prevY <= prevSurfaceY + 1.5 && p.y >= surfaceY - 1.5;
+        // 斜面の継ぎ目では中心が足場を出たら次の斜面へ渡す。体の端が残っている間まで
+        // 古い斜面へ吸着させると、隣の斜面より下へ沈んで床抜けの原因になる。
+        const followsSlope = p.onGround && standingPlatform === plat
+          && (!plat.slope || (p.x >= plat.x && p.x <= plat.x + plat.w));
+        const transfersSlope = p.onGround && standingPlatform && standingPlatform !== plat && plat.slope
+          && p.x >= plat.x && p.x <= plat.x + plat.w
+          && Math.abs(prevY - prevSurfaceY) <= 1.5 && Math.abs(p.y - surfaceY) <= 4;
+        if (followsSlope || transfersSlope || crossedSurface) {
           p.y = surfaceY;
           if (plat.bounce) {                           // トランポリン: 上へ跳ねる
             p.vy = -plat.bounce; bounced = true; p.airJumps = PHYS.airJumps;
@@ -1753,9 +2054,12 @@ function stepMatch(state, samples) {
     if (a.attackTimer > activeWindow.activeFrom || a.attackTimer < activeWindow.activeTo || a.attackTimer === 0) continue;
     // beamアイテム=長距離ビーム / reachアイテム=リーチ延長 / 通常
     const isBeam = a.itemType === "beam";
-    const len = isBeam ? ITEM.beamRange : atk.range * (a.itemType === "reach" ? ITEM.reachMult : 1);
+    const isChargedBeam = isBeam && a.attackDir === "fwd" && (a.attackIsCharged || a.attackIsSpecial);
+    const len = isBeam
+      ? ITEM.beamRange * (isChargedBeam ? ITEM.chargedBeamRangeMult : 1)
+      : atk.range * (a.itemType === "reach" ? ITEM.reachMult : 1);
     const thickV = isBeam ? ITEM.beamThick : (PLAYER_W + 20);   // 上下攻撃の横幅
-    const thickF = isBeam ? ITEM.beamThick : atk.height;        // 正面攻撃の厚み
+    const thickF = isBeam ? (isChargedBeam ? ITEM.chargedBeamThick : ITEM.beamThick) : atk.height;
     // 攻撃向き別のヒットボックス（fwd=前方 / up=頭上 / down=足元）。giantは体が大きいぶん基準も拡大
     const aHW = pHW(a), aH = pH(a);
     let hx, hy, hw, hh;
@@ -1768,8 +2072,10 @@ function stepMatch(state, samples) {
     } else {
       hw = len; hh = thickF;
       hx = a.facing === 1 ? a.x + aHW - 6 : a.x - aHW - len + 6;
-      // 正面レーザーは通常地面から半身ぶん上を通り、しゃがみ中の相手には当たらない。
-      hy = isBeam ? a.y - ITEM.beamGroundClearance - thickF : a.y - aH / 2 - thickF / 2 - 4;
+      // 通常ビームは半身ぶん上を通る。溜めビームだけは地面すれすれまで太くして、しゃがみも覆う。
+      hy = isBeam
+        ? (isChargedBeam ? a.y - thickF : a.y - ITEM.beamGroundClearance - thickF)
+        : a.y - aH / 2 - thickF / 2 - 4;
     }
     for (let j = 0; j < ps.length; j++) {
       if (i === j) continue;
@@ -2088,20 +2394,29 @@ function decodeSample(b) {
 //   ゲームパッドも併用可
 function sampleLocalMerged() {
   const k = keys;
-  const gpBtn = (list) => { const ps=navigator.getGamepads(); for(let i=0;i<ps.length;i++){ const g=ps[i]; if(g&&list.some(b=>g.buttons[b]&&g.buttons[b].pressed)) return true; } return false; };
+  const gpAction = (action) => {
+    const ps = navigator.getGamepads();
+    for (let i = 0; i < ps.length; i++) {
+      const gamepad = ps[i];
+      if (gamepad && gamepadActionPressed(gamepad, getGamepadMapping(i), action)) return true;
+    }
+    return false;
+  };
   const gpAxis = (ax, lo) => { const ps=navigator.getGamepads(); for(let i=0;i<ps.length;i++){ const g=ps[i]; if(!g)continue; const v=g.axes[ax]||0; if(lo?v<-0.4:v>0.4) return true; const dpad = ax===0?(lo?14:15):(lo?12:13); if(g.buttons[dpad]&&g.buttons[dpad].pressed) return true; } return false; };
-  const up = k.has("KeyW") || k.has("ArrowUp") || gpBtn([0]);
+  const up = k.has("KeyW") || k.has("ArrowUp") || gpAction("jump");
   return {
     left:  k.has("KeyA") || k.has("ArrowLeft")  || gpAxis(0, true),
     right: k.has("KeyD") || k.has("ArrowRight") || gpAxis(0, false),
     up,
     down:  k.has("KeyS") || k.has("ArrowDown")  || gpAxis(1, false),
     jump:  up,
-    attack: k.has("KeyJ") || gpBtn([2]),        // オンライン攻撃 = J
-    guard:  k.has("KeyK") || gpBtn([4,5,6,7]),  // オンライン防御 = K
-    balloon: k.has("Space") || gpBtn([3]),      // オンライン風船 = Space
-    taunt: k.has("KeyY") || gpBtn([1]),         // アピール = Y / B(○)
-    start: k.has("Enter"),
+    attack: k.has("KeyJ") || gpAction("attack"),
+    guard:  k.has("KeyK") || gpAction("guard"),
+    balloon: k.has("Space") || gpAction("balloon"),
+    taunt: k.has("KeyY") || gpAction("taunt"),
+    stagePrev: gpAction("stagePrev"),
+    stageNext: gpAction("stageNext"),
+    start: k.has("Enter") || gpAction("start"),
   };
 }
 
@@ -2357,10 +2672,151 @@ const $ol = id => document.getElementById(id);
 const helpOpenButton = $ol("help-open");
 const helpModal = $ol("help-modal");
 const helpCloseButton = $ol("help-close");
+const gamepadConfigModal = $ol("gamepad-config");
+const gamepadConfigOpenButton = $ol("pad-config-open");
+const gamepadConfigCloseButton = $ol("pad-config-close");
+const gamepadConfigResetButton = $ol("pad-config-reset");
+const gamepadConfigDevice = $ol("pad-config-device");
+const gamepadConfigStatus = $ol("pad-config-status");
+const gamepadConfigButtons = {
+  jump: $ol("pad-map-jump"), attack: $ol("pad-map-attack"), guard: $ol("pad-map-guard"),
+  balloon: $ol("pad-map-balloon"), taunt: $ol("pad-map-taunt"),
+  stagePrev: $ol("pad-map-stage-prev"), stageNext: $ol("pad-map-stage-next"), start: $ol("pad-map-start"),
+};
+let gamepadConfigWaiting = null;
+
+function selectedGamepadConfigIndex() {
+  const index = Number(gamepadConfigDevice.value);
+  return Number.isInteger(index) && index >= 0 ? index : -1;
+}
+
+function refreshGamepadConfigButtons() {
+  const index = selectedGamepadConfigIndex();
+  const gamepad = index >= 0 ? navigator.getGamepads()[index] : null;
+  const mapping = gamepad ? getGamepadMapping(index) : normalizeGamepadMapping(null);
+  for (const action of GAMEPAD_ACTIONS) {
+    const button = gamepadConfigButtons[action];
+    button.disabled = !gamepad;
+    button.classList.toggle("listening", !!gamepadConfigWaiting && gamepadConfigWaiting.action === action);
+    button.textContent = gamepadConfigWaiting && gamepadConfigWaiting.action === action
+      ? "ボタンを押してください…"
+      : gamepadMappingLabel(mapping, action);
+  }
+  gamepadConfigResetButton.disabled = !gamepad;
+  if (!gamepad) gamepadConfigStatus.textContent = "ゲームパッドを接続して、いずれかのボタンを押してください。";
+}
+
+function refreshGamepadConfigDevices(preferredIndex = -1) {
+  const previous = preferredIndex >= 0 ? preferredIndex : selectedGamepadConfigIndex();
+  const gamepads = navigator.getGamepads();
+  gamepadConfigDevice.innerHTML = "";
+  const connected = [];
+  for (let index = 0; index < gamepads.length; index++) {
+    const gamepad = gamepads[index];
+    if (!gamepad) continue;
+    connected.push(index);
+    const option = document.createElement("option");
+    option.value = String(index);
+    option.textContent = "パッド" + (index + 1) + " — " + (gamepad.id || "ゲームパッド");
+    gamepadConfigDevice.appendChild(option);
+  }
+  if (!connected.length) {
+    const option = document.createElement("option");
+    option.value = "-1";
+    option.textContent = "接続中のゲームパッドがありません";
+    gamepadConfigDevice.appendChild(option);
+    gamepadConfigDevice.value = "-1";
+    gamepadConfigDevice.disabled = true;
+  } else {
+    gamepadConfigDevice.disabled = false;
+    gamepadConfigDevice.value = String(connected.includes(previous) ? previous : connected[0]);
+  }
+  gamepadConfigWaiting = null;
+  refreshGamepadConfigButtons();
+}
+
+function openGamepadConfig() {
+  if (APP.phase !== "lobby") return;
+  gamepadConfigOpen = true;
+  gamepadConfigModal.hidden = false;
+  keys.clear();
+  gamepadConfigStatus.textContent = "変更する操作を選んでください。";
+  refreshGamepadConfigDevices();
+  gamepadConfigCloseButton.focus();
+}
+
+function closeGamepadConfig() {
+  if (!gamepadConfigOpen) return;
+  gamepadConfigOpen = false;
+  gamepadConfigWaiting = null;
+  gamepadConfigModal.hidden = true;
+  APP.lobbyPrev.clear();
+  keys.clear();
+  gamepadConfigOpenButton.focus();
+}
+
+function beginGamepadButtonCapture(action) {
+  const index = selectedGamepadConfigIndex();
+  const gamepad = index >= 0 ? navigator.getGamepads()[index] : null;
+  if (!gamepad) { refreshGamepadConfigDevices(); return; }
+  const held = new Set();
+  for (let buttonIndex = 0; buttonIndex < gamepad.buttons.length; buttonIndex++) {
+    if (gamepad.buttons[buttonIndex] && gamepad.buttons[buttonIndex].pressed) held.add(buttonIndex);
+  }
+  gamepadConfigWaiting = { action, index, held };
+  gamepadConfigStatus.textContent = "パッド" + (index + 1) + "で割り当てたいボタンを押してください。";
+  refreshGamepadConfigButtons();
+}
+
+function pollGamepadConfig() {
+  if (!gamepadConfigOpen || !gamepadConfigWaiting) return;
+  const waiting = gamepadConfigWaiting;
+  const gamepad = navigator.getGamepads()[waiting.index];
+  if (!gamepad) { refreshGamepadConfigDevices(); return; }
+  const pressed = new Set();
+  for (let buttonIndex = 0; buttonIndex < gamepad.buttons.length; buttonIndex++) {
+    if (gamepad.buttons[buttonIndex] && gamepad.buttons[buttonIndex].pressed) pressed.add(buttonIndex);
+  }
+  const freshButton = [...pressed].find(buttonIndex => !waiting.held.has(buttonIndex));
+  if (freshButton === undefined) {
+    waiting.held = pressed;
+    return;
+  }
+  const mapping = remapGamepadButton(getGamepadMapping(waiting.index), waiting.action, freshButton);
+  setGamepadMapping(waiting.index, mapping);
+  gamepadConfigStatus.textContent = gamepadButtonName(freshButton) + " を設定しました。";
+  gamepadConfigWaiting = null;
+  APP.lobbyPrev.clear();
+  refreshGamepadConfigButtons();
+}
+
+gamepadConfigOpenButton.addEventListener("click", openGamepadConfig);
+gamepadConfigCloseButton.addEventListener("click", closeGamepadConfig);
+gamepadConfigResetButton.addEventListener("click", () => {
+  const index = selectedGamepadConfigIndex();
+  if (index < 0) return;
+  resetGamepadMapping(index);
+  gamepadConfigWaiting = null;
+  gamepadConfigStatus.textContent = "初期設定に戻しました。";
+  APP.lobbyPrev.clear();
+  refreshGamepadConfigButtons();
+});
+gamepadConfigDevice.addEventListener("change", () => {
+  gamepadConfigWaiting = null;
+  gamepadConfigStatus.textContent = "変更する操作を選んでください。";
+  refreshGamepadConfigButtons();
+});
+for (const action of GAMEPAD_ACTIONS) {
+  gamepadConfigButtons[action].addEventListener("click", () => beginGamepadButtonCapture(action));
+}
+gamepadConfigModal.addEventListener("click", event => { if (event.target === gamepadConfigModal) closeGamepadConfig(); });
+window.addEventListener("gamepadconnected", event => { if (gamepadConfigOpen) refreshGamepadConfigDevices(event.gamepad.index); });
+window.addEventListener("gamepaddisconnected", () => { if (gamepadConfigOpen) refreshGamepadConfigDevices(); });
 
 function setLobbyHelpOpen(open) {
   const canOpen = open && APP.phase === "lobby" && $ol("online").hidden;
   lobbyHelpOpen = !!canOpen;
+  if (!lobbyHelpOpen && gamepadConfigOpen) closeGamepadConfig();
   helpModal.hidden = !lobbyHelpOpen;
   helpOpenButton.hidden = lobbyHelpOpen;
   keys.clear();
@@ -2496,7 +2952,7 @@ function claimedIds() {
 
 function updateLobby() {
   // モーダル／オンラインメニュー中はローカルロビー操作（参加/CPU/ステージ）を止める
-  if (lobbyHelpOpen || !$ol("online").hidden) return;
+  if (lobbyHelpOpen || gamepadConfigOpen || !$ol("online").hidden) return;
   // 注意: 全ソースの prev を先に更新しきってから遷移する
   // （ループ途中で抜けると未更新の prev が偽エッジを生む）
   const claimed = claimedIds();
@@ -2513,10 +2969,14 @@ function updateLobby() {
         claimed.push(src.id);
       }
     }
-    // 左右入力でステージ選択（誰の入力でもOK）
-    if (cur.left && !prev.left) stageDelta--;
-    if (cur.right && !prev.right) stageDelta++;
-    if (cur.start && !prev.start) wantStart = true;  // Enter or パッドStart
+    // 移動入力または専用ボタンでステージ選択（誰の入力でもOK）
+    const stagePrev = cur.left || cur.stagePrev;
+    const previousStagePrev = prev.left || prev.stagePrev;
+    const stageNext = cur.right || cur.stageNext;
+    const previousStageNext = prev.right || prev.stageNext;
+    if (stagePrev && !previousStagePrev) stageDelta--;
+    if (stageNext && !previousStageNext) stageDelta++;
+    if (cur.start && !prev.start) wantStart = true;  // Enter or 設定したパッド決定ボタン
   }
   if (stageDelta !== 0) {
     APP.stageIndex = ((APP.stageIndex + stageDelta) % STAGES.length + STAGES.length) % STAGES.length;
@@ -2575,14 +3035,15 @@ function changeStage(delta) {
 
 function updateResult() {
   if (APP.mode === "online") {
-    // ホスト: 左右でステージ変更／Enterで再戦（選択中ステージ）。参加側: 待つ。Esc: 退出
+    // ホスト: 左右または専用ボタンでステージ変更／決定で再戦。参加側: 待つ。Esc: 退出
     if (NET.isHost) {
-      const l = keys.has("KeyA") || keys.has("ArrowLeft");
-      const r = keys.has("KeyD") || keys.has("ArrowRight");
+      const menuInput = sampleLocalMerged();
+      const l = menuInput.left || menuInput.stagePrev;
+      const r = menuInput.right || menuInput.stageNext;
       if (l && !NET._prevL) { changeStage(-1); olBroadcastStage(); }
       if (r && !NET._prevR) { changeStage(1); olBroadcastStage(); }
       NET._prevL = l; NET._prevR = r;
-      const enter = keys.has("Enter");
+      const enter = menuInput.start;
       if (enter && !NET.resultPrev) netHostStart();   // netHostStart は APP.stageIndex を使う
       NET.resultPrev = enter;
     }
@@ -2596,8 +3057,12 @@ function updateResult() {
     const prev = APP.lobbyPrev.get(src.id) || NEUTRAL;
     APP.lobbyPrev.set(src.id, cur);
     if (cur.start && !prev.start) wantRematch = true;
-    if (cur.left && !prev.left) stageDelta--;
-    if (cur.right && !prev.right) stageDelta++;
+    const stagePrev = cur.left || cur.stagePrev;
+    const previousStagePrev = prev.left || prev.stagePrev;
+    const stageNext = cur.right || cur.stageNext;
+    const previousStageNext = prev.right || prev.stageNext;
+    if (stagePrev && !previousStagePrev) stageDelta--;
+    if (stageNext && !previousStageNext) stageDelta++;
   }
   if (stageDelta) changeStage(stageDelta);
   if (keys.has("Escape")) { keys.delete("Escape"); APP.phase = "lobby"; APP.match = null; return; }
@@ -2782,8 +3247,9 @@ function handleEvents(events) {
           life: 16 + Math.random() * 8, size: 3 + Math.random() * 3, color: "#fff",
         });
       }
-    } else if (ev.type === "penguin-warn" || ev.type === "penguin-charge") {
-      for (let k = 0; k < (ev.type === "penguin-charge" ? 12 : 6); k++) {
+    } else if (ev.type === "penguin-appear" || ev.type === "penguin-warn" || ev.type === "penguin-charge") {
+      const particleCount = ev.type === "penguin-charge" ? 12 : ev.type === "penguin-warn" ? 6 : 4;
+      for (let k = 0; k < particleCount; k++) {
         fx.particles.push({
           x: ev.x - ev.dir * (8 + Math.random() * 20), y: ev.y - Math.random() * 12,
           vx: -ev.dir * (1 + Math.random() * 4), vy: -(1 + Math.random() * 3),
@@ -3354,12 +3820,12 @@ function drawMob(m) {
   ctx.stroke();
 }
 
-// 氷ステージの第三者ペンギン。予告中は入口で身構え、突進中は雪煙を引く。
+// 氷ステージの第三者ペンギン。出現時は立ち姿、警告で「!」、突進時は腹ばいになる。
 function drawPenguin(penguin) {
   if (!penguin || penguin.state === "wait") return;
   const now = performance.now();
   const charging = penguin.state === "charge";
-  const bob = charging ? Math.sin(now / 45) * 2.2 : Math.sin(now / 150) * 1.2;
+  const bob = charging ? Math.sin(now / 45) * 1.4 : Math.sin(now / 150) * 1.2;
 
   if (charging) {
     ctx.fillStyle = "rgba(225,249,255,0.62)";
@@ -3375,43 +3841,54 @@ function drawPenguin(penguin) {
   ctx.save();
   ctx.translate(penguin.x, penguin.y + bob);
   ctx.scale(penguin.dir, 1);
-  if (charging) ctx.rotate(-0.11);
-
-  // 後ろへ流れるフリッパー。
-  ctx.fillStyle = "#111d2b";
-  ctx.beginPath();
-  ctx.ellipse(-18, -24, 15, 7, -0.55, 0, Math.PI * 2);
-  ctx.fill();
-
-  // 黒い体と白い腹。
-  ctx.fillStyle = "#101b29";
-  ctx.strokeStyle = "#07101b";
-  ctx.lineWidth = 3;
-  ctx.beginPath(); ctx.ellipse(0, -24, 22, 25, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-  ctx.fillStyle = "#edfaff";
-  ctx.beginPath(); ctx.ellipse(4, -18, 14, 16, -0.12, 0, Math.PI * 2); ctx.fill();
-
-  // 進行方向を見る目と小さなくちばし。
-  ctx.fillStyle = "#fff";
-  ctx.beginPath();
-  ctx.arc(7, -34, 5, 0, Math.PI * 2);
-  ctx.arc(16, -32, 4.5, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = "#15202b";
-  ctx.beginPath();
-  ctx.arc(9, -34, 2.2, 0, Math.PI * 2);
-  ctx.arc(18, -32, 2.1, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = "#f2a43b";
-  ctx.beginPath(); ctx.moveTo(19, -29); ctx.lineTo(31, -25); ctx.lineTo(19, -21); ctx.closePath(); ctx.fill();
-
-  ctx.strokeStyle = "#e9a23a";
-  ctx.lineWidth = 5;
-  ctx.lineCap = "round";
-  ctx.beginPath();
-  ctx.moveTo(-8, -2); ctx.lineTo(-13, 1);
-  ctx.moveTo(8, -2); ctx.lineTo(13, 1);
-  ctx.stroke();
+  if (charging) {
+    ctx.rotate(-0.07);
+    // 腹ばい突撃: 横長の体を氷面すれすれに寝かせ、フリッパーと足を後方へ流す。
+    ctx.fillStyle = "#111d2b";
+    ctx.beginPath(); ctx.ellipse(-24, -14, 17, 7, -0.2, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "#101b29";
+    ctx.strokeStyle = "#07101b";
+    ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.ellipse(0, -15, 32, 16, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = "#edfaff";
+    ctx.beginPath(); ctx.ellipse(7, -9, 21, 9, 0.04, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = "#e9a23a";
+    ctx.lineWidth = 5;
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.moveTo(-20, -3); ctx.lineTo(-29, 0);
+    ctx.moveTo(-8, -1); ctx.lineTo(-17, 2);
+    ctx.stroke();
+    ctx.fillStyle = "#fff";
+    ctx.beginPath(); ctx.arc(19, -20, 5, 0, Math.PI * 2); ctx.arc(26, -17, 4, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "#15202b";
+    ctx.beginPath(); ctx.arc(21, -19, 2.2, 0, Math.PI * 2); ctx.arc(28, -16, 2, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "#f2a43b";
+    ctx.beginPath(); ctx.moveTo(29, -16); ctx.lineTo(41, -12); ctx.lineTo(29, -8); ctx.closePath(); ctx.fill();
+  } else {
+    // 出現・警告中は入口で立ち、進行方向を見て身構える。
+    ctx.fillStyle = "#111d2b";
+    ctx.beginPath(); ctx.ellipse(-18, -24, 15, 7, -0.55, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "#101b29";
+    ctx.strokeStyle = "#07101b";
+    ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.ellipse(0, -24, 22, 25, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = "#edfaff";
+    ctx.beginPath(); ctx.ellipse(4, -18, 14, 16, -0.12, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "#fff";
+    ctx.beginPath(); ctx.arc(7, -34, 5, 0, Math.PI * 2); ctx.arc(16, -32, 4.5, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "#15202b";
+    ctx.beginPath(); ctx.arc(9, -34, 2.2, 0, Math.PI * 2); ctx.arc(18, -32, 2.1, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "#f2a43b";
+    ctx.beginPath(); ctx.moveTo(19, -29); ctx.lineTo(31, -25); ctx.lineTo(19, -21); ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = "#e9a23a";
+    ctx.lineWidth = 5;
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.moveTo(-8, -2); ctx.lineTo(-13, 1);
+    ctx.moveTo(8, -2); ctx.lineTo(13, 1);
+    ctx.stroke();
+  }
   ctx.restore();
 
   if (penguin.state === "warn") {
@@ -3556,7 +4033,9 @@ function drawPlayer(p) {
     const prog = (activeWindow.activeFrom - p.attackTimer) / (activeWindow.activeFrom - activeWindow.activeTo);
     if (p.itemType === "beam") {
       // ビーム: 長距離の光線を描く
-      const len = ITEM.beamRange, th = ITEM.beamThick;
+      const isChargedBeam = p.attackDir === "fwd" && (p.attackIsCharged || p.attackIsSpecial);
+      const len = ITEM.beamRange * (isChargedBeam ? ITEM.chargedBeamRangeMult : 1);
+      const th = isChargedBeam ? ITEM.chargedBeamThick : ITEM.beamThick;
       ctx.save();
       ctx.globalAlpha = 0.85 - prog * 0.3;
       const grad = "#c86bff";
@@ -3568,7 +4047,7 @@ function drawPlayer(p) {
         ctx.fillStyle = "#fff"; ctx.fillRect(p.x - th / 6, p.y + 4, th / 3, len);
       } else {
         const bx = p.facing === 1 ? p.x + PLAYER_W / 2 - 6 : p.x - PLAYER_W / 2 - len + 6;
-        const cy = p.y - ITEM.beamGroundClearance - th / 2;
+        const cy = isChargedBeam ? p.y - th / 2 : p.y - ITEM.beamGroundClearance - th / 2;
         ctx.fillStyle = grad; ctx.fillRect(bx, cy - th / 2, len, th);
         ctx.fillStyle = "#fff"; ctx.fillRect(bx, cy - th / 6, len, th / 3);
       }
@@ -3661,25 +4140,15 @@ function drawPlayer(p) {
     ctx.fillRect(gx + gw / 2 - 1, gy - 1, 2, 8);  // 50%境界
   }
 
-  // アイテム所持中: 足元の光るリング（残り時間で細くなる）＋取得フラッシュ
-  if (p.itemType && p.itemTimer > 0) {
+  // アイテム取得直後のフラッシュ。残り時間の丸型ゲージはHUDへ一本化した。
+  if (p.itemType && p.itemTimer > 0 && p.itemGetFlash > 0) {
     const st = ITEM_STYLE[p.itemType];
-    const frac = p.itemTimer / ITEM.duration[p.itemType];
     ctx.save();
-    ctx.strokeStyle = st.color;
-    ctx.globalAlpha = 0.85;
-    ctx.lineWidth = 3.5;
+    ctx.globalAlpha = p.itemGetFlash / 24;
+    ctx.fillStyle = st.color;
     ctx.beginPath();
-    // 足元の弧（残り時間ぶん）
-    ctx.arc(p.x, p.y - 4, PLAYER_W * 0.75, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * frac);
-    ctx.stroke();
-    if (p.itemGetFlash > 0) {
-      ctx.globalAlpha = p.itemGetFlash / 24;
-      ctx.fillStyle = st.color;
-      ctx.beginPath();
-      ctx.arc(p.x, p.y - PLAYER_H / 2, PLAYER_W, 0, Math.PI * 2);
-      ctx.fill();
-    }
+    ctx.arc(p.x, p.y - PLAYER_H / 2, PLAYER_W, 0, Math.PI * 2);
+    ctx.fill();
     ctx.restore();
   }
 
@@ -3740,12 +4209,43 @@ function damageColor(d) {
   return "#ff4040";
 }
 
+function itemTimeFraction(p) {
+  if (!p.itemType || p.itemTimer <= 0) return 0;
+  const duration = ITEM.duration[p.itemType] || 0;
+  return duration > 0 ? Math.max(0, Math.min(1, p.itemTimer / duration)) : 0;
+}
+
 function drawHUD(m) {
   const n = m.players.length;
   const panelW = 190, gap = 26;
   const totalW = n * panelW + (n - 1) * gap;
   let x = (W - totalW) / 2;
   for (const p of m.players) {
+    // アイテム効果の残り時間。各プレイヤー欄の真上に色・名称・秒数をまとめて表示する。
+    if (p.itemType && p.itemTimer > 0) {
+      const st = ITEM_STYLE[p.itemType];
+      const frac = itemTimeFraction(p);
+      const seconds = Math.ceil(p.itemTimer / 60);
+      const igx = x + 8, igy = 610, igw = panelW - 16, igh = 16;
+      ctx.fillStyle = "rgba(8,8,18,0.82)";
+      roundRect(igx, igy, igw, igh, 8); ctx.fill();
+      ctx.save();
+      roundRect(igx, igy, igw, igh, 8); ctx.clip();
+      ctx.globalAlpha = 0.78;
+      ctx.fillStyle = st.color;
+      ctx.fillRect(igx, igy, igw * frac, igh);
+      ctx.restore();
+      ctx.strokeStyle = st.color;
+      ctx.lineWidth = 1.5;
+      roundRect(igx, igy, igw, igh, 8); ctx.stroke();
+      ctx.fillStyle = "#fff";
+      ctx.font = "bold 11px sans-serif";
+      ctx.textAlign = "left";
+      ctx.fillText(st.label, igx + 7, igy + 12);
+      ctx.textAlign = "right";
+      ctx.fillText(seconds + "秒", igx + igw - 7, igy + 12);
+    }
+
     ctx.fillStyle = "rgba(10,10,20,0.65)";
     roundRect(x, 632, panelW, 74, 10);
     ctx.fill();
@@ -3813,13 +4313,35 @@ function drawHUD(m) {
 function controlLinesFor(sourceId) {
   if (sourceId === "kb0") return ["移動: A / D", "ジャンプ: W / 下: S（地上でしゃがむ）", "攻撃: F（1秒で中溜め / 2秒でフル）", "ガード（卵）: G", "風船: Space", "アピール: Y"];
   if (sourceId === "kb1") return ["移動: H(左) / K(右)", "ジャンプ: U / 下: J（地上でしゃがむ）", "攻撃: L（1秒で中溜め / 2秒でフル）", "ガード（卵）: -（ハイフン）", "風船: .（ピリオド）", "アピール: I"];
+  const padMatch = /^pad(\d+)$/.exec(sourceId);
+  if (padMatch) {
+    const mapping = getGamepadMapping(Number(padMatch[1]));
+    return [
+      "移動: スティック/十字",
+      "ジャンプ: " + gamepadMappingLabel(mapping, "jump") + " / 下: しゃがみ・急降下",
+      "攻撃: " + gamepadMappingLabel(mapping, "attack") + "（1秒で中溜め / 2秒でフル）",
+      "ガード（卵）: " + gamepadMappingLabel(mapping, "guard"),
+      "風船: " + gamepadMappingLabel(mapping, "balloon"),
+      "アピール: " + gamepadMappingLabel(mapping, "taunt"),
+    ];
+  }
   return ["移動: スティック/十字", "ジャンプ: A(×) / 下: しゃがみ・急降下", "攻撃: X(□)（1秒で中溜め / 2秒でフル）", "ガード（卵）: L/R", "風船: Y(△)", "アピール: B(○)"];
 }
 
 // カード表示用の内容（ローカル: 入力ソース別 / オンライン: 自分・相手）
 function cardInfoFor(p) {
   // オンライン操作の説明（オンライン本人 or ローカルのソロ本人）
-  const onlineControls = { label: "あなた", lines: ["移動: A/D または ←/→（W・↑ジャンプ / 下でしゃがみ）", "攻撃: J（1秒で中溜め / 2秒でフル）", "ガード（卵）: K", "風船: Space（浮上・落下防止）", "アピール: Y / B(○)"] };
+  const gamepads = navigator.getGamepads();
+  const padIndex = Array.from(gamepads).findIndex(Boolean);
+  const padLabel = action => padIndex >= 0 ? gamepadMappingLabel(getGamepadMapping(padIndex), action) : "設定したパッドボタン";
+  const onlineControls = { label: "あなた", lines: [
+    "移動: A/D・←/→・スティック/十字",
+    "ジャンプ: W・↑ / " + padLabel("jump") + " / 下でしゃがみ",
+    "攻撃: J / " + padLabel("attack") + "（溜め可）",
+    "ガード（卵）: K / " + padLabel("guard"),
+    "風船: Space / " + padLabel("balloon"),
+    "アピール: Y / " + padLabel("taunt"),
+  ] };
   if (APP.mode === "online") {
     if (p.slot === NET.myIndex) return onlineControls;
     return { label: "相手（オンライン）", lines: ["リモートプレイヤー", "", "", "", "", ""] };
@@ -4120,12 +4642,12 @@ function drawLobby() {
     if (Math.floor(performance.now() / 400) % 2 === 0) {
       ctx.fillStyle = "#ffd34d";
       ctx.font = "bold 26px sans-serif";
-      ctx.fillText("Enter / Start で開始！", W / 2, 388);
+      ctx.fillText("Enter / 設定した決定ボタンで開始！", W / 2, 388);
     }
   } else {
     ctx.fillStyle = "#fff";
     ctx.font = "bold 20px sans-serif";
-    ctx.fillText("参加：F（左キーボード）／ L（右キーボード）／ ゲームパッド X", W / 2, 382);
+    ctx.fillText("参加：F（左キーボード）／ L（右キーボード）／ パッドは設定した攻撃ボタン", W / 2, 382);
     ctx.fillStyle = "rgba(255,255,255,0.58)";
     ctx.font = "15px sans-serif";
     ctx.fillText("CPU：C で追加 ／ X で削除", W / 2, 412);
@@ -4143,7 +4665,7 @@ function drawLobby() {
   ctx.fillText("◀  ステージ: " + selStage.name + "  （" + (APP.stageIndex + 1) + "/" + STAGES.length + "）  ▶", W / 2, 492);
   ctx.font = "13px sans-serif";
   ctx.fillStyle = "rgba(255,255,255,0.5)";
-  ctx.fillText("← → （移動キー左右）でステージ変更", W / 2, 518);
+  ctx.fillText("← → ／ 設定したステージボタンで変更", W / 2, 518);
 
   ctx.font = "bold 20px sans-serif";
   ctx.fillStyle = "#8fd3ff";
@@ -4211,14 +4733,14 @@ function drawResult() {
   const arrows = canPick ? "◀  " : "";
   const arrowsR = canPick ? "  ▶" : "";
   ctx.fillText(arrows + "次のステージ: " + STAGES[nextIdx].name + arrowsR, W / 2, selY);
-  if (canPick) { ctx.font = "13px sans-serif"; ctx.fillStyle = "rgba(255,255,255,0.55)"; ctx.fillText("← → でステージ変更", W / 2, selY + 22); }
+  if (canPick) { ctx.font = "13px sans-serif"; ctx.fillStyle = "rgba(255,255,255,0.55)"; ctx.fillText("← → ／ 設定したステージボタンで変更", W / 2, selY + 22); }
 
   ctx.fillStyle = "#fff"; ctx.font = "bold 22px sans-serif"; ctx.textAlign = "center";
   const btmY = selY + 54;
   if (APP.mode === "online") {
-    ctx.fillText(NET.isHost ? "Enter: このステージで再戦 ／ Esc: 退出" : "ホストの再戦待ち… ／ Esc: 退出", W / 2, btmY);
+    ctx.fillText(NET.isHost ? "Enter／設定した決定ボタン: 再戦 ／ Esc: 退出" : "ホストの再戦待ち… ／ Esc: 退出", W / 2, btmY);
   } else {
-    ctx.fillText("Enter: このステージで再戦 ／ Esc: ロビーへ", W / 2, btmY);
+    ctx.fillText("Enter／設定した決定ボタン: 再戦 ／ Esc: ロビーへ", W / 2, btmY);
   }
 }
 
@@ -4242,6 +4764,7 @@ let last = performance.now();
 let acc = 0;
 
 function frame(now) {
+  pollGamepadConfig();
   acc += now - last;
   last = now;
   if (acc > 250) acc = 250;   // タブ復帰時の暴走防止
@@ -4263,10 +4786,14 @@ window.UCHI = {
   STAGES, BLAST, STOCKS, ITEM, BALLOON, MOB, PENGUIN, rngNext,
   LOBBY_CORNER_CHARACTERS,
   CRUMBLE, PENDULUM, LAVA, WARP_CD, PLAYER_W, PLAYER_H, BODY_COLLISION, DOUBLE_JUMP_FLIP_TICKS, TAUNT_TICKS,
-  resolvePlayerCollisions, pH, attackData, attackActiveWindow, platformYAt, mainSurfaceYAt, updatePenguin,
+  resolvePlayerCollisions, pH, attackData, attackActiveWindow, itemTimeFraction,
+  platformYAt, mainSurfaceYAt, updatePenguin,
   fx,
   NET, netHost, netJoin, netHostStart, encodeSample, decodeSample,
   makeCpuSource, cpuThink,
+  GAMEPAD_ACTIONS, GAMEPAD_GAME_ACTIONS, GAMEPAD_MENU_ACTIONS, DEFAULT_GAMEPAD_MAPPING, GAMEPAD_MAPPING_STORAGE_KEY,
+  normalizeGamepadMapping, getGamepadMapping, setGamepadMapping, resetGamepadMapping,
+  remapGamepadButton, gamepadButtonName, gamepadMappingLabel,
 };
 </script>
 </body>

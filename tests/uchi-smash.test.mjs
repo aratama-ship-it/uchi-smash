@@ -6,7 +6,7 @@ import vm from "node:vm";
 const INDEX_PATH = new URL("../index.html", import.meta.url);
 const HTML = fs.readFileSync(INDEX_PATH, "utf8");
 
-function loadGame(search = "") {
+function loadGame(search = "", savedStorage = null) {
   const scripts = [...HTML.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)].map(match => match[1]);
   const gameScript = scripts.find(source => source.includes('"use strict"'));
   assert.ok(gameScript, "inline game script should exist");
@@ -27,6 +27,7 @@ function loadGame(search = "") {
     },
   });
   const elements = new Map();
+  const storage = savedStorage || new Map();
   const makeElement = id => {
     const element = {
       id,
@@ -35,6 +36,7 @@ function loadGame(search = "") {
       value: "",
       textContent: "",
       style: {},
+      classList: { add: noop, remove: noop, toggle: noop },
       addEventListener: noop,
       appendChild: noop,
       removeChild: noop,
@@ -60,6 +62,12 @@ function loadGame(search = "") {
     URLSearchParams,
     location: { search, origin: "http://localhost", pathname: "/index.html" },
     navigator: { getGamepads: () => [], clipboard: null },
+    localStorage: {
+      getItem: key => storage.has(key) ? storage.get(key) : null,
+      setItem: (key, value) => storage.set(key, String(value)),
+      removeItem: key => storage.delete(key),
+      clear: () => storage.clear(),
+    },
     performance: { now: () => 0 },
     requestAnimationFrame: () => 1,
     setTimeout,
@@ -119,7 +127,7 @@ test("release constants and input codec stay coherent", () => {
   const { UCHI: game } = sandbox;
   assert.match(HTML, /<title>PYGMIX BONBON<\/title>/);
   assert.match(HTML, /ctx\.fillText\("PYGMIX BONBON", W \/ 2, 120\)/);
-  assert.match(HTML, /const GAME_VERSION = "0\.9\.19"/);
+  assert.match(HTML, /const GAME_VERSION = "0\.9\.25"/);
   assert.match(HTML, /リーチ・速度・ビーム・巨大化・風船補充の5種類/);
   assert.equal(game.PHYS.gravity, 0.495);
   assert.equal(game.DOWN_ATTACK.damageMult, 1.2);
@@ -135,6 +143,8 @@ test("release constants and input codec stay coherent", () => {
   assert.equal(game.SPECIAL.total - game.SPECIAL.activeFrom, 8);
   assert.equal(game.SPECIAL.activeFrom - game.SPECIAL.activeTo + 1, 43);
   assert.equal(game.SPECIAL.activeTo, 12);
+  assert.equal(game.ITEM.chargedBeamRangeMult, 2);
+  assert.equal(game.ITEM.chargedBeamThick, 64);
   assert.equal(game.STAGES.length, 7);
   assert.equal(new Set(game.STAGES.map(stage => stage.name)).size, 7);
   assert.equal(game.STAGES.some(stage => stage.name === "エレベーター"), false);
@@ -182,12 +192,23 @@ test("release constants and input codec stay coherent", () => {
   assert.ok(ice);
   assert.equal(ice.theme.ice, true);
   assert.equal(ice.penguin, true);
+  assert.equal(game.PENGUIN.firstWait, 240);
+  assert.equal(game.PENGUIN.waitTicks, 330);
+  assert.equal(game.PENGUIN.appearTicks, 45);
+  assert.equal(game.PENGUIN.warnTicks, 60);
+  assert.equal(game.PENGUIN.chargeHeight, 30);
+  assert.equal(game.PENGUIN.fallGravity, 0.55);
+  assert.equal(game.PENGUIN.maxFall, 12);
+  assert.deepEqual([...game.DEFAULT_GAMEPAD_MAPPING.stagePrev], [14]);
+  assert.deepEqual([...game.DEFAULT_GAMEPAD_MAPPING.stageNext], [15]);
+  assert.deepEqual([...game.DEFAULT_GAMEPAD_MAPPING.start], [9]);
   assert.equal(ice.platforms.every(platform => platform.slope !== 0), true);
   assert.equal(ice.platforms.filter(platform => platform.main).length, 2);
   assert.ok(ice.icePhysics.accel < game.PHYS.groundAccel);
   assert.ok(ice.icePhysics.friction > game.PHYS.friction);
   assert.equal(typeof sandbox.makeKeyboardSource(0).sample, "function");
   assert.equal(typeof sandbox.makeGamepadSource(0).sample, "function");
+  assert.equal(typeof game.itemTimeFraction, "function");
   assert.equal(game.makeMatchState([0, 1], 0).timeLeft, 10800);
   for (let mask = 0; mask < 512; mask++) {
     assert.equal(game.encodeSample(game.decodeSample(mask)), mask);
@@ -216,6 +237,70 @@ test("keyboard Y and gamepad B-circle trigger only the taunt input", () => {
   const cross = sandbox.makeGamepadSource(0).sample();
   assert.equal(cross.jump, true);
   assert.equal(cross.taunt, false);
+});
+
+test("gamepad actions can be remapped per pad and persist in local storage", () => {
+  const storage = new Map();
+  const sandbox = loadGame("", storage);
+  const { UCHI: game } = sandbox;
+  const buttons = Array.from({ length: 16 }, () => ({ pressed: false }));
+  const gamepad = { id: "Test Pad", axes: [0, 0], buttons };
+  sandbox.navigator.getGamepads = () => [gamepad];
+
+  const remapped = game.remapGamepadButton(game.getGamepadMapping(0), "attack", 5);
+  game.setGamepadMapping(0, remapped);
+  assert.deepEqual([...game.getGamepadMapping(0).attack], [5]);
+  assert.deepEqual([...game.getGamepadMapping(0).guard], [4, 6, 7]);
+
+  buttons[5].pressed = true;
+  let sample = sandbox.makeGamepadSource(0).sample();
+  assert.equal(sample.attack, true);
+  assert.equal(sample.guard, false);
+  assert.equal(sandbox.sampleLocalMerged().attack, true);
+
+  buttons[5].pressed = false;
+  buttons[4].pressed = true;
+  sample = sandbox.makeGamepadSource(0).sample();
+  assert.equal(sample.attack, false);
+  assert.equal(sample.guard, true);
+  assert.ok(storage.has(game.GAMEPAD_MAPPING_STORAGE_KEY));
+
+  const sharedAcrossContexts = game.remapGamepadButton(game.getGamepadMapping(0), "start", 5);
+  assert.deepEqual([...sharedAcrossContexts.attack], [5]);
+  assert.deepEqual([...sharedAcrossContexts.start], [5]);
+
+  const reloaded = loadGame("", storage);
+  reloaded.navigator.getGamepads = () => [gamepad];
+  assert.deepEqual([...reloaded.UCHI.getGamepadMapping(0).attack], [5]);
+  assert.deepEqual([...reloaded.UCHI.getGamepadMapping(0).guard], [4, 6, 7]);
+});
+
+test("custom gamepad menu buttons select a stage and act as Enter", () => {
+  const sandbox = loadGame();
+  const { UCHI: game } = sandbox;
+  const buttons = Array.from({ length: 16 }, () => ({ pressed: false }));
+  const gamepad = { id: "Menu Pad", axes: [0, 0], buttons };
+  sandbox.navigator.getGamepads = () => [gamepad];
+
+  let mapping = game.remapGamepadButton(game.getGamepadMapping(0), "stageNext", 6);
+  mapping = game.remapGamepadButton(mapping, "start", 0);
+  game.setGamepadMapping(0, mapping);
+  assert.deepEqual([...game.getGamepadMapping(0).jump], [0]);
+  assert.deepEqual([...game.getGamepadMapping(0).stageNext], [6]);
+  assert.deepEqual([...game.getGamepadMapping(0).start], [0]);
+
+  const initialStage = game.APP.stageIndex;
+  buttons[6].pressed = true;
+  sandbox.updateLobby();
+  assert.equal(game.APP.stageIndex, (initialStage + 1) % game.STAGES.length);
+
+  buttons[6].pressed = false;
+  sandbox.updateLobby();
+  game.APP.slots[0] = { source: sandbox.makeKeyboardSource(0) };
+  game.APP.slots[1] = { source: sandbox.makeCpuSource(), cpu: true };
+  buttons[0].pressed = true;
+  sandbox.updateLobby();
+  assert.equal(game.APP.phase, "match");
 });
 
 test("down on main ground halves body height and ducks under a forward laser", () => {
@@ -275,6 +360,73 @@ test("down on main ground halves body height and ducks under a forward laser", (
   assert.equal(dropper.crouching, false);
   assert.equal(dropper.onGround, false);
   assert.ok(dropper.dropTimer > 0);
+});
+
+test("a charged forward beam is twice as long and hits crouching players", () => {
+  const { UCHI: game } = loadGame();
+  const match = game.makeMatchState([0, 1, 2], 0);
+  const neutral = {
+    left: false, right: false, up: false, down: false,
+    jump: false, attack: false, guard: false, balloon: false, taunt: false, start: false,
+  };
+  const [attacker, crouchingVictim, distantVictim] = match.players;
+  match.countdown = 0;
+  match.itemTimer = 9999;
+  attacker.x = 200;
+  attacker.y = 560;
+  attacker.vx = attacker.vy = 0;
+  attacker.onGround = true;
+  attacker.facing = 1;
+  attacker.itemType = "beam";
+  attacker.itemTimer = 9999;
+  attacker.attackTimer = game.CHARGED_ATTACK.activeFrom + 1;
+  attacker.attackIsSpecial = false;
+  attacker.attackIsCharged = true;
+  attacker.attackDir = "fwd";
+  attacker.attackVictims = [];
+
+  crouchingVictim.x = 300;
+  crouchingVictim.y = 560;
+  crouchingVictim.vx = crouchingVictim.vy = 0;
+  crouchingVictim.onGround = true;
+  crouchingVictim.invuln = 0;
+  distantVictim.x = 1000;
+  distantVictim.y = 560;
+  distantVictim.vx = distantVictim.vy = 0;
+  distantVictim.onGround = true;
+  distantVictim.invuln = 0;
+
+  const events = game.stepMatch(match, [neutral, { ...neutral, down: true }, neutral]);
+
+  assert.equal(crouchingVictim.damage, game.CHARGED_ATTACK.damage);
+  assert.equal(distantVictim.damage, game.CHARGED_ATTACK.damage);
+  assert.equal(events.filter(event => event.type === "charged-hit").length, 2);
+});
+
+test("item duration gauge reports the remaining fraction above each player HUD", () => {
+  const sandbox = loadGame();
+  const { UCHI: game } = sandbox;
+  const match = game.makeMatchState([0, 1, 2, 3], 0);
+  match.countdown = 0;
+  const itemTypes = ["reach", "speed", "beam", "giant"];
+
+  match.players.forEach((player, index) => {
+    player.itemType = itemTypes[index];
+    player.itemTimer = game.ITEM.duration[player.itemType] / 2;
+    assert.equal(game.itemTimeFraction(player), 0.5);
+  });
+  match.players[0].itemTimer = game.ITEM.duration.reach * 2;
+  assert.equal(game.itemTimeFraction(match.players[0]), 1);
+  match.players[0].itemTimer = 0;
+  assert.equal(game.itemTimeFraction(match.players[0]), 0);
+
+  game.APP.match = match;
+  game.APP.phase = "match";
+  assert.doesNotThrow(() => game.renderNow());
+  assert.match(HTML, /ctx\.fillText\(seconds \+ "秒"/);
+  assert.match(HTML, /const igx = x \+ 8, igy = 610, igw = panelW - 16, igh = 16/);
+  assert.doesNotMatch(HTML, /足元の弧（残り時間ぶん）/);
+  assert.match(HTML, /残り時間の丸型ゲージはHUDへ一本化した/);
 });
 
 test("taunt is a cosmetic ground animation that cancels on movement", () => {
@@ -823,12 +975,22 @@ test("lobby controls open in a modal and pause lobby input", () => {
   const helpOpen = sandbox.document.getElementById("help-open");
   const helpModal = sandbox.document.getElementById("help-modal");
   assert.match(HTML, /role="dialog" aria-modal="true"/);
-  assert.match(HTML, /参加：F（左キーボード）／ L（右キーボード）／ ゲームパッド X/);
+  assert.match(HTML, /参加：F（左キーボード）／ L（右キーボード）／ パッドは設定した攻撃ボタン/);
+  assert.match(HTML, /id="gamepad-config" hidden/);
+  assert.match(HTML, /data-pad-action="attack"/);
+  assert.match(HTML, /data-pad-action="stagePrev"/);
+  assert.match(HTML, /data-pad-action="stageNext"/);
+  assert.match(HTML, /data-pad-action="start"/);
   assert.match(HTML, /rect\.height \* \(682 \/ H\)/);
 
   sandbox.setLobbyHelpOpen(true);
   assert.equal(helpModal.hidden, false);
   assert.equal(helpOpen.hidden, true);
+
+  sandbox.openGamepadConfig();
+  assert.equal(sandbox.document.getElementById("gamepad-config").hidden, false);
+  assert.match(sandbox.document.getElementById("pad-config-status").textContent, /ゲームパッドを接続/);
+  sandbox.closeGamepadConfig();
 
   game.keys.add("KeyC");
   sandbox.updateLobby();
@@ -918,12 +1080,66 @@ test("ice slopes carry players while acceleration and stopping remain slippery",
   assert.ok(icePlayer.vx > 0, "one reverse input should not instantly reverse an ice slide");
 });
 
+test("a player knocked toward the uphill side cannot tunnel through an ice slope", () => {
+  const { UCHI: game } = loadGame();
+  const iceIndex = game.STAGES.findIndex(stage => stage.name === "こおり");
+  const match = game.makeMatchState([0, 1], iceIndex);
+  const neutral = {
+    left: false, right: false, up: false, down: false,
+    jump: false, attack: false, guard: false, balloon: false, taunt: false, start: false,
+  };
+  match.countdown = 0;
+  match.itemTimer = 9999;
+  const slope = match.platforms.find(platform => platform.main && platform.slope > 0);
+  const player = match.players[0];
+  player.x = 550;
+  player.y = game.platformYAt(slope, player.x) - 2;
+  player.vx = -20;
+  player.vy = 8;
+  player.onGround = false;
+  player.invuln = 9999;
+  match.players[1].invuln = 9999;
+
+  game.stepMatch(match, [neutral, neutral]);
+
+  assert.equal(player.onGround, true);
+  assert.ok(Math.abs(player.y - game.platformYAt(slope, player.x)) < 1e-9);
+});
+
+test("a sliding player transfers across the center seam without sinking below the ice", () => {
+  const { UCHI: game } = loadGame();
+  const iceIndex = game.STAGES.findIndex(stage => stage.name === "こおり");
+  const match = game.makeMatchState([0, 1], iceIndex);
+  const neutral = {
+    left: false, right: false, up: false, down: false,
+    jump: false, attack: false, guard: false, balloon: false, taunt: false, start: false,
+  };
+  match.countdown = 0;
+  match.itemTimer = 9999;
+  const leftSlope = match.platforms.find(platform => platform.main && platform.slope > 0);
+  const rightSlope = match.platforms.find(platform => platform.main && platform.slope < 0);
+  const player = match.players[0];
+  player.x = 635;
+  player.y = game.platformYAt(leftSlope, player.x);
+  player.vx = 15;
+  player.vy = 0;
+  player.onGround = true;
+  player.invuln = 9999;
+  match.players[1].invuln = 9999;
+
+  game.stepMatch(match, [neutral, neutral]);
+
+  assert.ok(player.x > 640);
+  assert.equal(player.onGround, true, "the player should stay attached while crossing the V-shaped seam");
+  assert.ok(Math.abs(player.y - game.platformYAt(rightSlope, player.x)) < 1e-9);
+});
+
 test("ice stage can be opened directly from its preview URL", () => {
   const { UCHI: game } = loadGame("?stage=%E3%81%93%E3%81%8A%E3%82%8A");
   assert.equal(game.STAGES[game.APP.stageIndex].name, "こおり");
 });
 
-test("third-party penguin warns, charges along the ice, and knocks players away", () => {
+test("penguin appears, warns, belly-charges, and alternates between ground and upper ice", () => {
   const sandbox = loadGame();
   const { UCHI: game } = sandbox;
   const iceIndex = game.STAGES.findIndex(stage => stage.name === "こおり");
@@ -936,11 +1152,9 @@ test("third-party penguin warns, charges along the ice, and knocks players away"
   match.itemTimer = 9999;
   const penguin = match.penguin;
   assert.ok(penguin);
-  penguin.state = "warn";
+
+  // 1段階目: 地面の入口へ姿を現す（まだビックリマークも突進もない）。
   penguin.timer = 1;
-  penguin.dir = 1;
-  penguin.x = 80;
-  penguin.y = game.mainSurfaceYAt(match, penguin.x);
   for (const player of match.players) {
     player.x = 900;
     player.y = game.mainSurfaceYAt(match, player.x);
@@ -948,7 +1162,20 @@ test("third-party penguin warns, charges along the ice, and knocks players away"
     player.onGround = true;
     player.invuln = 9999;
   }
+  const appearEvents = game.stepMatch(match, [neutral, neutral]);
+  assert.equal(penguin.state, "appear");
+  assert.equal(penguin.lane, "main");
+  assert.equal(penguin.platformIndex, -1);
+  assert.equal(appearEvents.some(event => event.type === "penguin-appear"), true);
 
+  // 2段階目: 「!」警告へ移る。
+  penguin.timer = 1;
+  const warnEvents = game.stepMatch(match, [neutral, neutral]);
+  assert.equal(penguin.state, "warn");
+  assert.equal(warnEvents.some(event => event.type === "penguin-warn"), true);
+
+  // 3段階目: 腹ばい突撃へ移る。
+  penguin.timer = 1;
   const chargeEvents = game.stepMatch(match, [neutral, neutral]);
   assert.equal(penguin.state, "charge");
   assert.equal(chargeEvents.some(event => event.type === "penguin-charge"), true);
@@ -967,14 +1194,60 @@ test("third-party penguin warns, charges along the ice, and knocks players away"
   game.APP.phase = "match";
   assert.doesNotThrow(() => game.renderNow());
 
-  penguin.x = 1280;
+  // 退場後は間隔を空け、次の出現場所を上段足場へ切り替える。
+  penguin.x = penguin.rightEdge + game.PENGUIN.width;
   penguin.state = "charge";
   penguin.dir = 1;
   match.hitstop = 0;
   game.stepMatch(match, [neutral, neutral]);
   assert.equal(penguin.state, "wait");
-  assert.equal(penguin.dir, -1);
+  assert.equal(penguin.timer, game.PENGUIN.waitTicks);
   assert.equal(penguin.passes, 1);
+
+  penguin.timer = 1;
+  const upperAppearEvents = game.stepMatch(match, [neutral, neutral]);
+  assert.equal(penguin.state, "appear");
+  assert.equal(penguin.lane, "upper");
+  assert.ok(penguin.platformIndex >= 0);
+  const upperPlatformIndex = penguin.platformIndex;
+  const upperPlatform = match.platforms[upperPlatformIndex];
+  assert.notEqual(upperPlatform.main, true);
+  assert.equal(penguin.y, game.platformYAt(upperPlatform, penguin.x));
+  assert.equal(upperAppearEvents.some(event => event.type === "penguin-appear" && event.lane === "upper"), true);
+
+  // 上段から突進した回も、足場の端で消えず、慣性を保って落下→地面走行→画面外まで進む。
+  penguin.timer = 1;
+  game.stepMatch(match, [neutral, neutral]);
+  penguin.timer = 1;
+  game.stepMatch(match, [neutral, neutral]);
+  assert.equal(penguin.state, "charge");
+
+  let takeoffTicks = 0;
+  while (!penguin.airborne && takeoffTicks++ < 90) game.stepMatch(match, [neutral, neutral]);
+  assert.equal(penguin.airborne, true);
+  assert.equal(penguin.platformIndex, upperPlatformIndex);
+  const airborneX = penguin.x;
+  const airborneY = penguin.y;
+  const firstAirborneEvents = game.stepMatch(match, [neutral, neutral]);
+  assert.equal(penguin.x - airborneX, game.PENGUIN.speed * penguin.dir);
+  assert.ok(penguin.y > airborneY);
+
+  const landingEvents = [...firstAirborneEvents];
+  let fallTicks = 0;
+  while (penguin.airborne && fallTicks++ < 120) {
+    landingEvents.push(...game.stepMatch(match, [neutral, neutral]));
+  }
+  assert.equal(penguin.airborne, false);
+  assert.equal(penguin.lane, "main");
+  assert.equal(penguin.platformIndex, -1);
+  assert.equal(landingEvents.some(event => event.type === "penguin-land"), true);
+  assert.ok(Math.abs(penguin.y - game.mainSurfaceYAt(match, penguin.x)) < 1e-9);
+
+  let exitTicks = 0;
+  while (penguin.state === "charge" && exitTicks++ < 160) game.stepMatch(match, [neutral, neutral]);
+  assert.equal(penguin.state, "wait");
+  assert.equal(penguin.passes, 2);
+  assert.ok(penguin.x > penguin.exitRightEdge + game.PENGUIN.width);
 });
 
 test("all stages remain deterministic and finite for four players", () => {
