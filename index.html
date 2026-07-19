@@ -339,7 +339,7 @@ const ATTACK = {
   damage: 8,
   kbBase: 3.2,
   kbScale: 0.105,  // % 1につき加算
-  angleDeg: 45,    // ★45度上方向へ固定
+  angleDeg: 45,    // 正面・上攻撃は45度上方向。下攻撃は専用方向へ分岐
   hitstopFrames: 6,
   special: false,
 };
@@ -356,6 +356,12 @@ const SPECIAL = {
   special: true,
 };
 
+// 下攻撃: ダメージ1.2倍。空中の相手は真下、接地中の相手は真上へ強く打ち上げる。
+const DOWN_ATTACK = {
+  damageMult: 1.2,
+  groundedUpKbMult: 1.3,
+};
+
 // ガード（卵型シールド）: 使うと縮む（被弾＋時間経過）。使い切ったら復活まで終わり。
 //   ガード中は移動不可。通常攻撃は防げるが必殺技は一撃で割れる。
 const GUARD = {
@@ -367,7 +373,7 @@ const GUARD = {
 
 // ★オンライン同期の要: 決定論simに影響する変更(stepMatch/ステージ/物理/定数など)をしたら
 //   必ずこの版数を上げること。オンライン接続時に両者で照合し、食い違えば試合させず弾く。
-const GAME_VERSION = "0.9.9";
+const GAME_VERSION = "0.9.11";
 
 const PLAYER_W = 36, PLAYER_H = 48;
 const DOUBLE_JUMP_FLIP_TICKS = 30;  // 二段ジャンプ時の宙返り時間（0.5秒）
@@ -499,13 +505,15 @@ const STAGES = [
     wallSpeed: 0.00396,   // 旧速度0.006の66%（三角波0..1、約4.2秒で上下反転）
   },
   {
-    // 月夜の空中島群: メイン地面なし。重力50%の小さな足場が点在する上級ステージ
+    // 宇宙空間の空中島群: 重力50%。長い滞空でも移動距離が通常面に近づくよう横移動を抑える。
     name: "そらの島",
     gravityScale: 0.5,
+    moveScale: 0.8,                  // 半重力で伸びた空中移動を抑えつつ、操作の機敏さは残す
     itemArc: true,
-    theme: { sky:["#070a18","#10172e","#203052"], mountain:"rgba(8,16,34,0.74)",
+    ceiling: { x: 192, y: 24, w: 896, h: 32 },   // 画面中央・幅70%。上段からのジャンプを受け止める
+    theme: { sky:["#02030b","#090b24","#11183b"], mountain:"rgba(0,0,0,0)", space:true,
              dirt:"#465060", grass:"#9db2be", grass2:"#788d9b", plat:"#5d7180", platTop:"#a8c4ce",
-             moon: { x: 1010, y: 145, r: 88 } },
+             ceiling:"#33445f", ceilingEdge:"#9fcbea" },
     platforms: [
       { x: 550, y: 585, w: 180, droppable: true },
       { x: 150, y: 520, w: 180, droppable: true },
@@ -1227,13 +1235,14 @@ function stepMatch(state, samples) {
     const dir = (canAct && !locked) ? ((cur.right ? 1 : 0) - (cur.left ? 1 : 0)) : 0;
     if (dir !== 0) p.facing = dir;
 
-    // 水平移動（speedアイテムで1.5倍 / giantで1/2）
+    // 水平移動（speedアイテムで1.5倍 / giantで1/2）。空島は長い滞空ぶんだけ横移動を抑える。
+    const moveScale = state.stage.moveScale || 1;
     const spd = p.itemType === "speed" ? ITEM.speedMult : p.itemType === "giant" ? GIANT.speedMult : 1;
-    const maxRun = PHYS.maxRun * spd, maxAir = PHYS.maxAir * spd;
+    const maxRun = PHYS.maxRun * spd * moveScale, maxAir = PHYS.maxAir * spd * moveScale;
     if (p.onGround) {
       if (dir !== 0) {
         if (p.vx * dir < maxRun) {
-          p.vx += PHYS.groundAccel * spd * dir;
+          p.vx += PHYS.groundAccel * spd * moveScale * dir;
           if (p.vx * dir > maxRun) p.vx = maxRun * dir;
         }
       } else {
@@ -1243,7 +1252,7 @@ function stepMatch(state, samples) {
     } else {
       if (dir !== 0) {
         if (p.vx * dir < maxAir) {
-          p.vx += PHYS.airAccel * spd * dir;
+          p.vx += PHYS.airAccel * spd * moveScale * dir;
           if (p.vx * dir > maxAir) p.vx = maxAir * dir;
         }
       } else {
@@ -1339,6 +1348,19 @@ function stepMatch(state, samples) {
     const prevY = p.y;
     p.x += p.vx;
     p.y += p.vy;
+
+    // 空島の天井: 下から上昇した時だけ下面で止める。復活降下は上から通り抜けられる。
+    const ceiling = state.stage.ceiling;
+    if (ceiling && p.vy < 0 && !p.respawning) {
+      const ceilingBottom = ceiling.y + ceiling.h;
+      const prevTop = prevY - pH(p), currentTop = p.y - pH(p);
+      const overlapsX = p.x + pHW(p) > ceiling.x && p.x - pHW(p) < ceiling.x + ceiling.w;
+      if (overlapsX && prevTop >= ceilingBottom && currentTop <= ceilingBottom) {
+        p.y = ceilingBottom + pH(p);
+        p.vy = 0;
+        events.push({ type: "ceiling-hit", x: p.x, y: ceilingBottom, slot: p.slot });
+      }
+    }
 
     if (p.vy >= 0) {
       let landed = false, bounced = false;
@@ -1470,13 +1492,26 @@ function stepMatch(state, samples) {
         events.push({ type: "guardbreak", x: v.x, y: v.y - PLAYER_H / 2, slot: v.slot });
       }
 
-      // ヒット（通常/必殺共通、角度45度上方向）。giantはパワー4倍
-      v.damage += atk.damage;
-      a.damageDealt += atk.damage;   // スコア: 与えたダメージを加算
+      // ヒット（通常/必殺共通）。下攻撃だけダメージと吹き飛ばし方向を専用化。
+      const isDownAttack = a.attackDir === "down";
+      const groundedDownHit = isDownAttack && v.onGround;
+      const hitDamage = atk.damage * (isDownAttack ? DOWN_ATTACK.damageMult : 1);
+      v.damage += hitDamage;
+      a.damageDealt += hitDamage;   // スコア: 与えたダメージを加算
       const powerMult = a.itemType === "giant" ? GIANT.powerMult : 1;
       const kb = (atk.kbBase + v.damage * atk.kbScale) * powerMult;
-      v.vx = KB45 * kb * a.facing;
-      v.vy = -KB45 * kb;
+      let launchX, launchY;
+      if (isDownAttack) {
+        v.vx = 0;
+        v.vy = groundedDownHit ? -kb * DOWN_ATTACK.groundedUpKbMult : kb;
+        launchX = 0;
+        launchY = groundedDownHit ? -1 : 1;
+      } else {
+        v.vx = KB45 * kb * a.facing;
+        v.vy = -KB45 * kb;
+        launchX = KB45 * a.facing;
+        launchY = -KB45;
+      }
       v.hitstun = Math.floor(4 + kb * 2.0);
       v.onGround = false;
       v.hitFlash = 8;
@@ -1484,7 +1519,8 @@ function stepMatch(state, samples) {
       v.attackTimer = 0;
       v.attackIsSpecial = false;
       state.hitstop = atk.hitstopFrames;
-      events.push({ type: atk.special ? "special-hit" : "hit", x: (a.x + v.x) / 2, y: v.y - PLAYER_H / 2, dir: a.facing, dmg: v.damage });
+      events.push({ type: atk.special ? "special-hit" : "hit", x: (a.x + v.x) / 2, y: v.y - PLAYER_H / 2,
+        dir: a.facing, launchX, launchY, dmg: v.damage });
     }
   }
 
@@ -2259,10 +2295,11 @@ function handleEvents(events) {
     } else if (ev.type === "hit") {
       fx.shake = Math.min(10, 4 + ev.dmg * 0.03);
       for (let k = 0; k < 10; k++) {
+        const sp = Math.random() * 6 + 2;
         fx.particles.push({
           x: ev.x, y: ev.y,
-          vx: (Math.random() * 6 + 2) * ev.dir + (Math.random() - 0.5) * 4,
-          vy: (Math.random() - 0.7) * 8,
+          vx: sp * ev.launchX + (Math.random() - 0.5) * 4,
+          vy: sp * ev.launchY + (Math.random() - 0.5) * 4,
           life: 18 + Math.random() * 10,
           size: 3 + Math.random() * 3,
           color: "#fff",
@@ -2314,10 +2351,11 @@ function handleEvents(events) {
       fx.shake = 16;
       fx.koFlash = 8;
       for (let k = 0; k < 22; k++) {
+        const sp = Math.random() * 9 + 3;
         fx.particles.push({
           x: ev.x, y: ev.y,
-          vx: (Math.random() * 9 + 3) * ev.dir + (Math.random() - 0.5) * 6,
-          vy: (Math.random() - 0.7) * 12,
+          vx: sp * ev.launchX + (Math.random() - 0.5) * 6,
+          vy: sp * ev.launchY + (Math.random() - 0.5) * 6,
           life: 22 + Math.random() * 14,
           size: 3 + Math.random() * 5,
           color: Math.random() < 0.5 ? "#fff" : "#ffd34d",
@@ -2461,27 +2499,53 @@ function drawBackground(stage) {
   g.addColorStop(1, th.sky[2]);
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, W, H);
-  // そらの島の月夜。乱数を使わず、対戦シミュレーションと無関係な固定遠景として描く。
-  if (th.moon) {
-    const moon = th.moon;
-    const stars = [[95,90],[180,165],[285,72],[410,150],[535,88],[680,170],[810,62],[1135,82],[1210,190]];
+  // そらの島は地表を置かず、星雲と星だけで宇宙空間の奥行きを作る。
+  // 固定式で配置し、対戦シミュレーション用の乱数には一切触れない。
+  if (th.space) {
     ctx.save();
-    ctx.fillStyle = "rgba(205,225,255,0.7)";
-    for (const [sx, sy] of stars) {
-      ctx.beginPath(); ctx.arc(sx, sy, 1.8, 0, Math.PI * 2); ctx.fill();
-    }
-    const glow = ctx.createRadialGradient(moon.x, moon.y, moon.r * 0.65, moon.x, moon.y, moon.r * 1.45);
-    glow.addColorStop(0, "rgba(226,235,224,0.28)");
-    glow.addColorStop(1, "rgba(226,235,224,0)");
-    ctx.fillStyle = glow;
-    ctx.beginPath(); ctx.arc(moon.x, moon.y, moon.r * 1.45, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = "#e7ead9";
-    ctx.beginPath(); ctx.arc(moon.x, moon.y, moon.r, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = "rgba(137,151,143,0.22)";
-    for (const [ox, oy, rx, ry] of [[-31,-22,17,12],[27,-34,12,9],[18,22,22,15],[-38,31,10,8]]) {
-      ctx.beginPath(); ctx.ellipse(moon.x + ox, moon.y + oy, rx, ry, -0.25, 0, Math.PI * 2); ctx.fill();
+
+    const violetNebula = ctx.createRadialGradient(250, 210, 20, 250, 210, 410);
+    violetNebula.addColorStop(0, "rgba(126,72,190,0.30)");
+    violetNebula.addColorStop(0.45, "rgba(65,48,139,0.16)");
+    violetNebula.addColorStop(1, "rgba(20,18,70,0)");
+    ctx.fillStyle = violetNebula;
+    ctx.fillRect(0, 0, W, H);
+
+    const cyanNebula = ctx.createRadialGradient(1030, 500, 30, 1030, 500, 390);
+    cyanNebula.addColorStop(0, "rgba(46,150,185,0.22)");
+    cyanNebula.addColorStop(0.5, "rgba(32,84,135,0.12)");
+    cyanNebula.addColorStop(1, "rgba(8,20,55,0)");
+    ctx.fillStyle = cyanNebula;
+    ctx.fillRect(0, 0, W, H);
+
+    // 斜めに走る淡い銀河の帯。
+    ctx.save();
+    ctx.translate(W / 2, H / 2);
+    ctx.rotate(-0.22);
+    const galaxy = ctx.createLinearGradient(0, -90, 0, 90);
+    galaxy.addColorStop(0, "rgba(145,130,220,0)");
+    galaxy.addColorStop(0.5, "rgba(160,175,235,0.10)");
+    galaxy.addColorStop(1, "rgba(110,165,220,0)");
+    ctx.fillStyle = galaxy;
+    ctx.fillRect(-760, -90, 1520, 180);
+    ctx.restore();
+
+    for (let i = 0; i < 76; i++) {
+      const sx = (47 + i * 173 + (i % 7) * 29) % W;
+      const sy = (31 + i * 97 + (i % 5) * 43) % H;
+      const sr = i % 13 === 0 ? 2.4 : i % 5 === 0 ? 1.6 : 0.9;
+      const alpha = i % 4 === 0 ? 0.95 : 0.58 + (i % 3) * 0.11;
+      ctx.fillStyle = i % 9 === 0 ? `rgba(155,215,255,${alpha})` : `rgba(240,244,255,${alpha})`;
+      ctx.beginPath(); ctx.arc(sx, sy, sr, 0, Math.PI * 2); ctx.fill();
+      if (sr > 2) {
+        ctx.strokeStyle = `rgba(205,230,255,${alpha * 0.55})`;
+        ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(sx - 6, sy); ctx.lineTo(sx + 6, sy);
+        ctx.moveTo(sx, sy - 6); ctx.lineTo(sx, sy + 6); ctx.stroke();
+      }
     }
     ctx.restore();
+    return;
   }
   // 遠景の山
   ctx.fillStyle = th.mountain;
@@ -2490,6 +2554,24 @@ function drawBackground(stage) {
   ctx.lineTo(760, 340); ctx.lineTo(1060, 610); ctx.lineTo(1280, 460);
   ctx.lineTo(1280, 720); ctx.lineTo(0, 720);
   ctx.fill();
+}
+
+function drawCeiling(ceiling, theme) {
+  if (!ceiling) return;
+  const { x, y, w, h } = ceiling;
+  ctx.save();
+  ctx.fillStyle = theme.ceiling || theme.plat;
+  ctx.fillRect(x, y, w, h);
+  ctx.fillStyle = theme.ceilingEdge || theme.platTop;
+  ctx.fillRect(x, y + h - 6, w, 6);
+  ctx.fillStyle = "rgba(255,255,255,0.12)";
+  ctx.fillRect(x, y, w, 4);
+  ctx.strokeStyle = "rgba(190,225,255,0.32)";
+  ctx.lineWidth = 2;
+  for (let sx = x + 56; sx < x + w; sx += 112) {
+    ctx.beginPath(); ctx.moveTo(sx, y + 4); ctx.lineTo(sx, y + h - 7); ctx.stroke();
+  }
+  ctx.restore();
 }
 
 function drawStage(platforms, theme) {
@@ -3201,6 +3283,7 @@ function drawMatch() {
   }
   drawBackground(m.stage);
   drawStage(m.platforms, m.stage.theme);
+  drawCeiling(m.stage.ceiling, m.stage.theme);
   if (m.risingLava) drawPit(m);
   if (m.lava.length) drawLavaZones(m.lava);
   if (m.warps.length) drawWarps(m.warps, m.warpOn, m.warpTimer);
@@ -3377,6 +3460,7 @@ function drawLobby() {
   const selStage = STAGES[APP.stageIndex];
   drawBackground(selStage);
   drawStage(selStage.platforms, selStage.theme);   // 選択中ステージを背景にプレビュー
+  drawCeiling(selStage.ceiling, selStage.theme);
   if (selStage.walls) {                             // 壁は左上・右下のプレビュー
     const snap = wallSnapshot(selStage, 0.75);
     drawWalls(snap.walls, snap.groundY, selStage.theme);
@@ -3483,6 +3567,7 @@ function drawResult() {
   const rPlats = APP.match ? APP.match.platforms : rStage.platforms;
   drawBackground(rStage);
   drawStage(rPlats, rStage.theme);
+  drawCeiling(rStage.ceiling, rStage.theme);
   if (APP.match && APP.match.walls.length) drawWalls(APP.match.walls, APP.match.groundY, rStage.theme);
   else if (!APP.match && rStage.walls) { const s = wallSnapshot(rStage, 0.75); drawWalls(s.walls, s.groundY, rStage.theme); }
   ctx.fillStyle = "rgba(0,0,0,0.6)";
@@ -3578,7 +3663,7 @@ requestAnimationFrame(frame);
 window.UCHI = {
   APP, keys, runTick, renderNow,
   makeMatchState, stepMatch, makePlayer,
-  PHYS, ATTACK, SPECIAL, GUARD, STAGES, BLAST, STOCKS, ITEM, BALLOON, MOB, rngNext,
+  PHYS, ATTACK, SPECIAL, DOWN_ATTACK, GUARD, STAGES, BLAST, STOCKS, ITEM, BALLOON, MOB, rngNext,
   LOBBY_CORNER_CHARACTERS,
   CRUMBLE, PENDULUM, LAVA, WARP_CD, PLAYER_W, PLAYER_H, DOUBLE_JUMP_FLIP_TICKS,
   fx,

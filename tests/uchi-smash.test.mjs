@@ -114,9 +114,11 @@ test("release constants and input codec stay coherent", () => {
   const { UCHI: game } = sandbox;
   assert.match(HTML, /<title>PYGMIX BONBON<\/title>/);
   assert.match(HTML, /ctx\.fillText\("PYGMIX BONBON", W \/ 2, 120\)/);
-  assert.match(HTML, /const GAME_VERSION = "0\.9\.9"/);
+  assert.match(HTML, /const GAME_VERSION = "0\.9\.11"/);
   assert.match(HTML, /リーチ・速度・ビーム・巨大化・風船補充の5種類/);
   assert.equal(game.PHYS.gravity, 0.495);
+  assert.equal(game.DOWN_ATTACK.damageMult, 1.2);
+  assert.equal(game.DOWN_ATTACK.groundedUpKbMult, 1.3);
   assert.equal(game.STAGES.length, 6);
   assert.equal(new Set(game.STAGES.map(stage => stage.name)).size, 6);
   assert.equal(game.STAGES.some(stage => stage.name === "エレベーター"), false);
@@ -151,8 +153,12 @@ test("release constants and input codec stay coherent", () => {
   assert.ok(Math.max(...flowTower.platforms.map(platform => platform.y)) - Math.min(...flowTower.platforms.map(platform => platform.y)) >= 300);
   const skyIslands = game.STAGES.find(stage => stage.name === "そらの島");
   assert.equal(skyIslands.gravityScale, 0.5);
+  assert.equal(skyIslands.moveScale, 0.8);
   assert.equal(skyIslands.itemArc, true);
-  assert.ok(skyIslands.theme.moon);
+  assert.equal(skyIslands.theme.space, true);
+  assert.equal("moon" in skyIslands.theme, false);
+  assert.equal(skyIslands.ceiling.w, 1280 * 0.7);
+  assert.equal(skyIslands.ceiling.x, (1280 - skyIslands.ceiling.w) / 2);
   assert.equal(skyIslands.platforms.length, 13);
   assert.equal(typeof sandbox.makeKeyboardSource(0).sample, "function");
   assert.equal(typeof sandbox.makeGamepadSource(0).sample, "function");
@@ -185,6 +191,55 @@ test("sky islands apply half gravity to normal and fast falling", () => {
   player.vy = 1;
   game.stepMatch(match, [{ ...neutral, down: true }, neutral]);
   assert.equal(player.vy, 1 + game.PHYS.fastFallGravity * 0.5);
+});
+
+test("sky islands restrain horizontal movement and block jumps at the central ceiling", () => {
+  const sandbox = loadGame();
+  const { UCHI: game } = sandbox;
+  const skyIndex = game.STAGES.findIndex(stage => stage.name === "そらの島");
+  const sky = game.makeMatchState([0, 1], skyIndex);
+  const normal = game.makeMatchState([0, 1], 0);
+  const neutral = {
+    left: false, right: false, up: false, down: false,
+    jump: false, attack: false, guard: false, balloon: false, start: false,
+  };
+  const right = { ...neutral, right: true };
+  sky.countdown = 0;
+  normal.countdown = 0;
+  for (const match of [sky, normal]) {
+    const player = match.players[0];
+    player.x = 640;
+    player.y = 200;
+    player.vx = 0;
+    player.vy = 0;
+    player.onGround = false;
+    player.invuln = 9999;
+  }
+
+  game.stepMatch(sky, [right, neutral]);
+  game.stepMatch(normal, [right, neutral]);
+  assert.equal(normal.players[0].vx, game.PHYS.airAccel);
+  assert.equal(sky.players[0].vx, game.PHYS.airAccel * 0.8);
+
+  const ceiling = sky.stage.ceiling;
+  const player = sky.players[0];
+  player.x = 640;
+  player.y = ceiling.y + ceiling.h + game.PLAYER_H + 2;
+  player.vx = 0;
+  player.vy = -6;
+  player.onGround = false;
+  player.prev = neutral;
+  const events = game.stepMatch(sky, [neutral, neutral]);
+  assert.equal(player.y, ceiling.y + ceiling.h + game.PLAYER_H);
+  assert.equal(player.vy, 0);
+  assert.equal(events.filter(event => event.type === "ceiling-hit").length, 1);
+
+  player.x = 80;
+  player.y = ceiling.y + ceiling.h + game.PLAYER_H + 2;
+  player.vy = -6;
+  player.onGround = false;
+  game.stepMatch(sky, [neutral, neutral]);
+  assert.ok(player.vy < 0, "the side opening should remain passable");
 });
 
 test("sky island items enter from the side and vary their landing spots", () => {
@@ -309,6 +364,58 @@ test("only the double jump starts one somersault", () => {
   assert.equal(game.fx.flips[player.slot].remaining, game.DOUBLE_JUMP_FLIP_TICKS);
   for (let i = 0; i < game.DOUBLE_JUMP_FLIP_TICKS; i++) sandbox.updateFx();
   assert.equal(game.fx.flips[player.slot], null);
+});
+
+test("down attacks deal 1.2x damage and launch vertically based on grounded state", () => {
+  const neutral = {
+    left: false, right: false, up: false, down: false,
+    jump: false, attack: false, guard: false, balloon: false, start: false,
+  };
+
+  function runDownHit(grounded) {
+    const sandbox = loadGame();
+    const { UCHI: game } = sandbox;
+    const match = game.makeMatchState([0, 1], 0);
+    const attacker = match.players[0];
+    const victim = match.players[1];
+    match.countdown = 0;
+    match.itemTimer = 9999;
+
+    attacker.x = 640;
+    attacker.y = 300;
+    attacker.vx = 0;
+    attacker.vy = 0;
+    attacker.onGround = false;
+    attacker.attackTimer = game.ATTACK.activeFrom + 1;
+    attacker.attackIsSpecial = false;
+    attacker.attackDir = "down";
+    attacker.attackVictims = [];
+
+    victim.x = 640;
+    victim.y = grounded ? 350 : 340;
+    victim.vx = 0;
+    victim.vy = 0;
+    victim.onGround = grounded;
+    victim.invuln = 0;
+
+    const events = game.stepMatch(match, [neutral, neutral]);
+    return { game, attacker, victim, events };
+  }
+
+  const airborne = runDownHit(false);
+  const expectedDamage = airborne.game.ATTACK.damage * airborne.game.DOWN_ATTACK.damageMult;
+  const expectedKb = airborne.game.ATTACK.kbBase + expectedDamage * airborne.game.ATTACK.kbScale;
+  assert.ok(Math.abs(airborne.victim.damage - expectedDamage) < 1e-9);
+  assert.ok(Math.abs(airborne.attacker.damageDealt - expectedDamage) < 1e-9);
+  assert.equal(airborne.victim.vx, 0);
+  assert.ok(Math.abs(airborne.victim.vy - expectedKb) < 1e-9);
+  assert.equal(airborne.events.find(event => event.type === "hit").launchY, 1);
+
+  const grounded = runDownHit(true);
+  assert.ok(Math.abs(grounded.victim.damage - expectedDamage) < 1e-9);
+  assert.equal(grounded.victim.vx, 0);
+  assert.ok(Math.abs(grounded.victim.vy + expectedKb * grounded.game.DOWN_ATTACK.groundedUpKbMult) < 1e-9);
+  assert.equal(grounded.events.find(event => event.type === "hit").launchY, -1);
 });
 
 test("lobby controls open in a modal and pause lobby input", () => {
