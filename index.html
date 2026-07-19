@@ -6,7 +6,7 @@
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
-<title>ウチスマ！β</title>
+<title>PYGMIX BONBON</title>
 <style>
   html, body {
     margin: 0; padding: 0;
@@ -23,6 +23,141 @@
     background: #1a1a28;
     max-width: 100%; max-height: 100%;
     image-rendering: auto;
+  }
+  /* ロビー操作説明: 必要な時だけ開くポップアップへ集約 */
+  #help-open {
+    position: fixed;
+    z-index: 7;
+    transform: translate(-50%, -50%);
+    width: 300px;
+    min-height: 54px;
+    border: 2px solid #ffd34d;
+    border-radius: 9px;
+    background: #20203a;
+    color: #fff;
+    font-family: inherit;
+    font-size: 17px;
+    font-weight: 700;
+    line-height: 1.2;
+    letter-spacing: 0.03em;
+    cursor: pointer;
+    box-shadow: 0 8px 0 rgba(10,10,22,0.65);
+  }
+  #help-open:hover, #help-open:focus-visible {
+    background: #2c2c4b;
+    outline: 3px solid rgba(255,211,77,0.35);
+    outline-offset: 3px;
+  }
+  #help-open .key {
+    display: inline-block;
+    margin-right: 12px;
+    padding: 4px 8px;
+    border: 1px solid rgba(255,255,255,0.45);
+    border-bottom-width: 3px;
+    border-radius: 5px;
+    color: #ffd34d;
+    font-size: 12px;
+    vertical-align: 1px;
+  }
+  #help-open[hidden], #help-modal[hidden] { display: none; }
+  #help-modal {
+    position: fixed;
+    inset: 0;
+    z-index: 9;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+    padding: 16px;
+    background: rgba(7,7,16,0.84);
+  }
+  .help-panel {
+    width: min(980px, 100%);
+    max-height: calc(100vh - 32px);
+    overflow: auto;
+    box-sizing: border-box;
+    border: 2px solid #ffd34d;
+    border-radius: 15px;
+    background: #18182c;
+    color: #fff;
+    box-shadow: 0 24px 72px rgba(0,0,0,0.6);
+  }
+  .help-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 24px;
+    padding: 18px 28px 14px;
+    border-bottom: 1px solid rgba(255,255,255,0.14);
+  }
+  .help-header h2 { margin: 0 0 5px; color: #ffd34d; font-size: 28px; }
+  .help-header p { margin: 0; color: #bcbcd0; font-size: 14px; }
+  #help-close {
+    flex: 0 0 auto;
+    border: 1px solid rgba(255,255,255,0.32);
+    border-radius: 7px;
+    background: #292942;
+    color: #fff;
+    padding: 9px 14px;
+    font-family: inherit;
+    font-size: 14px;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  #help-close:hover, #help-close:focus-visible {
+    border-color: #ffd34d;
+    outline: 2px solid rgba(255,211,77,0.3);
+  }
+  .help-lead {
+    margin: 14px 28px 0;
+    padding: 10px 16px;
+    border-left: 4px solid #ffd34d;
+    background: #22223b;
+    font-size: 14px;
+    font-weight: 700;
+  }
+  .help-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    margin: 14px 28px;
+    border: 1px solid rgba(255,255,255,0.16);
+    background: #111122;
+  }
+  .control-sheet { padding: 14px 20px; }
+  .control-sheet + .control-sheet { border-left: 1px solid rgba(255,255,255,0.16); }
+  .control-sheet h3 { margin: 0 0 2px; font-size: 18px; }
+  .control-sheet .device { margin: 0 0 10px; color: #8fd3ff; font-size: 12px; }
+  .control-sheet dl { margin: 0; }
+  .control-sheet dl > div {
+    display: grid;
+    grid-template-columns: 72px 1fr;
+    gap: 8px;
+    padding: 5px 0;
+    border-top: 1px solid rgba(255,255,255,0.08);
+  }
+  .control-sheet dt { color: #aaaabe; font-size: 13px; }
+  .control-sheet dd { margin: 0; font-size: 14px; font-weight: 700; }
+  .help-notes {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px 24px;
+    margin: 0 28px 14px;
+    padding: 12px 18px;
+    background: #22223b;
+  }
+  .help-notes p { margin: 0; color: #e3e3ed; font-size: 12px; line-height: 1.5; }
+  .help-notes strong { color: #ffd34d; }
+  .help-footer {
+    padding: 0 28px 16px;
+    color: #9999ad;
+    font-size: 12px;
+    text-align: right;
+  }
+  @media (max-width: 820px), (max-height: 620px) {
+    .help-panel { max-height: calc(100vh - 24px); }
+    .help-grid { grid-template-columns: 1fr; }
+    .control-sheet + .control-sheet { border-left: 0; border-top: 1px solid rgba(255,255,255,0.16); }
+    .help-notes { grid-template-columns: 1fr; }
   }
   /* オンライン対戦メニュー */
   #online {
@@ -63,6 +198,68 @@
 <body>
 <div id="wrap"><canvas id="game" width="1280" height="720"></canvas></div>
 
+<button id="help-open" type="button" aria-haspopup="dialog" aria-controls="help-modal" hidden>
+  <span class="key">TAB</span>操作方法を見る
+</button>
+
+<div id="help-modal" hidden>
+  <section class="help-panel" role="dialog" aria-modal="true" aria-labelledby="help-title" aria-describedby="help-description">
+    <header class="help-header">
+      <div>
+        <h2 id="help-title">操作方法</h2>
+        <p id="help-description">使う入力機器の列だけ見れば、すぐ参加できます。</p>
+      </div>
+      <button id="help-close" type="button" aria-label="操作方法を閉じる">閉じる　Esc</button>
+    </header>
+    <p class="help-lead">参加キー：キーボード左は F、キーボード右は L、ゲームパッドは X。2人以上で Enter / Start を押すと開始します。</p>
+    <div class="help-grid">
+      <article class="control-sheet">
+        <h3>キーボード左</h3>
+        <p class="device">WASD ＋ F / G</p>
+        <dl>
+          <div><dt>移動</dt><dd>A / D</dd></div>
+          <div><dt>ジャンプ</dt><dd>W</dd></div>
+          <div><dt>急降下</dt><dd>S</dd></div>
+          <div><dt>攻撃</dt><dd>F</dd></div>
+          <div><dt>ガード</dt><dd>G</dd></div>
+          <div><dt>風船</dt><dd>Space</dd></div>
+        </dl>
+      </article>
+      <article class="control-sheet">
+        <h3>キーボード右</h3>
+        <p class="device">HJKU ＋ L / −</p>
+        <dl>
+          <div><dt>移動</dt><dd>H / K</dd></div>
+          <div><dt>ジャンプ</dt><dd>U</dd></div>
+          <div><dt>急降下</dt><dd>J</dd></div>
+          <div><dt>攻撃</dt><dd>L</dd></div>
+          <div><dt>ガード</dt><dd>−（ハイフン）</dd></div>
+          <div><dt>風船</dt><dd>.（ピリオド）</dd></div>
+        </dl>
+      </article>
+      <article class="control-sheet">
+        <h3>ゲームパッド</h3>
+        <p class="device">一般的な4ボタンパッド</p>
+        <dl>
+          <div><dt>移動</dt><dd>スティック / 十字</dd></div>
+          <div><dt>ジャンプ</dt><dd>A / B</dd></div>
+          <div><dt>急降下</dt><dd>下入力</dd></div>
+          <div><dt>攻撃</dt><dd>X</dd></div>
+          <div><dt>ガード</dt><dd>L / R</dd></div>
+          <div><dt>風船</dt><dd>Y</dd></div>
+        </dl>
+      </article>
+    </div>
+    <div class="help-notes">
+      <p><strong>1人・オンライン操作</strong><br>移動は WASD / 矢印、攻撃 J、ガード K、風船 Space。</p>
+      <p><strong>攻撃の使い分け</strong><br>上か下だけを入力しながら攻撃で上下攻撃。2秒長押しで必殺技。</p>
+      <p><strong>風船</strong><br>長押しで浮上。1ストックにつき1回で、使い切ると割れます。</p>
+      <p><strong>アイテム</strong><br>リーチ・速度・ビーム・巨大化・風船補充の5種類です。</p>
+    </div>
+    <div class="help-footer">背景の暗い部分をクリックしても閉じられます。</div>
+  </section>
+</div>
+
 <div id="online" hidden>
   <div class="panel">
     <h2>オンライン対戦（2〜4人・β）</h2>
@@ -98,7 +295,7 @@
 <script>
 "use strict";
 /* =====================================================================
- * ウチスマ！β — 身内向けスマブラ風 2D対戦ゲーム
+ * PYGMIX BONBON — 身内向けスマブラ風 2D対戦ゲーム
  *
  * 設計方針（オンライン化を見据えた焼き込み）:
  *  1. 最大4人をアーキテクチャに固定
@@ -383,6 +580,7 @@ const NAMES    = ["P1", "P2", "P3", "P4"];
 /* ======================= 入力レイヤー ======================= */
 // 押下中キーの集合（ブラウザイベント → ここに集約）
 const keys = new Set();
+let lobbyHelpOpen = false;
 const USED_CODES = new Set([
   "KeyW","KeyA","KeyS","KeyD","KeyF","KeyG","KeyH","KeyO","KeyJ","KeyK","KeyC","KeyX",
   "KeyU","KeyL","Minus","Tab",
@@ -396,6 +594,19 @@ function typingInField() {
 }
 window.addEventListener("keydown", e => {
   if (typingInField()) return;                 // コード入力中はそのまま入力欄へ
+  if (lobbyHelpOpen) {
+    e.stopImmediatePropagation();              // モーダル中はロビー操作へ入力を渡さない
+    if (e.code === "Tab") return;             // フォーカス移動はブラウザ標準のまま
+    e.preventDefault();
+    if (e.code === "Escape" && !e.repeat) setLobbyHelpOpen(false);
+    return;
+  }
+  if (e.code === "Tab" && APP.phase === "lobby") {
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    if (!e.repeat) setLobbyHelpOpen(true);
+    return;
+  }
   if (USED_CODES.has(e.code)) e.preventDefault();
   if (!e.repeat) keys.add(e.code);
 });
@@ -1706,7 +1917,37 @@ function updateOnlineMatch() {
 /* --- オンラインメニューUI（DOMオーバーレイ） --- */
 const $ol = id => document.getElementById(id);
 
+const helpOpenButton = $ol("help-open");
+const helpModal = $ol("help-modal");
+const helpCloseButton = $ol("help-close");
+
+function setLobbyHelpOpen(open) {
+  const canOpen = open && APP.phase === "lobby" && $ol("online").hidden;
+  lobbyHelpOpen = !!canOpen;
+  helpModal.hidden = !lobbyHelpOpen;
+  helpOpenButton.hidden = lobbyHelpOpen;
+  keys.clear();
+  if (lobbyHelpOpen) helpCloseButton.focus();
+  else if (APP.phase === "lobby" && $ol("online").hidden) helpOpenButton.focus();
+}
+
+function syncLobbyHelpUi() {
+  if (lobbyHelpOpen && (APP.phase !== "lobby" || !$ol("online").hidden)) setLobbyHelpOpen(false);
+  const visible = APP.phase === "lobby" && $ol("online").hidden && !lobbyHelpOpen;
+  helpOpenButton.hidden = !visible;
+  if (!visible) return;
+  const rect = canvas.getBoundingClientRect();
+  helpOpenButton.style.left = (rect.left + rect.width / 2) + "px";
+  helpOpenButton.style.top = (rect.top + rect.height * (682 / H)) + "px";
+}
+
+helpOpenButton.addEventListener("click", () => setLobbyHelpOpen(true));
+helpCloseButton.addEventListener("click", () => setLobbyHelpOpen(false));
+helpModal.addEventListener("click", e => { if (e.target === helpModal) setLobbyHelpOpen(false); });
+window.addEventListener("resize", syncLobbyHelpUi);
+
 function openOnlineMenu() {
+  if (lobbyHelpOpen) setLobbyHelpOpen(false);
   $ol("online").hidden = false;
   const v = $ol("ol-ver"); if (v) v.textContent = GAME_VERSION;
   refreshOnlineUI();
@@ -1817,8 +2058,8 @@ function claimedIds() {
 }
 
 function updateLobby() {
-  // オンラインメニューを開いている間はローカルロビー操作（参加/CPU/ステージ）を止める
-  if (!$ol("online").hidden) return;
+  // モーダル／オンラインメニュー中はローカルロビー操作（参加/CPU/ステージ）を止める
+  if (lobbyHelpOpen || !$ol("online").hidden) return;
   // 注意: 全ソースの prev を先に更新しきってから遷移する
   // （ループ途中で抜けると未更新の prev が偽エッジを生む）
   const claimed = claimedIds();
@@ -2977,7 +3218,7 @@ function drawLobby() {
   ctx.textAlign = "center";
   ctx.fillStyle = "#fff";
   ctx.font = "bold 64px sans-serif";
-  ctx.fillText("ウチスマ！", W / 2, 120);
+  ctx.fillText("PYGMIX BONBON", W / 2, 120);
   ctx.font = "bold 22px sans-serif";
   ctx.fillStyle = "#ffd34d";
   ctx.fillText("β版 — 身内スマッシュ", W / 2, 158);
@@ -3016,55 +3257,57 @@ function drawLobby() {
     x += slotW + gap;
   }
 
-  ctx.fillStyle = "#fff";
-  ctx.font = "17px sans-serif";
-  const lines = [
-    "【参加方法】 攻撃ボタンを押すと参加　／　C=CPU追加・X=CPU削除（1人でも遊べる）",
-    "キーボード左: WASD移動 / F=攻撃 / G=ガード(卵) / Space=風船",
-    "キーボード右: HJKU移動(H左J下K右U上) / L=攻撃 / -=ガード(卵) / .=風船",
-    "★攻撃は上/下だけ入力で上下攻撃。2秒長押しで必殺技（ガードを一撃で割る）",
-    "★風船=Space長押しで浮上（落下防止）。1ストック1回・使い切ると割れる。卵も使い切ると割れる",
-    "★アイテムが空から落下！ リーチ／速度／ビーム／巨大化／風船補充 の5種",
-  ];
-  lines.forEach((t, i) => ctx.fillText(t, W / 2, 380 + i * 26));
-
   const joined = APP.slots.filter(Boolean).length;
   const humanCount = APP.slots.filter(s => s && !s.cpu).length;
-  ctx.font = "bold 26px sans-serif";
+
+  // 参加方法をひとつの帯にまとめ、ステージ選択以降の導線と分離する。
+  ctx.fillStyle = "rgba(18,18,38,0.84)";
+  roundRect(310, 350, 660, 84, 10);
+  ctx.fill();
+  ctx.strokeStyle = "rgba(255,255,255,0.14)";
+  ctx.lineWidth = 2;
+  roundRect(310, 350, 660, 84, 10);
+  ctx.stroke();
+
   if (joined >= 2) {
     if (Math.floor(performance.now() / 400) % 2 === 0) {
       ctx.fillStyle = "#ffd34d";
-      ctx.fillText("Enter / Start で開始！", W / 2, 538);
+      ctx.font = "bold 26px sans-serif";
+      ctx.fillText("Enter / Start で開始！", W / 2, 388);
     }
   } else {
-    ctx.fillStyle = "rgba(255,255,255,0.5)";
-    ctx.fillText("2人以上そろうと開始できます（CはCPU追加）", W / 2, 538);
+    ctx.fillStyle = "#fff";
+    ctx.font = "bold 20px sans-serif";
+    ctx.fillText("参加：F（左キーボード）／ L（右キーボード）／ ゲームパッド X", W / 2, 382);
+    ctx.fillStyle = "rgba(255,255,255,0.58)";
+    ctx.font = "15px sans-serif";
+    ctx.fillText("CPU：C で追加 ／ X で削除", W / 2, 412);
   }
   // ソロ（人間1人）のときの操作案内
   if (humanCount === 1 && joined >= 2) {
     ctx.font = "14px sans-serif";
     ctx.fillStyle = "#8fd3ff";
-    ctx.fillText("1人プレイの操作 → 移動: WASD / 矢印　攻撃: J　ガード: K　風船: Space", W / 2, 562);
+    ctx.fillText("1人プレイ → 移動: WASD / 矢印　攻撃: J　ガード: K　風船: Space", W / 2, 416);
   }
 
   // ステージ選択（左右キーで変更）
   ctx.font = "bold 22px sans-serif";
   ctx.fillStyle = "#fff";
-  ctx.fillText("◀  ステージ: " + selStage.name + "  （" + (APP.stageIndex + 1) + "/" + STAGES.length + "）  ▶", W / 2, 588);
+  ctx.fillText("◀  ステージ: " + selStage.name + "  （" + (APP.stageIndex + 1) + "/" + STAGES.length + "）  ▶", W / 2, 492);
   ctx.font = "13px sans-serif";
   ctx.fillStyle = "rgba(255,255,255,0.5)";
-  ctx.fillText("← → （移動キー左右）でステージ変更", W / 2, 610);
+  ctx.fillText("← → （移動キー左右）でステージ変更", W / 2, 518);
 
   ctx.font = "bold 20px sans-serif";
   ctx.fillStyle = "#8fd3ff";
-  ctx.fillText("O キー: オンライン対戦（2〜4人・β）", W / 2, 640);
+  ctx.fillText("O キー: オンライン対戦（2〜4人・β）", W / 2, 590);
 
   const pads = navigator.getGamepads();
   let padCount = 0;
   for (let i = 0; i < pads.length; i++) if (pads[i]) padCount++;
   ctx.font = "14px sans-serif";
   ctx.fillStyle = "rgba(255,255,255,0.45)";
-  ctx.fillText("接続中のゲームパッド: " + padCount + "台（ボタンを押すと認識されます）", W / 2, 700);
+  ctx.fillText("接続中のゲームパッド: " + padCount + "台（ボタンを押すと認識されます）", W / 2, 620);
 }
 
 function drawResult() {
@@ -3140,6 +3383,7 @@ function runTick() {
 }
 
 function renderNow() {
+  syncLobbyHelpUi();
   if (APP.phase === "lobby") drawLobby();
   else if (APP.phase === "match") drawMatch();
   else if (APP.phase === "result") drawResult();

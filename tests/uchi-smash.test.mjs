@@ -112,8 +112,10 @@ function allFinite(value, seen = new Set()) {
 test("release constants and input codec stay coherent", () => {
   const sandbox = loadGame();
   const { UCHI: game } = sandbox;
+  assert.match(HTML, /<title>PYGMIX BONBON<\/title>/);
+  assert.match(HTML, /ctx\.fillText\("PYGMIX BONBON", W \/ 2, 120\)/);
   assert.match(HTML, /const GAME_VERSION = "0\.9\.3"/);
-  assert.match(HTML, /リーチ／速度／ビーム／巨大化／風船補充 の5種/);
+  assert.match(HTML, /リーチ・速度・ビーム・巨大化・風船補充の5種類/);
   assert.equal(game.STAGES.length, 7);
   assert.equal(new Set(game.STAGES.map(stage => stage.name)).size, 7);
   assert.equal(game.STAGES.some(stage => stage.name === "エレベーター"), false);
@@ -157,6 +159,27 @@ test("only the double jump starts one somersault", () => {
   assert.equal(game.fx.flips[player.slot].remaining, game.DOUBLE_JUMP_FLIP_TICKS);
   for (let i = 0; i < game.DOUBLE_JUMP_FLIP_TICKS; i++) sandbox.updateFx();
   assert.equal(game.fx.flips[player.slot], null);
+});
+
+test("lobby controls open in a modal and pause lobby input", () => {
+  const sandbox = loadGame();
+  const { UCHI: game } = sandbox;
+  const helpOpen = sandbox.document.getElementById("help-open");
+  const helpModal = sandbox.document.getElementById("help-modal");
+  assert.match(HTML, /role="dialog" aria-modal="true"/);
+  assert.match(HTML, /参加：F（左キーボード）／ L（右キーボード）／ ゲームパッド X/);
+  assert.match(HTML, /rect\.height \* \(682 \/ H\)/);
+
+  sandbox.setLobbyHelpOpen(true);
+  assert.equal(helpModal.hidden, false);
+  assert.equal(helpOpen.hidden, true);
+
+  game.keys.add("KeyC");
+  sandbox.updateLobby();
+  assert.equal(game.APP.slots.filter(Boolean).length, 0);
+
+  sandbox.setLobbyHelpOpen(false);
+  assert.equal(helpModal.hidden, true);
 });
 
 test("circus warps choose two of four candidates and change every cycle", () => {
