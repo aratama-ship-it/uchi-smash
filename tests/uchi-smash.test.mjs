@@ -127,7 +127,7 @@ test("release constants and input codec stay coherent", () => {
   const { UCHI: game } = sandbox;
   assert.match(HTML, /<title>PYGMIX BONBON<\/title>/);
   assert.match(HTML, /ctx\.fillText\("PYGMIX BONBON", W \/ 2, 120\)/);
-  assert.match(HTML, /const GAME_VERSION = "0\.9\.25"/);
+  assert.match(HTML, /const GAME_VERSION = "0\.9\.27"/);
   assert.match(HTML, /リーチ・速度・ビーム・巨大化・風船補充の5種類/);
   assert.equal(game.PHYS.gravity, 0.495);
   assert.equal(game.DOWN_ATTACK.damageMult, 1.2);
@@ -199,6 +199,7 @@ test("release constants and input codec stay coherent", () => {
   assert.equal(game.PENGUIN.chargeHeight, 30);
   assert.equal(game.PENGUIN.fallGravity, 0.55);
   assert.equal(game.PENGUIN.maxFall, 12);
+  assert.equal(game.PENGUIN.stompBounce, -8.5);
   assert.deepEqual([...game.DEFAULT_GAMEPAD_MAPPING.stagePrev], [14]);
   assert.deepEqual([...game.DEFAULT_GAMEPAD_MAPPING.stageNext], [15]);
   assert.deepEqual([...game.DEFAULT_GAMEPAD_MAPPING.start], [9]);
@@ -739,6 +740,80 @@ test("giant players use their expanded body size for collisions", () => {
   assert.ok(Math.abs(giant.x - normal.x) >= requiredDistance);
 });
 
+test("a post-hit body collision cannot push a floor-supported victim through the stage", () => {
+  const { UCHI: game } = loadGame();
+  const match = game.makeMatchState([0, 1], 0);
+  const neutral = {
+    left: false, right: false, up: false, down: false,
+    jump: false, attack: false, guard: false, balloon: false, taunt: false, start: false,
+  };
+  const [attacker, victim] = match.players;
+  match.countdown = 0;
+  match.itemTimer = 9999;
+
+  attacker.x = 520;
+  attacker.y = 516;
+  attacker.vx = attacker.vy = 0;
+  attacker.onGround = false;
+  attacker.facing = 1;
+  attacker.invuln = 0;
+  attacker.attackTimer = game.ATTACK.activeFrom + 1;
+  attacker.attackDir = "fwd";
+  attacker.attackVictims = [];
+
+  victim.x = 520;
+  victim.y = 560;
+  victim.vx = victim.vy = 0;
+  victim.onGround = true;
+  victim.invuln = 0;
+  victim.itemType = "giant";
+  victim.itemTimer = 9999;
+
+  const events = game.stepMatch(match, [neutral, neutral]);
+
+  assert.equal(events.some(event => event.type === "hit"), true);
+  assert.equal(victim.y, 560);
+  assert.ok(victim.vy < 0);
+  assert.equal(victim.onGround, false);
+});
+
+test("the final floor safety net restores only downward crossings and preserves upward launch", () => {
+  const { UCHI: game } = loadGame();
+  const match = game.makeMatchState([0, 1], 0);
+  const player = match.players[0];
+  match.players[1].alive = false;
+  const platform = match.platforms.find(candidate => candidate.main);
+  const x = platform.x + platform.w / 2;
+  const surfaceY = game.platformYAt(platform, x);
+
+  player.x = x;
+  player.y = surfaceY + 18;
+  player.vy = 5;
+  player.onGround = false;
+  game.resolveFloorPenetrations(
+    match.players,
+    [{ x, y: surfaceY }, { x: match.players[1].x, y: match.players[1].y }],
+    match.platforms,
+    match.walls,
+  );
+  assert.equal(player.y, surfaceY);
+  assert.equal(player.vy, 0);
+  assert.equal(player.onGround, true);
+
+  player.y = surfaceY + 18;
+  player.vy = -7;
+  player.onGround = false;
+  game.resolveFloorPenetrations(
+    match.players,
+    [{ x, y: surfaceY }, { x: match.players[1].x, y: match.players[1].y }],
+    match.platforms,
+    match.walls,
+  );
+  assert.equal(player.y, surfaceY);
+  assert.equal(player.vy, -7);
+  assert.equal(player.onGround, false);
+});
+
 test("a falling player lands on a grounded player's head", () => {
   const { UCHI: game } = loadGame();
   const match = game.makeMatchState([0, 1], 0);
@@ -1137,6 +1212,51 @@ test("a sliding player transfers across the center seam without sinking below th
 test("ice stage can be opened directly from its preview URL", () => {
   const { UCHI: game } = loadGame("?stage=%E3%81%93%E3%81%8A%E3%82%8A");
   assert.equal(game.STAGES[game.APP.stageIndex].name, "こおり");
+});
+
+test("landing on a charging penguin from above reverses it without taking damage", () => {
+  const { UCHI: game } = loadGame();
+  const iceIndex = game.STAGES.findIndex(stage => stage.name === "こおり");
+  const match = game.makeMatchState([0, 1], iceIndex);
+  const neutral = {
+    left: false, right: false, up: false, down: false,
+    jump: false, attack: false, guard: false, balloon: false, taunt: false, start: false,
+  };
+  const [player, spectator] = match.players;
+  const penguin = match.penguin;
+  const mainPlatforms = match.platforms.filter(platform => platform.main);
+  match.countdown = 0;
+  match.itemTimer = 9999;
+  spectator.alive = false;
+
+  penguin.state = "charge";
+  penguin.x = 400;
+  penguin.y = game.mainSurfaceYAt(match, penguin.x);
+  penguin.dir = 1;
+  penguin.platformIndex = -1;
+  penguin.lane = "main";
+  penguin.airborne = false;
+  penguin.exitLeftEdge = Math.min(...mainPlatforms.map(platform => platform.x));
+  penguin.exitRightEdge = Math.max(...mainPlatforms.map(platform => platform.x + platform.w));
+
+  const nextPenguinX = penguin.x + game.PENGUIN.speed;
+  const nextPenguinY = game.mainSurfaceYAt(match, nextPenguinX);
+  player.x = nextPenguinX;
+  player.y = nextPenguinY - game.PENGUIN.chargeHeight - 4;
+  player.vx = 0;
+  player.vy = 4;
+  player.onGround = false;
+  player.invuln = 0;
+
+  const events = game.stepMatch(match, [neutral, neutral]);
+
+  assert.equal(penguin.dir, -1);
+  assert.equal(player.damage, 0);
+  assert.equal(player.y, penguin.y - game.PENGUIN.chargeHeight);
+  assert.equal(player.vy, game.PENGUIN.stompBounce);
+  assert.equal(player.onGround, false);
+  assert.equal(events.some(event => event.type === "penguin-turn" && event.slot === player.slot), true);
+  assert.equal(events.some(event => event.type === "penguin-hit"), false);
 });
 
 test("penguin appears, warns, belly-charges, and alternates between ground and upper ice", () => {

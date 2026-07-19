@@ -488,7 +488,7 @@ const GUARD = {
 
 // ★オンライン同期の要: 決定論simに影響する変更(stepMatch/ステージ/物理/定数など)をしたら
 //   必ずこの版数を上げること。オンライン接続時に両者で照合し、食い違えば試合させず弾く。
-const GAME_VERSION = "0.9.25";
+const GAME_VERSION = "0.9.27";
 
 const PLAYER_W = 36, PLAYER_H = 48;
 // キャラクター同士の物理衝突。複数人が同時に密集しても、反復して体の重なりを解消する。
@@ -592,6 +592,8 @@ const PENGUIN = {
   speed: 11.5,
   fallGravity: 0.55,
   maxFall: 12,
+  stompBounce: -8.5,
+  stompTolerance: 4,
   damage: 11,
   kbBase: 5.8,
   kbScale: 0.11,
@@ -1328,8 +1330,27 @@ function preparePenguinEntry(state, penguin) {
   penguin.vy = 0;
 }
 
+// プレイヤーの足元が、下降しながら移動中のペンギン上面を横切ったかを連続判定する。
+// ペンギンも高速移動するため、現在位置だけでなく1tick前からの相対移動で判定する。
+function playerStompsPenguin(player, previousPlayer, penguin, previousPenguin) {
+  if (!player.alive || player.respawning || !previousPlayer) return false;
+  if (player.y <= previousPlayer.y) return false;
+  const previousTop = previousPenguin.y - PENGUIN.chargeHeight;
+  const currentTop = penguin.y - PENGUIN.chargeHeight;
+  const previousGap = previousPlayer.y - previousTop;
+  const currentGap = player.y - currentTop;
+  if (previousGap > PENGUIN.stompTolerance || currentGap < -PENGUIN.stompTolerance) return false;
+  const relativeTravel = currentGap - previousGap;
+  if (relativeTravel <= 0) return false;
+  const contactTime = Math.max(0, Math.min(1, -previousGap / relativeTravel));
+  const playerX = previousPlayer.x + (player.x - previousPlayer.x) * contactTime;
+  const penguinX = previousPenguin.x + (penguin.x - previousPenguin.x) * contactTime;
+  return Math.abs(playerX - penguinX) < pHW(player) + PENGUIN.width / 2;
+}
+
 // 第三者ペンギン: 待機→姿を現す→「!」で警告→腹ばい突進→退場、を繰り返す。
-function updatePenguin(state, events) {
+// 突進中に上から踏まれると、踏んだプレイヤーを小さく跳ね返して進行方向を反転する。
+function updatePenguin(state, events, playerMotionOrigins = []) {
   const penguin = state.penguin;
   if (!penguin) return;
 
@@ -1365,6 +1386,7 @@ function updatePenguin(state, events) {
     return;
   }
 
+  const previousPenguin = { x: penguin.x, y: penguin.y };
   const nextX = penguin.x + PENGUIN.speed * penguin.dir;
   if (penguin.platformIndex >= 0 && !penguin.airborne) {
     const platform = state.platforms[penguin.platformIndex];
@@ -1401,8 +1423,24 @@ function updatePenguin(state, events) {
     penguin.x = nextX;
     penguin.y = mainSurfaceYAt(state, penguin.x);
   }
-  for (const player of state.players) {
-    if (!player.alive || player.invuln > 0) continue;
+  let turnedThisTick = false;
+  for (let playerIndex = 0; playerIndex < state.players.length; playerIndex++) {
+    const player = state.players[playerIndex];
+    if (!player.alive) continue;
+    if (playerStompsPenguin(player, playerMotionOrigins[playerIndex], penguin, previousPenguin)) {
+      player.y = penguin.y - PENGUIN.chargeHeight;
+      player.vy = PENGUIN.stompBounce;
+      player.onGround = false;
+      player.crouching = false;
+      if (!turnedThisTick) {
+        penguin.dir *= -1;
+        turnedThisTick = true;
+        events.push({ type: "penguin-turn", x: penguin.x, y: penguin.y - PENGUIN.chargeHeight,
+          dir: penguin.dir, slot: player.slot });
+      }
+      continue;
+    }
+    if (player.invuln > 0) continue;
     if (!rectsOverlap(penguin.x - PENGUIN.width / 2, penguin.y - PENGUIN.chargeHeight,
                       PENGUIN.width, PENGUIN.chargeHeight,
                       player.x - pHW(player), player.y - pH(player), pHW(player) * 2, pH(player))) continue;
@@ -1630,10 +1668,31 @@ function rectsOverlap(ax, ay, aw, ah, bx, by, bw, bh) {
   return ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by;
 }
 
+// 足元が床・壁上面に接しているかを、onGroundとは別に幾何判定する。
+// 攻撃命中でonGroundが解除された直後も、同tick中は床の下へ押し込ませないために使う。
+function playerSupportedByWorld(player, platforms = [], walls = []) {
+  if (!player.alive) return false;
+  for (const platform of platforms) {
+    if (platform.crumbleState === "gone") continue;
+    if (platform.droppable && player.dropTimer > 0) continue;
+    if (player.x + pHW(player) <= platform.x || player.x - pHW(player) >= platform.x + platform.w) continue;
+    if (platform.slope && (player.x < platform.x || player.x > platform.x + platform.w)) continue;
+    if (Math.abs(player.y - platformYAt(platform, player.x)) <= 2.1) return true;
+  }
+  for (const wall of walls) {
+    if (wall.raise <= 0.02) continue;
+    if (player.x + pHW(player) <= wall.x || player.x - pHW(player) >= wall.x + wall.w) continue;
+    if (Math.abs(player.y - wall.top) <= 2.1) return true;
+  }
+  return false;
+}
+
 // キャラクター同士をAABBで押し分ける。最小の重なり軸を選ぶため、
 // 横からは押し合い、上から落ちたときは相手の頭上で止まる。
-function resolvePlayerCollisions(players) {
+function resolvePlayerCollisions(players, platforms = [], walls = []) {
   const active = players.filter(p => p.alive);
+  // 攻撃・ハザードでonGroundがfalseになっても、押し分け開始時に床上なら固定側として扱う。
+  const worldSupported = new Set(active.filter(player => playerSupportedByWorld(player, platforms, walls)));
   for (let pass = 0; pass < BODY_COLLISION.passes; pass++) {
     let adjusted = false;
     for (let i = 0; i < active.length; i++) {
@@ -1662,8 +1721,8 @@ function resolvePlayerCollisions(players) {
           const aCenterY = a.y - aH * 0.5, bCenterY = b.y - bH * 0.5;
           const aIsUpper = aCenterY < bCenterY || (aCenterY === bCenterY && a.slot < b.slot);
           const upper = aIsUpper ? a : b, lower = aIsUpper ? b : a;
-          const upperFixed = upper.onGround;
-          const lowerFixed = lower.onGround;
+          const upperFixed = upper.onGround || worldSupported.has(upper);
+          const lowerFixed = lower.onGround || worldSupported.has(lower);
           const separation = overlapY + BODY_COLLISION.separationEpsilon;
 
           // 足場に立っている側は動かさず、空中側だけを押し出す。
@@ -1693,6 +1752,45 @@ function resolvePlayerCollisions(players) {
       }
     }
     if (!adjusted) break;
+  }
+}
+
+// 最終押し分けで足元が床上から床下へ移った場合だけ、横切った最上面へ戻す安全網。
+// 薄い足場のすり抜け中や、下から上へ通過中のキャラクターには作用しない。
+function resolveFloorPenetrations(players, beforePositions, platforms = [], walls = []) {
+  for (let index = 0; index < players.length; index++) {
+    const player = players[index];
+    const before = beforePositions[index];
+    if (!player.alive || !before) continue;
+    let correctionY = null;
+
+    for (const platform of platforms) {
+      if (platform.crumbleState === "gone") continue;
+      if (platform.droppable && player.dropTimer > 0) continue;
+      if (player.x + pHW(player) <= platform.x || player.x - pHW(player) >= platform.x + platform.w) continue;
+      if (platform.slope && (player.x < platform.x || player.x > platform.x + platform.w)) continue;
+      const beforeSurfaceY = platformYAt(platform, before.x);
+      const currentSurfaceY = platformYAt(platform, player.x);
+      if (before.y <= beforeSurfaceY + 2.1 && player.y > currentSurfaceY + 2.1) {
+        correctionY = correctionY === null ? currentSurfaceY : Math.min(correctionY, currentSurfaceY);
+      }
+    }
+
+    for (const wall of walls) {
+      if (wall.raise <= 0.02) continue;
+      if (player.x + pHW(player) <= wall.x || player.x - pHW(player) >= wall.x + wall.w) continue;
+      if (before.y <= wall.top + 2.1 && player.y > wall.top + 2.1) {
+        correctionY = correctionY === null ? wall.top : Math.min(correctionY, wall.top);
+      }
+    }
+
+    if (correctionY === null) continue;
+    player.y = correctionY;
+    if (player.vy >= 0) {
+      player.vy = 0;
+      player.onGround = true;
+      player.airJumps = PHYS.airJumps;
+    }
   }
 }
 
@@ -1743,6 +1841,8 @@ function stepMatch(state, samples) {
     if (plat) { ps[i].x += plat.dx; ps[i].y = plat.y; }
     else if (wall) { ps[i].x += wall.dx; ps[i].y = wall.top; }
   }
+  // ペンギンへの上踏みは、プレイヤーとペンギン双方の1tick分の軌跡で判定する。
+  const playerMotionOrigins = ps.map(player => ({ x: player.x, y: player.y }));
 
   // --- 各プレイヤーの入力・移動 ---
   for (let i = 0; i < ps.length; i++) {
@@ -2235,7 +2335,7 @@ function stepMatch(state, samples) {
   // --- ハザード類（モブ / ペンギン / 振り子 / 溶岩 / ワープ）---
   if (!inCountdown && !state.ending) {
     updateMob(state, events);
-    updatePenguin(state, events);
+    updatePenguin(state, events, playerMotionOrigins);
     if (state.pendulums.length) updatePendulums(state, events);
     if (state.lava.length) updateLava(state, events);
     if (state.warps.length) updateWarps(state, events);
@@ -2243,7 +2343,9 @@ function stepMatch(state, samples) {
 
   // --- キャラクター同士の物理衝突 ---
   // ワープなど、このtick内の位置変更がすべて済んでから最終位置を押し分ける。
-  resolvePlayerCollisions(ps);
+  const beforeBodyCollision = ps.map(player => ({ x: player.x, y: player.y }));
+  resolvePlayerCollisions(ps, state.platforms, state.walls);
+  resolveFloorPenetrations(ps, beforeBodyCollision, state.platforms, state.walls);
 
   // --- 場外KO ---
   for (const p of ps) {
@@ -3254,6 +3356,18 @@ function handleEvents(events) {
           x: ev.x - ev.dir * (8 + Math.random() * 20), y: ev.y - Math.random() * 12,
           vx: -ev.dir * (1 + Math.random() * 4), vy: -(1 + Math.random() * 3),
           life: 14 + Math.random() * 10, size: 2 + Math.random() * 4, color: "#dff9ff",
+        });
+      }
+    } else if (ev.type === "penguin-turn") {
+      fx.shake = 4;
+      for (let k = 0; k < 14; k++) {
+        const angle = Math.PI * (0.15 + Math.random() * 0.7);
+        const speed = 2 + Math.random() * 5;
+        fx.particles.push({
+          x: ev.x + (Math.random() - 0.5) * 26, y: ev.y,
+          vx: Math.cos(angle) * speed, vy: -Math.sin(angle) * speed,
+          life: 14 + Math.random() * 8, size: 2 + Math.random() * 4,
+          color: k % 3 === 0 ? "#ffd34d" : "#effcff",
         });
       }
     } else if (ev.type === "penguin-hit") {
@@ -4786,7 +4900,8 @@ window.UCHI = {
   STAGES, BLAST, STOCKS, ITEM, BALLOON, MOB, PENGUIN, rngNext,
   LOBBY_CORNER_CHARACTERS,
   CRUMBLE, PENDULUM, LAVA, WARP_CD, PLAYER_W, PLAYER_H, BODY_COLLISION, DOUBLE_JUMP_FLIP_TICKS, TAUNT_TICKS,
-  resolvePlayerCollisions, pH, attackData, attackActiveWindow, itemTimeFraction,
+  resolvePlayerCollisions, resolveFloorPenetrations, playerSupportedByWorld,
+  pH, attackData, attackActiveWindow, itemTimeFraction,
   platformYAt, mainSurfaceYAt, updatePenguin,
   fx,
   NET, netHost, netJoin, netHostStart, encodeSample, decodeSample,
