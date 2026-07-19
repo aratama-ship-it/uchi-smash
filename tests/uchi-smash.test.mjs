@@ -129,6 +129,9 @@ test("release constants and input codec stay coherent", () => {
   assert.equal(game.LOBBY_CORNER_CHARACTERS.filter(character => character.x > 640).length, 2);
   assert.equal(game.LOBBY_CORNER_CHARACTERS.filter(character => character.y < 360).length, 2);
   assert.equal(game.LOBBY_CORNER_CHARACTERS.filter(character => character.y > 360).length, 2);
+  assert.doesNotMatch(HTML, /const arms = pose/);
+  assert.doesNotMatch(HTML, /ctx\.arc\(0, 2, 10, 0\.15/);
+  assert.doesNotMatch(HTML, /ctx\.fillText\(NAMES\[slot\], 0, 18\)/);
   const flowTower = game.STAGES.find(stage => stage.name === "ながれの塔");
   assert.ok(flowTower);
   assert.equal(flowTower.platforms.filter(platform => platform.conveyor).length, 2);

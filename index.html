@@ -579,8 +579,8 @@ const COLORS   = ["#e74c3c", "#3ee657", "#f1c40f", "#3498db"];  // P1赤 P2緑 P
 const COLORS_D = ["#a93226", "#1fa83b", "#b7950b", "#21618c"];
 const NAMES    = ["P1", "P2", "P3", "P4"];
 const LOBBY_CORNER_CHARACTERS = [
-  { slot: 0, x: 78,   y: 98,  scale: 1.45, tilt: -0.14, pose: "wave" },
-  { slot: 1, x: 1202, y: 98,  scale: 1.45, tilt:  0.14, pose: "wave" },
+  { slot: 0, x: 78,   y: 98,  scale: 1.45, tilt: -0.14, pose: "hop" },
+  { slot: 1, x: 1202, y: 98,  scale: 1.45, tilt:  0.14, pose: "hop" },
   { slot: 2, x: 82,   y: 650, scale: 1.50, tilt:  0.10, pose: "cheer" },
   { slot: 3, x: 1198, y: 650, scale: 1.50, tilt: -0.10, pose: "dance" },
 ];
@@ -3311,14 +3311,13 @@ function drawMatch() {
   }
 }
 
-// トップページの四隅でゲームへ誘う、笑顔のプレイヤーキャラクター。
-// 実際の対戦キャラと同じ色・四角いシルエットを使い、UIより奥の装飾として描く。
+// トップページの四隅でゲームへ誘うプレイヤーキャラクター。
+// 実際の対戦キャラと同じ「四角い体・目・短い足」だけを使い、UIより奥の装飾として描く。
 function drawLobbyCornerCharacter(character) {
   const { slot, x, y, scale, tilt, pose } = character;
   const facing = x < W / 2 ? 1 : -1;
   const time = performance.now();
   const bob = Math.sin(time / 360 + slot * 1.7) * 3;
-  const wave = Math.sin(time / 190 + slot) * 0.16;
 
   ctx.save();
   ctx.translate(x, y + bob);
@@ -3342,21 +3341,10 @@ function drawLobbyCornerCharacter(character) {
     ctx.beginPath(); ctx.ellipse(0, 31, 24, 5, 0, 0, Math.PI * 2); ctx.fill();
   }
 
-  // ポーズごとに腕と脚の角度を変え、4体を同じスタンプの反復にしない。
-  const arms = pose === "cheer"
-    ? [[-18,-8,-31,-31], [18,-8,31,-31]]
-    : pose === "dance"
-      ? [[-18,-7,-33,3], [18,-7,31,-25]]
-      : facing > 0
-        ? [[-18,-8,-29,8], [18,-8,30,-27 + wave * 18]]
-        : [[-18,-8,-30,-27 + wave * 18], [18,-8,29,8]];
+  // 腕は追加せず、足の角度だけで4体の動きに差をつける。
   ctx.strokeStyle = COLORS_D[slot];
   ctx.lineWidth = 7;
   ctx.lineCap = "round";
-  ctx.beginPath();
-  for (const [sx, sy, ex, ey] of arms) { ctx.moveTo(sx, sy); ctx.lineTo(ex, ey); }
-  ctx.stroke();
-
   const legs = pose === "dance" ? [[-9,23,-18,33], [9,23,20,27]]
     : pose === "cheer" ? [[-9,23,-16,34], [9,23,17,34]]
       : [[-9,23,-12,34], [9,23,15,31]];
@@ -3382,17 +3370,6 @@ function drawLobbyCornerCharacter(character) {
   ctx.arc(8 + eyeShift, -8, 2.2, 0, Math.PI * 2);
   ctx.fill();
 
-  // 大きく開いた笑顔とほっぺ。
-  ctx.strokeStyle = "#20202b";
-  ctx.lineWidth = 2.8;
-  ctx.beginPath(); ctx.arc(0, 2, 10, 0.15, Math.PI - 0.15); ctx.stroke();
-  ctx.fillStyle = "rgba(255,255,255,0.30)";
-  ctx.beginPath(); ctx.arc(-14, 1, 3, 0, Math.PI * 2); ctx.arc(14, 1, 3, 0, Math.PI * 2); ctx.fill();
-
-  ctx.fillStyle = "rgba(20,20,32,0.72)";
-  ctx.font = "bold 10px sans-serif";
-  ctx.textAlign = "center";
-  ctx.fillText(NAMES[slot], 0, 18);
   ctx.restore();
 }
 
