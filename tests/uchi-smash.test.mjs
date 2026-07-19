@@ -102,6 +102,7 @@ function sampleFor(tick, slot) {
     attack: (tick + slot * 7) % 61 < 4,
     guard: (tick + slot * 13) % 149 < 5,
     balloon: (tick + slot * 19) % 211 < 8,
+    taunt: (tick + slot * 23) % 503 === 0,
     start: false,
   };
 }
@@ -118,12 +119,13 @@ test("release constants and input codec stay coherent", () => {
   const { UCHI: game } = sandbox;
   assert.match(HTML, /<title>PYGMIX BONBON<\/title>/);
   assert.match(HTML, /ctx\.fillText\("PYGMIX BONBON", W \/ 2, 120\)/);
-  assert.match(HTML, /const GAME_VERSION = "0\.9\.13"/);
+  assert.match(HTML, /const GAME_VERSION = "0\.9\.14"/);
   assert.match(HTML, /リーチ・速度・ビーム・巨大化・風船補充の5種類/);
   assert.equal(game.PHYS.gravity, 0.495);
   assert.equal(game.DOWN_ATTACK.damageMult, 1.2);
   assert.equal(game.DOWN_ATTACK.groundedUpKbMult, 1.3);
   assert.equal(game.BODY_COLLISION.passes, 32);
+  assert.equal(game.TAUNT_TICKS, 90);
   assert.equal(game.STAGES.length, 6);
   assert.equal(new Set(game.STAGES.map(stage => stage.name)).size, 6);
   assert.equal(game.STAGES.some(stage => stage.name === "エレベーター"), false);
@@ -170,9 +172,125 @@ test("release constants and input codec stay coherent", () => {
   assert.equal(typeof sandbox.makeKeyboardSource(0).sample, "function");
   assert.equal(typeof sandbox.makeGamepadSource(0).sample, "function");
   assert.equal(game.makeMatchState([0, 1], 0).timeLeft, 10800);
-  for (let byte = 0; byte < 256; byte++) {
-    assert.equal(game.encodeSample(game.decodeSample(byte)), byte);
+  for (let mask = 0; mask < 512; mask++) {
+    assert.equal(game.encodeSample(game.decodeSample(mask)), mask);
   }
+});
+
+test("keyboard Y and gamepad B-circle trigger only the taunt input", () => {
+  const sandbox = loadGame();
+  const { UCHI: game } = sandbox;
+
+  game.keys.add("KeyY");
+  const keyboard = sandbox.makeKeyboardSource(0).sample();
+  assert.equal(keyboard.taunt, true);
+  assert.equal(sandbox.sampleLocalMerged().taunt, true);
+  game.keys.clear();
+
+  const buttons = Array.from({ length: 16 }, () => ({ pressed: false }));
+  sandbox.navigator.getGamepads = () => [{ axes: [0, 0], buttons }];
+  buttons[1].pressed = true;
+  const circle = sandbox.makeGamepadSource(0).sample();
+  assert.equal(circle.taunt, true);
+  assert.equal(circle.jump, false);
+
+  buttons[1].pressed = false;
+  buttons[0].pressed = true;
+  const cross = sandbox.makeGamepadSource(0).sample();
+  assert.equal(cross.jump, true);
+  assert.equal(cross.taunt, false);
+});
+
+test("down on main ground halves body height and ducks under a forward laser", () => {
+  const neutral = {
+    left: false, right: false, up: false, down: false,
+    jump: false, attack: false, guard: false, balloon: false, taunt: false, start: false,
+  };
+
+  function runLaser(victimInput) {
+    const sandbox = loadGame();
+    const { UCHI: game } = sandbox;
+    const match = game.makeMatchState([0, 1], 0);
+    const [attacker, victim] = match.players;
+    match.countdown = 0;
+    match.itemTimer = 9999;
+    attacker.x = 420;
+    attacker.y = 560;
+    attacker.vx = attacker.vy = 0;
+    attacker.onGround = true;
+    attacker.facing = 1;
+    attacker.itemType = "beam";
+    attacker.itemTimer = 9999;
+    attacker.attackTimer = game.ATTACK.activeFrom + 1;
+    attacker.attackIsSpecial = false;
+    attacker.attackDir = "fwd";
+    attacker.attackVictims = [];
+    victim.x = 650;
+    victim.y = 560;
+    victim.vx = victim.vy = 0;
+    victim.onGround = true;
+    victim.invuln = 0;
+
+    const events = game.stepMatch(match, [neutral, victimInput]);
+    return { game, match, attacker, victim, events };
+  }
+
+  const crouched = runLaser({ ...neutral, down: true });
+  assert.equal(crouched.victim.crouching, true);
+  assert.equal(crouched.game.pH(crouched.victim), crouched.game.PLAYER_H * 0.5);
+  assert.equal(crouched.victim.damage, 0);
+  assert.equal(crouched.events.some(event => event.type === "hit"), false);
+
+  const standing = runLaser(neutral);
+  assert.equal(standing.victim.crouching, false);
+  assert.equal(standing.victim.damage, standing.game.ATTACK.damage);
+  assert.equal(standing.events.some(event => event.type === "hit"), true);
+
+  const dropMatch = crouched.game.makeMatchState([0, 1], 0);
+  const dropper = dropMatch.players[0];
+  dropMatch.countdown = 0;
+  dropper.x = 390;
+  dropper.y = 455;
+  dropper.vx = dropper.vy = 0;
+  dropper.onGround = true;
+  dropper.prev = neutral;
+  crouched.game.stepMatch(dropMatch, [{ ...neutral, down: true }, neutral]);
+  assert.equal(dropper.crouching, false);
+  assert.equal(dropper.onGround, false);
+  assert.ok(dropper.dropTimer > 0);
+});
+
+test("taunt is a cosmetic ground animation that cancels on movement", () => {
+  const sandbox = loadGame();
+  const { UCHI: game } = sandbox;
+  const match = game.makeMatchState([0, 1], 0);
+  const neutral = {
+    left: false, right: false, up: false, down: false,
+    jump: false, attack: false, guard: false, balloon: false, taunt: false, start: false,
+  };
+  const player = match.players[0];
+  match.countdown = 0;
+  match.itemTimer = 9999;
+  player.x = 640;
+  player.y = 560;
+  player.vx = player.vy = 0;
+  player.onGround = true;
+  player.invuln = 9999;
+
+  const events = game.stepMatch(match, [{ ...neutral, taunt: true }, neutral]);
+  assert.equal(events.filter(event => event.type === "taunt").length, 1);
+  assert.equal(player.tauntTimer, game.TAUNT_TICKS);
+  assert.equal(game.pH(player), game.PLAYER_H);
+  assert.equal(player.damage, 0);
+
+  game.APP.match = match;
+  game.APP.phase = "match";
+  assert.doesNotThrow(() => game.renderNow());
+
+  game.stepMatch(match, [neutral, neutral]);
+  assert.equal(player.tauntTimer, game.TAUNT_TICKS - 1);
+  game.stepMatch(match, [{ ...neutral, right: true }, neutral]);
+  assert.equal(player.tauntTimer, 0);
 });
 
 test("space stage applies half gravity to normal and fast falling", () => {

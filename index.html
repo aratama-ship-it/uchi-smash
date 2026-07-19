@@ -223,6 +223,7 @@
           <div><dt>攻撃</dt><dd>F</dd></div>
           <div><dt>ガード</dt><dd>G</dd></div>
           <div><dt>風船</dt><dd>Space</dd></div>
+          <div><dt>アピール</dt><dd>Y</dd></div>
         </dl>
       </article>
       <article class="control-sheet">
@@ -235,6 +236,7 @@
           <div><dt>攻撃</dt><dd>L</dd></div>
           <div><dt>ガード</dt><dd>−（ハイフン）</dd></div>
           <div><dt>風船</dt><dd>.（ピリオド）</dd></div>
+          <div><dt>アピール</dt><dd>I</dd></div>
         </dl>
       </article>
       <article class="control-sheet">
@@ -242,18 +244,20 @@
         <p class="device">一般的な4ボタンパッド</p>
         <dl>
           <div><dt>移動</dt><dd>スティック / 十字</dd></div>
-          <div><dt>ジャンプ</dt><dd>A / B</dd></div>
+          <div><dt>ジャンプ</dt><dd>A / ×</dd></div>
           <div><dt>急降下</dt><dd>下入力</dd></div>
           <div><dt>攻撃</dt><dd>X</dd></div>
           <div><dt>ガード</dt><dd>L / R</dd></div>
           <div><dt>風船</dt><dd>Y</dd></div>
+          <div><dt>アピール</dt><dd>B / ○</dd></div>
         </dl>
       </article>
     </div>
     <div class="help-notes">
-      <p><strong>1人・オンライン操作</strong><br>移動は WASD / 矢印、攻撃 J、ガード K、風船 Space。</p>
+      <p><strong>1人・オンライン操作</strong><br>移動は WASD / 矢印、攻撃 J、ガード K、風船 Space、アピール Y。</p>
       <p><strong>攻撃の使い分け</strong><br>上か下だけを入力しながら攻撃で上下攻撃。2秒長押しで必殺技。</p>
       <p><strong>風船</strong><br>長押しで浮上。1ストックにつき1回で、使い切ると割れます。</p>
+      <p><strong>しゃがみ</strong><br>通常の地面で下入力すると高さが半分になり、正面レーザーを避けられます。</p>
       <p><strong>アイテム</strong><br>リーチ・速度・ビーム・巨大化・風船補充の5種類です。</p>
     </div>
     <div class="help-footer">背景の暗い部分をクリックしても閉じられます。</div>
@@ -373,7 +377,7 @@ const GUARD = {
 
 // ★オンライン同期の要: 決定論simに影響する変更(stepMatch/ステージ/物理/定数など)をしたら
 //   必ずこの版数を上げること。オンライン接続時に両者で照合し、食い違えば試合させず弾く。
-const GAME_VERSION = "0.9.13";
+const GAME_VERSION = "0.9.14";
 
 const PLAYER_W = 36, PLAYER_H = 48;
 // キャラクター同士の物理衝突。複数人が同時に密集しても、反復して体の重なりを解消する。
@@ -382,6 +386,7 @@ const BODY_COLLISION = {
   separationEpsilon: 0.01,
 };
 const DOUBLE_JUMP_FLIP_TICKS = 30;  // 二段ジャンプ時の宙返り時間（0.5秒）
+const TAUNT_TICKS = 90;              // アピール（仰向けで足をバタバタ）の長さ（1.5秒）
 const STOCKS = 3;
 const RESPAWN_INVULN = 150;
 const COUNTDOWN_TICKS = 180;
@@ -404,6 +409,7 @@ const ITEM = {
   speedMult: 1.5,       // speed効果: 移動速度＆ジャンプ力倍率
   beamRange: 460,       // beam効果: ビームの長さ
   beamThick: 26,        // beamの太さ
+  beamGroundClearance: PLAYER_H * 0.5, // 通常地面の半身しゃがみが下をくぐれる高さ
 };
 const ITEM_TYPES = ["reach", "speed", "beam"];
 
@@ -425,7 +431,10 @@ const GIANT = {
 };
 // プレイヤーの実効サイズ（巨大化中は拡大）
 function pHW(p) { return p.itemType === "giant" ? PLAYER_W * 0.5 * GIANT.size : PLAYER_W * 0.5; }  // 半幅
-function pH(p)  { return p.itemType === "giant" ? PLAYER_H * GIANT.size : PLAYER_H; }               // 高さ
+function pH(p)  {
+  const fullHeight = p.itemType === "giant" ? PLAYER_H * GIANT.size : PLAYER_H;
+  return p.crouching ? fullHeight * 0.5 : fullHeight;
+} // 高さ（通常地面で下入力中は半分）
 
 // 試合ごとに独立した天井区画を作る。STAGES本体は書き換えず、再戦時には全区画が復元される。
 function makeCeilingSegments(ceiling) {
@@ -620,7 +629,7 @@ const keys = new Set();
 let lobbyHelpOpen = false;
 const USED_CODES = new Set([
   "KeyW","KeyA","KeyS","KeyD","KeyF","KeyG","KeyH","KeyO","KeyJ","KeyK","KeyC","KeyX",
-  "KeyU","KeyL","Minus","Tab",
+  "KeyU","KeyL","KeyY","KeyI","Minus","Tab",
   "ArrowUp","ArrowDown","ArrowLeft","ArrowRight","Comma","Period","Slash",
   "Enter","Escape","Space",
 ]);
@@ -650,12 +659,12 @@ window.addEventListener("keydown", e => {
 window.addEventListener("keyup", e => { if (typingInField()) return; keys.delete(e.code); });
 window.addEventListener("blur", () => keys.clear());
 
-const NEUTRAL = Object.freeze({ left:false,right:false,up:false,down:false,jump:false,attack:false,guard:false,balloon:false,start:false });
+const NEUTRAL = Object.freeze({ left:false,right:false,up:false,down:false,jump:false,attack:false,guard:false,balloon:false,taunt:false,start:false });
 
 // キーボード2系統のマッピング
 const KB_MAPS = [
-  { left:"KeyA", right:"KeyD", up:"KeyW", down:"KeyS", jump:"KeyW", attack:"KeyF", guard:"KeyG", balloon:"Space" },
-  { left:"KeyH", right:"KeyK", up:"KeyU", down:"KeyJ", jump:"KeyU", attack:"KeyL", guard:"Minus", balloon:"Period" },
+  { left:"KeyA", right:"KeyD", up:"KeyW", down:"KeyS", jump:"KeyW", attack:"KeyF", guard:"KeyG", balloon:"Space", taunt:"KeyY" },
+  { left:"KeyH", right:"KeyK", up:"KeyU", down:"KeyJ", jump:"KeyU", attack:"KeyL", guard:"Minus", balloon:"Period", taunt:"KeyI" },
 ];
 
 // 入力ソース: sample() が InputSample を返す。将来 NetworkSource を足すだけでオンライン化できる
@@ -670,6 +679,7 @@ function makeKeyboardSource(mapIdx) {
         up: keys.has(m.up), down: keys.has(m.down),
         jump: keys.has(m.jump), attack: keys.has(m.attack),
         guard: keys.has(m.guard), balloon: keys.has(m.balloon),
+        taunt: keys.has(m.taunt),
         start: keys.has("Enter"),
       };
     },
@@ -690,10 +700,11 @@ function makeGamepadSource(index) {
         right: ax >  0.4 || btn(15),
         up:    (gp.axes[1] || 0) < -0.5 || btn(12),
         down:  (gp.axes[1] || 0) >  0.5 || btn(13),
-        jump:  btn(0) || btn(1),          // A/B (×/○)
+        jump:  btn(0),                    // A (×)
         attack: btn(2),                   // X (□)
         balloon: btn(3),                  // Y (△) = 風船
         guard: btn(4) || btn(5) || btn(6) || btn(7),  // L/R (ショルダー/トリガー)
+        taunt: btn(1),                    // B (○) = アピール
         start: btn(9),
       };
     },
@@ -718,7 +729,7 @@ function cpuThink(src, slot, m) {
   if (st.jumpCd > 0) st.jumpCd--;
   if (st.atkCd > 0) st.atkCd--;
   if (st.guardCd > 0) st.guardCd--;
-  const inp = { left:false, right:false, up:false, down:false, jump:false, attack:false, guard:false, balloon:false, start:false };
+  const inp = { left:false, right:false, up:false, down:false, jump:false, attack:false, guard:false, balloon:false, taunt:false, start:false };
   const me = m.players.find(p => p.slot === slot);
   if (!me || !me.alive) return inp;
 
@@ -823,6 +834,8 @@ function makePlayer(slotIdx, stage) {
     balloonFuel: BALLOON.fuel,    // 風船の残り燃料（0で割れて復活まで使えない）
     ballooning: false,
     respawning: false,            // 復活風船でふわふわ降下中
+    crouching: false,             // 通常地面で下入力中は高さ半分
+    tauntTimer: 0,                // アピール（仰向けで足をバタバタ）の残り時間
     attackDir: "fwd",             // 攻撃の向き "fwd" | "up" | "down"
     warpCd: 0,                    // ワープ後クールダウン
     stepPhase: 0,                 // 足のちょこちょこアニメ位相
@@ -1302,7 +1315,9 @@ function stepMatch(state, samples) {
     if (p.hitFlash > 0) p.hitFlash--;
     if (p.guardBreakFlash > 0) p.guardBreakFlash--;
     if (p.itemGetFlash > 0) p.itemGetFlash--;
+    if (p.tauntTimer > 0) p.tauntTimer--;
     if (p.itemTimer > 0) { p.itemTimer--; if (p.itemTimer === 0) p.itemType = null; }
+    if (!canAct) { p.tauntTimer = 0; p.crouching = false; }
 
     // --- ガード（卵型シールド）---
     // 地上・卵が残っている・行動可能なときだけ展開。展開中は移動不可＆時間で縮む。
@@ -1322,6 +1337,22 @@ function stepMatch(state, samples) {
 
     const dir = (canAct && !locked) ? ((cur.right ? 1 : 0) - (cur.left ? 1 : 0)) : 0;
     if (dir !== 0) p.facing = dir;
+
+    // アピールは純粋な演出。地上で入力した時だけ始まり、別の行動をすると即終了する。
+    const tauntEdge = cur.taunt && !prev.taunt;
+    if (p.tauntTimer > 0 && (dir !== 0 || cur.jump || cur.down || cur.attack || cur.guard || cur.balloon || !p.onGround)) {
+      p.tauntTimer = 0;
+    }
+    if (tauntEdge && canAct && !locked && p.onGround && !p.respawning) {
+      p.tauntTimer = TAUNT_TICKS;
+      p.crouching = false;
+      events.push({ type: "taunt", x: p.x, y: p.y, slot: p.slot });
+    }
+
+    // 通常の地面（main）だけ半身しゃがみ。薄い足場では従来のすり抜けを優先する。
+    const standingPlatform = p.onGround ? platformUnder(p, state.platforms) : null;
+    p.crouching = !!(cur.down && canAct && !locked && !p.respawning && p.tauntTimer === 0
+      && standingPlatform && standingPlatform.main);
 
     // 水平移動（speedアイテムで1.5倍 / giantで1/2）。うちゅうは長い滞空ぶんだけ横移動を抑える。
     const moveScale = state.stage.moveScale || 1;
@@ -1355,6 +1386,7 @@ function stepMatch(state, samples) {
       if (p.onGround) {
         p.vy = PHYS.jumpVel * jmul;
         p.onGround = false;
+        p.crouching = false;
       } else if (p.airJumps > 0) {
         p.vy = PHYS.doubleJumpVel * jmul;
         p.airJumps--;
@@ -1564,7 +1596,8 @@ function stepMatch(state, samples) {
     } else {
       hw = len; hh = thickF;
       hx = a.facing === 1 ? a.x + aHW - 6 : a.x - aHW - len + 6;
-      hy = a.y - aH / 2 - thickF / 2 - 4;
+      // 正面レーザーは通常地面から半身ぶん上を通り、しゃがみ中の相手には当たらない。
+      hy = isBeam ? a.y - ITEM.beamGroundClearance - thickF : a.y - aH / 2 - thickF / 2 - 4;
     }
     for (let j = 0; j < ps.length; j++) {
       if (i === j) continue;
@@ -1617,6 +1650,8 @@ function stepMatch(state, samples) {
       }
       v.hitstun = Math.floor(4 + kb * 2.0);
       v.onGround = false;
+      v.crouching = false;
+      v.tauntTimer = 0;
       v.hitFlash = 8;
       v.chargeTimer = 0;             // 被弾でチャージ中断
       v.attackTimer = 0;
@@ -1746,6 +1781,7 @@ function stepMatch(state, samples) {
         p.guardHp = GUARD.max; p.guarding = false; p.guardBreakFlash = 0;  // 卵は復活で全回復
         p.itemType = null; p.itemTimer = 0;                                // アイテム効果もリセット
         p.balloonFuel = BALLOON.fuel; p.ballooning = false;                // 風船も復活で回復
+        p.crouching = false; p.tauntTimer = 0;
         p.warpCd = 0;
         p.airJumps = PHYS.airJumps;
         p.invuln = RESPAWN_INVULN;
@@ -1830,7 +1866,7 @@ window.APP = APP;  // デバッグ用に公開
 /* ==================== オンライン対戦（2〜4人・入力同期lockstep） ====================
  * 方式: delay-based lockstep
  *  - 両クライアントが同一の決定論的sim(stepMatch)を実行する
- *  - 送るのは毎tickの入力(1バイト)だけ。tick Tの実行には両者の入力[T]が必須
+ *  - 送るのは毎tickの入力ビットマスクだけ。tick Tの実行には両者の入力[T]が必須
  *  - 自分の入力は「tick T実行時に T+DELAY 分を生成して送信」→ DELAY tick先で反映
  *  - 相手の入力が未着ならそのtickは待つ(stall)。届き次第追いつく
  * 接続: PeerJS(P2P)。ホストが部屋コードを発行、参加側がコードで接続 */
@@ -1855,21 +1891,21 @@ const NET = {
 };
 
 function encodeSample(s) {
-  return (s.left?1:0)|(s.right?2:0)|(s.up?4:0)|(s.down?8:0)|(s.jump?16:0)|(s.attack?32:0)|(s.guard?64:0)|(s.balloon?128:0);
+  return (s.left?1:0)|(s.right?2:0)|(s.up?4:0)|(s.down?8:0)|(s.jump?16:0)|(s.attack?32:0)|(s.guard?64:0)|(s.balloon?128:0)|(s.taunt?256:0);
 }
 function decodeSample(b) {
-  return { left:!!(b&1), right:!!(b&2), up:!!(b&4), down:!!(b&8), jump:!!(b&16), attack:!!(b&32), guard:!!(b&64), balloon:!!(b&128), start:false };
+  return { left:!!(b&1), right:!!(b&2), up:!!(b&4), down:!!(b&8), jump:!!(b&16), attack:!!(b&32), guard:!!(b&64), balloon:!!(b&128), taunt:!!(b&256), start:false };
 }
 
 // オンライン時のキー配置（1人が片手で移動WASD/矢印、もう片手でJ/K/Space）
 //   移動: WASD または 矢印（従来通り） / ジャンプ: W・↑ / 急降下: S・↓
-//   攻撃: J（長押し2秒で必殺技） / 防御(卵ガード): K / 風船: Space
+//   攻撃: J（長押し2秒で必殺技） / 防御(卵ガード): K / 風船: Space / アピール: Y
 //   ゲームパッドも併用可
 function sampleLocalMerged() {
   const k = keys;
   const gpBtn = (list) => { const ps=navigator.getGamepads(); for(let i=0;i<ps.length;i++){ const g=ps[i]; if(g&&list.some(b=>g.buttons[b]&&g.buttons[b].pressed)) return true; } return false; };
   const gpAxis = (ax, lo) => { const ps=navigator.getGamepads(); for(let i=0;i<ps.length;i++){ const g=ps[i]; if(!g)continue; const v=g.axes[ax]||0; if(lo?v<-0.4:v>0.4) return true; const dpad = ax===0?(lo?14:15):(lo?12:13); if(g.buttons[dpad]&&g.buttons[dpad].pressed) return true; } return false; };
-  const up = k.has("KeyW") || k.has("ArrowUp") || gpBtn([0,1]);
+  const up = k.has("KeyW") || k.has("ArrowUp") || gpBtn([0]);
   return {
     left:  k.has("KeyA") || k.has("ArrowLeft")  || gpAxis(0, true),
     right: k.has("KeyD") || k.has("ArrowRight") || gpAxis(0, false),
@@ -1879,6 +1915,7 @@ function sampleLocalMerged() {
     attack: k.has("KeyJ") || gpBtn([2]),        // オンライン攻撃 = J
     guard:  k.has("KeyK") || gpBtn([4,5,6,7]),  // オンライン防御 = K
     balloon: k.has("Space") || gpBtn([3]),      // オンライン風船 = Space
+    taunt: k.has("KeyY") || gpBtn([1]),         // アピール = Y / B(○)
     start: k.has("Enter"),
   };
 }
@@ -3031,6 +3068,56 @@ function drawMob(m) {
   ctx.stroke();
 }
 
+// アピール専用ポーズ。仰向けの本体から両足だけを上へ出し、交互にバタバタさせる。
+// 攻撃判定・移動・当たり判定には影響しない純粋な描画演出。
+function drawTauntPose(p) {
+  const elapsed = TAUNT_TICKS - p.tauntTimer;
+  const bodyW = 44, bodyH = 24;
+  const bodyX = p.x - bodyW / 2, bodyY = p.y - bodyH - 2;
+
+  ctx.strokeStyle = COLORS_D[p.slot];
+  ctx.fillStyle = COLORS_D[p.slot];
+  ctx.lineWidth = 7;
+  ctx.lineCap = "round";
+  for (let i = 0; i < 2; i++) {
+    const baseX = p.x + (i === 0 ? -10 : 10);
+    const phase = elapsed * 0.62 + i * Math.PI;
+    const kneeX = baseX + Math.sin(phase) * 7;
+    const kneeY = bodyY - 7 - Math.cos(phase) * 3;
+    const footX = kneeX + Math.sin(phase + 0.7) * 7;
+    const footY = bodyY - 19 - Math.cos(phase + 0.7) * 4;
+    ctx.beginPath();
+    ctx.moveTo(baseX, bodyY + 4);
+    ctx.lineTo(kneeX, kneeY);
+    ctx.lineTo(footX, footY);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.ellipse(footX, footY, 6, 3.5, Math.sin(phase) * 0.35, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.lineCap = "butt";
+
+  ctx.fillStyle = p.hitFlash > 0 ? "#ffffff" : COLORS[p.slot];
+  ctx.strokeStyle = COLORS_D[p.slot];
+  ctx.lineWidth = 3;
+  roundRect(bodyX, bodyY, bodyW, bodyH, 8);
+  ctx.fill();
+  ctx.stroke();
+
+  const eyeX = p.x + p.facing * 9;
+  const eyeY = bodyY + 10;
+  ctx.fillStyle = "#fff";
+  ctx.beginPath();
+  ctx.arc(eyeX - 5, eyeY, 4.2, 0, Math.PI * 2);
+  ctx.arc(eyeX + 5, eyeY, 4.2, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = "#222";
+  ctx.beginPath();
+  ctx.arc(eyeX - 5 + p.facing, eyeY, 1.9, 0, Math.PI * 2);
+  ctx.arc(eyeX + 5 + p.facing, eyeY, 1.9, 0, Math.PI * 2);
+  ctx.fill();
+}
+
 function drawPlayer(p) {
   if (!p.alive) return;
   // 巨大化中は足元(p.x,p.y)を基準に拡大して描く
@@ -3045,17 +3132,25 @@ function drawPlayer(p) {
     ctx.globalAlpha = 0.35;
   }
 
-  // 二段ジャンプ時だけ、名前・ガード・攻撃判定を除いたキャラクター本体を1回転。
-  // 右向きは時計回り、左向きは反時計回りで前方宙返りに見せる。
-  const flip = fx.flips[p.slot];
-  ctx.save();
-  if (flip) {
-    const progress = 1 - flip.remaining / DOUBLE_JUMP_FLIP_TICKS;
-    const cy = p.y - PLAYER_H / 2;
-    ctx.translate(p.x, cy);
-    ctx.rotate(progress * Math.PI * 2 * flip.direction);
-    ctx.translate(-p.x, -cy);
-  }
+  if (p.tauntTimer > 0) {
+    drawTauntPose(p);
+  } else {
+    // 二段ジャンプ時だけ、名前・ガード・攻撃判定を除いたキャラクター本体を1回転。
+    // 右向きは時計回り、左向きは反時計回りで前方宙返りに見せる。
+    const flip = fx.flips[p.slot];
+    ctx.save();
+    if (p.crouching) {
+      ctx.translate(p.x, p.y);
+      ctx.scale(1, 0.5);
+      ctx.translate(-p.x, -p.y);
+    }
+    if (flip) {
+      const progress = 1 - flip.remaining / DOUBLE_JUMP_FLIP_TICKS;
+      const cy = p.y - PLAYER_H / 2;
+      ctx.translate(p.x, cy);
+      ctx.rotate(progress * Math.PI * 2 * flip.direction);
+      ctx.translate(-p.x, -cy);
+    }
 
   // 短い足（体より下に。地上を動いているときはちょこちょこ交互に動く）
   const legLen = 8, bodyH = PLAYER_H - legLen;
@@ -3093,7 +3188,8 @@ function drawPlayer(p) {
   ctx.arc(eyeX - 4 + p.facing * 1.5, by + 14, 2, 0, Math.PI * 2);
   ctx.arc(eyeX + 6 + p.facing * 1.5, by + 14, 2, 0, Math.PI * 2);
   ctx.fill();
-  ctx.restore();   // 二段ジャンプ宙返りを解除
+    ctx.restore();   // しゃがみ／二段ジャンプ宙返りを解除
+  }
 
   // 攻撃スイング（通常/必殺で色・大きさ、reach延長、向き別 fwd/up/down）
   const atk = p.attackIsSpecial ? SPECIAL : ATTACK;
@@ -3113,7 +3209,7 @@ function drawPlayer(p) {
         ctx.fillStyle = "#fff"; ctx.fillRect(p.x - th / 6, p.y + 4, th / 3, len);
       } else {
         const bx = p.facing === 1 ? p.x + PLAYER_W / 2 - 6 : p.x - PLAYER_W / 2 - len + 6;
-        const cy = p.y - PLAYER_H / 2 - 4;
+        const cy = p.y - ITEM.beamGroundClearance - th / 2;
         ctx.fillStyle = grad; ctx.fillRect(bx, cy - th / 2, len, th);
         ctx.fillStyle = "#fff"; ctx.fillRect(bx, cy - th / 6, len, th / 3);
       }
@@ -3351,21 +3447,21 @@ function drawHUD(m) {
 }
 
 function controlLinesFor(sourceId) {
-  if (sourceId === "kb0") return ["移動: A / D", "ジャンプ: W / 急降下: S", "攻撃: F（上/下だけ入力で上下攻撃・長押し必殺）", "ガード（卵）: G", "風船: Space"];
-  if (sourceId === "kb1") return ["移動: H(左) / K(右)", "ジャンプ: U(上) / 急降下: J(下)", "攻撃: L（上/下だけ入力で上下攻撃・長押し必殺）", "ガード（卵）: -（ハイフン）", "風船: .（ピリオド）"];
-  return ["移動: スティック/十字", "ジャンプ: A(×) / 急降下: 下", "攻撃: X(□)（上/下入力で上下攻撃・長押し必殺）", "ガード（卵）: L/R", "風船: Y(△)"];
+  if (sourceId === "kb0") return ["移動: A / D", "ジャンプ: W / 下: S（地上でしゃがむ）", "攻撃: F（上/下だけ入力で上下攻撃・長押し必殺）", "ガード（卵）: G", "風船: Space", "アピール: Y"];
+  if (sourceId === "kb1") return ["移動: H(左) / K(右)", "ジャンプ: U / 下: J（地上でしゃがむ）", "攻撃: L（上/下だけ入力で上下攻撃・長押し必殺）", "ガード（卵）: -（ハイフン）", "風船: .（ピリオド）", "アピール: I"];
+  return ["移動: スティック/十字", "ジャンプ: A(×) / 下: しゃがみ・急降下", "攻撃: X(□)（上/下入力で上下攻撃・長押し必殺）", "ガード（卵）: L/R", "風船: Y(△)", "アピール: B(○)"];
 }
 
 // カード表示用の内容（ローカル: 入力ソース別 / オンライン: 自分・相手）
 function cardInfoFor(p) {
   // オンライン操作の説明（オンライン本人 or ローカルのソロ本人）
-  const onlineControls = { label: "あなた", lines: ["移動: A/D または ←/→（W・↑ジャンプ / S・↓急降下）", "攻撃: J（上/下だけ入力で上下攻撃・長押し必殺）", "ガード（卵）: K", "風船: Space（浮上・落下防止）"] };
+  const onlineControls = { label: "あなた", lines: ["移動: A/D または ←/→（W・↑ジャンプ / 下でしゃがみ）", "攻撃: J（上/下だけ入力で上下攻撃・長押し必殺）", "ガード（卵）: K", "風船: Space（浮上・落下防止）", "アピール: Y / B(○)"] };
   if (APP.mode === "online") {
     if (p.slot === NET.myIndex) return onlineControls;
-    return { label: "相手（オンライン）", lines: ["リモートプレイヤー", "", "", "", ""] };
+    return { label: "相手（オンライン）", lines: ["リモートプレイヤー", "", "", "", "", ""] };
   }
   if (p.slot === APP.soloSlot) return onlineControls;
-  if (APP.slots[p.slot] && APP.slots[p.slot].cpu) return { label: "CPU", lines: ["コンピュータ操作", "", "", "", ""] };
+  if (APP.slots[p.slot] && APP.slots[p.slot].cpu) return { label: "CPU", lines: ["コンピュータ操作", "", "", "", "", ""] };
   const src = APP.slots[p.slot].source;
   return { label: src.label, lines: controlLinesFor(src.id) };
 }
@@ -3793,8 +3889,8 @@ window.UCHI = {
   makeMatchState, stepMatch, makePlayer,
   PHYS, ATTACK, SPECIAL, DOWN_ATTACK, GUARD, STAGES, BLAST, STOCKS, ITEM, BALLOON, MOB, rngNext,
   LOBBY_CORNER_CHARACTERS,
-  CRUMBLE, PENDULUM, LAVA, WARP_CD, PLAYER_W, PLAYER_H, BODY_COLLISION, DOUBLE_JUMP_FLIP_TICKS,
-  resolvePlayerCollisions,
+  CRUMBLE, PENDULUM, LAVA, WARP_CD, PLAYER_W, PLAYER_H, BODY_COLLISION, DOUBLE_JUMP_FLIP_TICKS, TAUNT_TICKS,
+  resolvePlayerCollisions, pH,
   fx,
   NET, netHost, netJoin, netHostStart, encodeSample, decodeSample,
   makeCpuSource, cpuThink,
