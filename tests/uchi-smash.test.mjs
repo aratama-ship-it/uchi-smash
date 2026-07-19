@@ -114,7 +114,7 @@ test("release constants and input codec stay coherent", () => {
   const { UCHI: game } = sandbox;
   assert.match(HTML, /<title>PYGMIX BONBON<\/title>/);
   assert.match(HTML, /ctx\.fillText\("PYGMIX BONBON", W \/ 2, 120\)/);
-  assert.match(HTML, /const GAME_VERSION = "0\.9\.4"/);
+  assert.match(HTML, /const GAME_VERSION = "0\.9\.5"/);
   assert.match(HTML, /リーチ・速度・ビーム・巨大化・風船補充の5種類/);
   assert.equal(game.PHYS.gravity, 0.495);
   assert.equal(game.STAGES.length, 6);
@@ -127,6 +127,11 @@ test("release constants and input codec stay coherent", () => {
   assert.ok(flowTower);
   assert.equal(flowTower.platforms.filter(platform => platform.conveyor).length, 2);
   assert.equal(flowTower.walls.length, 2);
+  assert.equal(flowTower.wallSpeed, 0.00396);
+  assert.equal(flowTower.walls.every(wall => wall.height === 90), true);
+  const flowGround = flowTower.platforms.filter(platform => platform.main);
+  assert.equal(flowTower.walls[0].x, Math.min(...flowGround.map(platform => platform.x)));
+  assert.equal(flowTower.walls[1].x + flowTower.walls[1].w, Math.max(...flowGround.map(platform => platform.x + platform.w)));
   assert.ok(Math.max(...flowTower.platforms.map(platform => platform.y)) - Math.min(...flowTower.platforms.map(platform => platform.y)) >= 300);
   assert.equal(typeof sandbox.makeKeyboardSource(0).sample, "function");
   assert.equal(typeof sandbox.makeGamepadSource(0).sample, "function");
