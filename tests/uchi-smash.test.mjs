@@ -12,7 +12,11 @@ function loadGame() {
   assert.ok(gameScript, "inline game script should exist");
 
   const noop = () => {};
-  const context2d = new Proxy({}, {
+  const makeGradient = () => ({ addColorStop: noop });
+  const context2d = new Proxy({
+    createLinearGradient: makeGradient,
+    createRadialGradient: makeGradient,
+  }, {
     get(target, property) {
       if (!(property in target)) target[property] = noop;
       return target[property];
@@ -114,11 +118,12 @@ test("release constants and input codec stay coherent", () => {
   const { UCHI: game } = sandbox;
   assert.match(HTML, /<title>PYGMIX BONBON<\/title>/);
   assert.match(HTML, /ctx\.fillText\("PYGMIX BONBON", W \/ 2, 120\)/);
-  assert.match(HTML, /const GAME_VERSION = "0\.9\.11"/);
+  assert.match(HTML, /const GAME_VERSION = "0\.9\.13"/);
   assert.match(HTML, /リーチ・速度・ビーム・巨大化・風船補充の5種類/);
   assert.equal(game.PHYS.gravity, 0.495);
   assert.equal(game.DOWN_ATTACK.damageMult, 1.2);
   assert.equal(game.DOWN_ATTACK.groundedUpKbMult, 1.3);
+  assert.equal(game.BODY_COLLISION.passes, 32);
   assert.equal(game.STAGES.length, 6);
   assert.equal(new Set(game.STAGES.map(stage => stage.name)).size, 6);
   assert.equal(game.STAGES.some(stage => stage.name === "エレベーター"), false);
@@ -151,7 +156,7 @@ test("release constants and input codec stay coherent", () => {
   assert.equal(flowTower.walls[0].x, Math.min(...flowGround.map(platform => platform.x)));
   assert.equal(flowTower.walls[1].x + flowTower.walls[1].w, Math.max(...flowGround.map(platform => platform.x + platform.w)));
   assert.ok(Math.max(...flowTower.platforms.map(platform => platform.y)) - Math.min(...flowTower.platforms.map(platform => platform.y)) >= 300);
-  const skyIslands = game.STAGES.find(stage => stage.name === "そらの島");
+  const skyIslands = game.STAGES.find(stage => stage.name === "うちゅう");
   assert.equal(skyIslands.gravityScale, 0.5);
   assert.equal(skyIslands.moveScale, 0.8);
   assert.equal(skyIslands.itemArc, true);
@@ -159,6 +164,8 @@ test("release constants and input codec stay coherent", () => {
   assert.equal("moon" in skyIslands.theme, false);
   assert.equal(skyIslands.ceiling.w, 1280 * 0.7);
   assert.equal(skyIslands.ceiling.x, (1280 - skyIslands.ceiling.w) / 2);
+  assert.equal(skyIslands.ceiling.segments, 14);
+  assert.equal(skyIslands.ceiling.breakSpeed, 10.5);
   assert.equal(skyIslands.platforms.length, 13);
   assert.equal(typeof sandbox.makeKeyboardSource(0).sample, "function");
   assert.equal(typeof sandbox.makeGamepadSource(0).sample, "function");
@@ -168,10 +175,10 @@ test("release constants and input codec stay coherent", () => {
   }
 });
 
-test("sky islands apply half gravity to normal and fast falling", () => {
+test("space stage applies half gravity to normal and fast falling", () => {
   const sandbox = loadGame();
   const { UCHI: game } = sandbox;
-  const stageIndex = game.STAGES.findIndex(stage => stage.name === "そらの島");
+  const stageIndex = game.STAGES.findIndex(stage => stage.name === "うちゅう");
   const match = game.makeMatchState([0, 1], stageIndex);
   const player = match.players[0];
   const neutral = {
@@ -193,10 +200,10 @@ test("sky islands apply half gravity to normal and fast falling", () => {
   assert.equal(player.vy, 1 + game.PHYS.fastFallGravity * 0.5);
 });
 
-test("sky islands restrain horizontal movement and block jumps at the central ceiling", () => {
+test("space stage restrains horizontal movement and has a breakable central ceiling", () => {
   const sandbox = loadGame();
   const { UCHI: game } = sandbox;
-  const skyIndex = game.STAGES.findIndex(stage => stage.name === "そらの島");
+  const skyIndex = game.STAGES.findIndex(stage => stage.name === "うちゅう");
   const sky = game.makeMatchState([0, 1], skyIndex);
   const normal = game.makeMatchState([0, 1], 0);
   const neutral = {
@@ -222,6 +229,8 @@ test("sky islands restrain horizontal movement and block jumps at the central ce
   assert.equal(sky.players[0].vx, game.PHYS.airAccel * 0.8);
 
   const ceiling = sky.stage.ceiling;
+  assert.equal(sky.ceilingSegments.length, ceiling.segments);
+  assert.equal(sky.ceilingSegments.every(segment => !segment.broken), true);
   const player = sky.players[0];
   player.x = 640;
   player.y = ceiling.y + ceiling.h + game.PLAYER_H + 2;
@@ -233,6 +242,38 @@ test("sky islands restrain horizontal movement and block jumps at the central ce
   assert.equal(player.y, ceiling.y + ceiling.h + game.PLAYER_H);
   assert.equal(player.vy, 0);
   assert.equal(events.filter(event => event.type === "ceiling-hit").length, 1);
+  assert.equal(sky.ceilingSegments.some(segment => segment.broken), false);
+
+  // 強い衝突は接触区画を壊し、上昇を続けて穴を通過できる。
+  player.x = 640;
+  player.y = ceiling.y + ceiling.h + game.PLAYER_H + 2;
+  player.vy = -(ceiling.breakSpeed + 3);
+  player.onGround = false;
+  const breakEvents = game.stepMatch(sky, [neutral, neutral]);
+  const broken = breakEvents.filter(event => event.type === "ceiling-break");
+  assert.ok(broken.length >= 1);
+  assert.ok(broken.every(event => event.impactSpeed >= ceiling.breakSpeed));
+  assert.ok(player.vy < 0);
+  const brokenSegment = sky.ceilingSegments.find(segment => segment.broken);
+  assert.ok(brokenSegment);
+  sandbox.handleEvents(breakEvents);
+  assert.ok(game.fx.particles.length >= broken.length * 22);
+  assert.ok(game.fx.shake >= 13);
+
+  game.APP.match = sky;
+  game.APP.phase = "match";
+  assert.doesNotThrow(() => game.renderNow());
+
+  player.x = brokenSegment.x + brokenSegment.w / 2;
+  player.y = ceiling.y + ceiling.h + game.PLAYER_H + 2;
+  player.vy = -6;
+  player.onGround = false;
+  const passEvents = game.stepMatch(sky, [neutral, neutral]);
+  assert.equal(passEvents.some(event => event.type === "ceiling-hit"), false);
+  assert.ok(player.vy < 0);
+
+  const freshSky = game.makeMatchState([0, 1], skyIndex);
+  assert.equal(freshSky.ceilingSegments.every(segment => !segment.broken), true);
 
   player.x = 80;
   player.y = ceiling.y + ceiling.h + game.PLAYER_H + 2;
@@ -242,10 +283,10 @@ test("sky islands restrain horizontal movement and block jumps at the central ce
   assert.ok(player.vy < 0, "the side opening should remain passable");
 });
 
-test("sky island items enter from the side and vary their landing spots", () => {
+test("space stage items enter from the side and vary their landing spots", () => {
   const sandbox = loadGame();
   const { UCHI: game } = sandbox;
-  const stageIndex = game.STAGES.findIndex(stage => stage.name === "そらの島");
+  const stageIndex = game.STAGES.findIndex(stage => stage.name === "うちゅう");
   const match = game.makeMatchState([0, 1], stageIndex);
   const neutral = {
     left: false, right: false, up: false, down: false,
@@ -364,6 +405,78 @@ test("only the double jump starts one somersault", () => {
   assert.equal(game.fx.flips[player.slot].remaining, game.DOUBLE_JUMP_FLIP_TICKS);
   for (let i = 0; i < game.DOUBLE_JUMP_FLIP_TICKS; i++) sandbox.updateFx();
   assert.equal(game.fx.flips[player.slot], null);
+});
+
+test("player bodies push apart horizontally and cannot overlap", () => {
+  const { UCHI: game } = loadGame();
+  const match = game.makeMatchState([0, 1, 2, 3], 0);
+  const neutral = {
+    left: false, right: false, up: false, down: false,
+    jump: false, attack: false, guard: false, balloon: false, start: false,
+  };
+  match.countdown = 0;
+  match.itemTimer = 9999;
+  for (const player of match.players) {
+    player.x = 640;
+    player.y = 560;
+    player.vx = player.slot % 2 === 0 ? 3 : -3;
+    player.vy = 0;
+    player.onGround = true;
+    player.invuln = 9999;
+  }
+
+  game.stepMatch(match, match.players.map(() => neutral));
+
+  const ordered = [...match.players].sort((a, b) => a.x - b.x);
+  for (let i = 1; i < ordered.length; i++) {
+    assert.ok(ordered[i].x - ordered[i - 1].x >= game.PLAYER_W - 1e-9);
+  }
+  assert.equal(new Set(match.players.map(player => Math.round(player.x * 1000))).size, 4);
+});
+
+test("giant players use their expanded body size for collisions", () => {
+  const { UCHI: game } = loadGame();
+  const match = game.makeMatchState([0, 1], 0);
+  const [giant, normal] = match.players;
+  giant.itemType = "giant";
+  giant.itemTimer = 9999;
+  giant.x = normal.x = 640;
+  giant.y = normal.y = 560;
+  giant.vx = normal.vx = 0;
+  giant.vy = normal.vy = 0;
+  giant.onGround = normal.onGround = true;
+
+  game.resolvePlayerCollisions(match.players);
+
+  const requiredDistance = game.PLAYER_W * 0.5 * 1.6 + game.PLAYER_W * 0.5;
+  assert.ok(Math.abs(giant.x - normal.x) >= requiredDistance);
+});
+
+test("a falling player lands on a grounded player's head", () => {
+  const { UCHI: game } = loadGame();
+  const match = game.makeMatchState([0, 1], 0);
+  const neutral = {
+    left: false, right: false, up: false, down: false,
+    jump: false, attack: false, guard: false, balloon: false, start: false,
+  };
+  const upper = match.players[0], lower = match.players[1];
+  match.countdown = 0;
+  match.itemTimer = 9999;
+  upper.x = lower.x = 640;
+  upper.y = 514;
+  upper.vx = upper.vy = 0;
+  upper.onGround = false;
+  lower.y = 560;
+  lower.vx = lower.vy = 0;
+  lower.onGround = true;
+  upper.invuln = lower.invuln = 9999;
+
+  game.stepMatch(match, [neutral, neutral]);
+
+  assert.ok(upper.y <= lower.y - game.PLAYER_H);
+  assert.equal(upper.vy, lower.vy);
+  assert.equal(upper.onGround, true);
+  assert.equal(upper.airJumps, game.PHYS.airJumps);
 });
 
 test("down attacks deal 1.2x damage and launch vertically based on grounded state", () => {

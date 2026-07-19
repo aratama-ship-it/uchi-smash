@@ -373,9 +373,14 @@ const GUARD = {
 
 // ★オンライン同期の要: 決定論simに影響する変更(stepMatch/ステージ/物理/定数など)をしたら
 //   必ずこの版数を上げること。オンライン接続時に両者で照合し、食い違えば試合させず弾く。
-const GAME_VERSION = "0.9.11";
+const GAME_VERSION = "0.9.13";
 
 const PLAYER_W = 36, PLAYER_H = 48;
+// キャラクター同士の物理衝突。複数人が同時に密集しても、反復して体の重なりを解消する。
+const BODY_COLLISION = {
+  passes: 32,
+  separationEpsilon: 0.01,
+};
 const DOUBLE_JUMP_FLIP_TICKS = 30;  // 二段ジャンプ時の宙返り時間（0.5秒）
 const STOCKS = 3;
 const RESPAWN_INVULN = 150;
@@ -421,6 +426,21 @@ const GIANT = {
 // プレイヤーの実効サイズ（巨大化中は拡大）
 function pHW(p) { return p.itemType === "giant" ? PLAYER_W * 0.5 * GIANT.size : PLAYER_W * 0.5; }  // 半幅
 function pH(p)  { return p.itemType === "giant" ? PLAYER_H * GIANT.size : PLAYER_H; }               // 高さ
+
+// 試合ごとに独立した天井区画を作る。STAGES本体は書き換えず、再戦時には全区画が復元される。
+function makeCeilingSegments(ceiling) {
+  if (!ceiling) return [];
+  const count = Math.max(1, ceiling.segments | 0);
+  const segmentW = ceiling.w / count;
+  return Array.from({ length: count }, (_, index) => ({
+    index,
+    x: ceiling.x + segmentW * index,
+    y: ceiling.y,
+    w: segmentW,
+    h: ceiling.h,
+    broken: false,
+  }));
+}
 
 // ドスン風モブ（stage.mob フラグのあるステージ）: 風船で上昇→上で割れて落下、を繰り返す四角。
 //   触れたプレイヤーを弾き飛ばす（無敵：プレイヤーの攻撃は効かない）
@@ -505,12 +525,13 @@ const STAGES = [
     wallSpeed: 0.00396,   // 旧速度0.006の66%（三角波0..1、約4.2秒で上下反転）
   },
   {
-    // 宇宙空間の空中島群: 重力50%。長い滞空でも移動距離が通常面に近づくよう横移動を抑える。
-    name: "そらの島",
+    // うちゅう: 重力50%の空中島群。長い滞空でも移動距離が通常面に近づくよう横移動を抑える。
+    name: "うちゅう",
     gravityScale: 0.5,
     moveScale: 0.8,                  // 半重力で伸びた空中移動を抑えつつ、操作の機敏さは残す
     itemArc: true,
-    ceiling: { x: 192, y: 24, w: 896, h: 32 },   // 画面中央・幅70%。上段からのジャンプを受け止める
+    // 画面中央・幅70%の破壊可能な天井。強い上昇衝突で接触した区画を突き破る。
+    ceiling: { x: 192, y: 24, w: 896, h: 32, segments: 14, breakSpeed: 10.5, breakVelocityRetain: 0.62 },
     theme: { sky:["#02030b","#090b24","#11183b"], mountain:"rgba(0,0,0,0)", space:true,
              dirt:"#465060", grass:"#9db2be", grass2:"#788d9b", plat:"#5d7180", platTop:"#a8c4ce",
              ceiling:"#33445f", ceilingEdge:"#9fcbea" },
@@ -891,6 +912,7 @@ function makeMatchState(slotIndices, stageIndex) {
     rng: seed,                    // xorshift32 の状態
     items: [],                    // 落下中/設置中のアイテム
     itemTimer: ITEM.firstSpawn,   // 次の出現までのtick
+    ceilingSegments: makeCeilingSegments(stage.ceiling), // 破壊状態を持つ天井区画
     players: slotIndices.map(s => makePlayer(s, stage)),
   };
   selectWarpPair(state);          // 試合開始時の一対を決定論的に選ぶ
@@ -1150,6 +1172,72 @@ function rectsOverlap(ax, ay, aw, ah, bx, by, bw, bh) {
   return ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by;
 }
 
+// キャラクター同士をAABBで押し分ける。最小の重なり軸を選ぶため、
+// 横からは押し合い、上から落ちたときは相手の頭上で止まる。
+function resolvePlayerCollisions(players) {
+  const active = players.filter(p => p.alive);
+  for (let pass = 0; pass < BODY_COLLISION.passes; pass++) {
+    let adjusted = false;
+    for (let i = 0; i < active.length; i++) {
+      for (let j = i + 1; j < active.length; j++) {
+        const a = active[i], b = active[j];
+        const aHW = pHW(a), bHW = pHW(b), aH = pH(a), bH = pH(b);
+        const overlapX = Math.min(a.x + aHW, b.x + bHW) - Math.max(a.x - aHW, b.x - bHW);
+        const overlapY = Math.min(a.y, b.y) - Math.max(a.y - aH, b.y - bH);
+        if (overlapX <= 0 || overlapY <= 0) continue;
+        adjusted = true;
+
+        if (overlapX <= overlapY) {
+          // 中心が完全に一致したときもslot順で方向を固定し、オンライン決定論を保つ。
+          const aIsLeft = a.x < b.x || (a.x === b.x && a.slot < b.slot);
+          const left = aIsLeft ? a : b, right = aIsLeft ? b : a;
+          const shift = (overlapX + BODY_COLLISION.separationEpsilon) * 0.5;
+          left.x -= shift;
+          right.x += shift;
+          // 互いへ向かう速度だけを完全非弾性衝突として共有し、跳ね返りを起こさない。
+          if (left.vx > right.vx) {
+            const sharedVx = (left.vx + right.vx) * 0.5;
+            left.vx = sharedVx;
+            right.vx = sharedVx;
+          }
+        } else {
+          const aCenterY = a.y - aH * 0.5, bCenterY = b.y - bH * 0.5;
+          const aIsUpper = aCenterY < bCenterY || (aCenterY === bCenterY && a.slot < b.slot);
+          const upper = aIsUpper ? a : b, lower = aIsUpper ? b : a;
+          const upperFixed = upper.onGround;
+          const lowerFixed = lower.onGround;
+          const separation = overlapY + BODY_COLLISION.separationEpsilon;
+
+          // 足場に立っている側は動かさず、空中側だけを押し出す。
+          if (lowerFixed && !upperFixed) upper.y -= separation;
+          else if (upperFixed && !lowerFixed) lower.y += separation;
+          else {
+            upper.y -= separation * 0.5;
+            lower.y += separation * 0.5;
+          }
+
+          const closingVy = upper.vy - lower.vy;
+          if (closingVy > 0) {
+            if (lowerFixed && !upperFixed) upper.vy = lower.vy;
+            else if (upperFixed && !lowerFixed) lower.vy = upper.vy;
+            else {
+              const sharedVy = (upper.vy + lower.vy) * 0.5;
+              upper.vy = sharedVy;
+              lower.vy = sharedVy;
+            }
+          }
+          // 地上の相手へ上から乗った場合は、通常の床と同じくジャンプ可能にする。
+          if (lowerFixed && !upperFixed && closingVy >= 0) {
+            upper.onGround = true;
+            upper.airJumps = PHYS.airJumps;
+          }
+        }
+      }
+    }
+    if (!adjusted) break;
+  }
+}
+
 // 1tick 進める。決定論的（state と samples のみに依存）
 function stepMatch(state, samples) {
   const events = [];
@@ -1235,7 +1323,7 @@ function stepMatch(state, samples) {
     const dir = (canAct && !locked) ? ((cur.right ? 1 : 0) - (cur.left ? 1 : 0)) : 0;
     if (dir !== 0) p.facing = dir;
 
-    // 水平移動（speedアイテムで1.5倍 / giantで1/2）。空島は長い滞空ぶんだけ横移動を抑える。
+    // 水平移動（speedアイテムで1.5倍 / giantで1/2）。うちゅうは長い滞空ぶんだけ横移動を抑える。
     const moveScale = state.stage.moveScale || 1;
     const spd = p.itemType === "speed" ? ITEM.speedMult : p.itemType === "giant" ? GIANT.speedMult : 1;
     const maxRun = PHYS.maxRun * spd * moveScale, maxAir = PHYS.maxAir * spd * moveScale;
@@ -1349,16 +1437,31 @@ function stepMatch(state, samples) {
     p.x += p.vx;
     p.y += p.vy;
 
-    // 空島の天井: 下から上昇した時だけ下面で止める。復活降下は上から通り抜けられる。
+    // うちゅうの天井: 弱い上昇は下面で止め、強い上昇は接触した区画を破壊して突き抜ける。
+    // 復活降下は従来どおり上から通り抜けられる。
     const ceiling = state.stage.ceiling;
     if (ceiling && p.vy < 0 && !p.respawning) {
       const ceilingBottom = ceiling.y + ceiling.h;
       const prevTop = prevY - pH(p), currentTop = p.y - pH(p);
-      const overlapsX = p.x + pHW(p) > ceiling.x && p.x - pHW(p) < ceiling.x + ceiling.w;
-      if (overlapsX && prevTop >= ceilingBottom && currentTop <= ceilingBottom) {
-        p.y = ceilingBottom + pH(p);
-        p.vy = 0;
-        events.push({ type: "ceiling-hit", x: p.x, y: ceilingBottom, slot: p.slot });
+      if (prevTop >= ceilingBottom && currentTop <= ceilingBottom) {
+        const hitSegments = state.ceilingSegments.filter(segment =>
+          !segment.broken && p.x + pHW(p) > segment.x && p.x - pHW(p) < segment.x + segment.w
+        );
+        if (hitSegments.length) {
+          const impactSpeed = -p.vy;
+          if (impactSpeed >= ceiling.breakSpeed) {
+            for (const segment of hitSegments) {
+              segment.broken = true;
+              events.push({ type: "ceiling-break", x: segment.x + segment.w / 2, y: ceilingBottom,
+                w: segment.w, slot: p.slot, impactSpeed });
+            }
+            p.vy *= ceiling.breakVelocityRetain;
+          } else {
+            p.y = ceilingBottom + pH(p);
+            p.vy = 0;
+            events.push({ type: "ceiling-hit", x: p.x, y: ceilingBottom, slot: p.slot, impactSpeed });
+          }
+        }
       }
     }
 
@@ -1535,7 +1638,7 @@ function stepMatch(state, samples) {
         const roll = rngNext(state) * 9;
         const type = roll < 2 ? "reach" : roll < 4 ? "speed" : roll < 6 ? "beam" : roll < 8 ? "giant" : "refill";
         if (state.stage.itemArc) {
-          // 空島だけ: 13枚の足場から着地点を抽選し、近い画面端から放物線で投げ込む。
+          // うちゅうだけ: 13枚の足場から着地点を抽選し、近い画面端から放物線で投げ込む。
           const targetPlatformIndex = Math.floor(rngNext(state) * state.platforms.length);
           const targetPlatform = state.platforms[targetPlatformIndex];
           const landingMargin = Math.min(ITEM.radius + 8, targetPlatform.w * 0.25);
@@ -1620,6 +1723,10 @@ function stepMatch(state, samples) {
     if (state.lava.length) updateLava(state, events);
     if (state.warps.length) updateWarps(state, events);
   }
+
+  // --- キャラクター同士の物理衝突 ---
+  // ワープなど、このtick内の位置変更がすべて済んでから最終位置を押し分ける。
+  resolvePlayerCollisions(ps);
 
   // --- 場外KO ---
   for (const p of ps) {
@@ -2347,6 +2454,20 @@ function handleEvents(events) {
           color: "#8a8aa0",
         });
       }
+    } else if (ev.type === "ceiling-break") {
+      fx.shake = Math.max(fx.shake, 13);
+      fx.rings.push({ x: ev.x, y: ev.y, t: 0, color: "#9fcbea" });
+      for (let k = 0; k < 22; k++) {
+        fx.particles.push({
+          x: ev.x + (Math.random() - 0.5) * ev.w,
+          y: ev.y - Math.random() * 10,
+          vx: (Math.random() - 0.5) * 9,
+          vy: -Math.random() * 7 + 1,
+          life: 20 + Math.random() * 14,
+          size: 3 + Math.random() * 5,
+          color: Math.random() < 0.45 ? "#9fcbea" : "#46566f",
+        });
+      }
     } else if (ev.type === "special-hit") {
       fx.shake = 16;
       fx.koFlash = 8;
@@ -2499,7 +2620,7 @@ function drawBackground(stage) {
   g.addColorStop(1, th.sky[2]);
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, W, H);
-  // そらの島は地表を置かず、星雲と星だけで宇宙空間の奥行きを作る。
+  // うちゅうは地表を置かず、星雲と星だけで宇宙空間の奥行きを作る。
   // 固定式で配置し、対戦シミュレーション用の乱数には一切触れない。
   if (th.space) {
     ctx.save();
@@ -2556,20 +2677,27 @@ function drawBackground(stage) {
   ctx.fill();
 }
 
-function drawCeiling(ceiling, theme) {
+function drawCeiling(ceiling, theme, liveSegments = null) {
   if (!ceiling) return;
-  const { x, y, w, h } = ceiling;
+  const segments = liveSegments || makeCeilingSegments(ceiling);
   ctx.save();
-  ctx.fillStyle = theme.ceiling || theme.plat;
-  ctx.fillRect(x, y, w, h);
-  ctx.fillStyle = theme.ceilingEdge || theme.platTop;
-  ctx.fillRect(x, y + h - 6, w, 6);
-  ctx.fillStyle = "rgba(255,255,255,0.12)";
-  ctx.fillRect(x, y, w, 4);
-  ctx.strokeStyle = "rgba(190,225,255,0.32)";
-  ctx.lineWidth = 2;
-  for (let sx = x + 56; sx < x + w; sx += 112) {
-    ctx.beginPath(); ctx.moveTo(sx, y + 4); ctx.lineTo(sx, y + h - 7); ctx.stroke();
+  for (const segment of segments) {
+    if (segment.broken) continue;
+    const inset = 1;
+    const x = segment.x + inset, y = segment.y, w = segment.w - inset * 2, h = segment.h;
+    ctx.fillStyle = theme.ceiling || theme.plat;
+    ctx.fillRect(x, y, w, h);
+    ctx.fillStyle = theme.ceilingEdge || theme.platTop;
+    ctx.fillRect(x, y + h - 6, w, 6);
+    ctx.fillStyle = "rgba(255,255,255,0.12)";
+    ctx.fillRect(x, y, w, 4);
+    // 区画の継ぎ目と補強線で、壊れる単位を視覚的に伝える。
+    ctx.strokeStyle = "rgba(190,225,255,0.30)";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(x + 8, y + 5); ctx.lineTo(x + w - 8, y + h - 8);
+    ctx.moveTo(x + w - 8, y + 5); ctx.lineTo(x + 8, y + h - 8);
+    ctx.stroke();
   }
   ctx.restore();
 }
@@ -3283,7 +3411,7 @@ function drawMatch() {
   }
   drawBackground(m.stage);
   drawStage(m.platforms, m.stage.theme);
-  drawCeiling(m.stage.ceiling, m.stage.theme);
+  drawCeiling(m.stage.ceiling, m.stage.theme, m.ceilingSegments);
   if (m.risingLava) drawPit(m);
   if (m.lava.length) drawLavaZones(m.lava);
   if (m.warps.length) drawWarps(m.warps, m.warpOn, m.warpTimer);
@@ -3567,7 +3695,7 @@ function drawResult() {
   const rPlats = APP.match ? APP.match.platforms : rStage.platforms;
   drawBackground(rStage);
   drawStage(rPlats, rStage.theme);
-  drawCeiling(rStage.ceiling, rStage.theme);
+  drawCeiling(rStage.ceiling, rStage.theme, APP.match ? APP.match.ceilingSegments : null);
   if (APP.match && APP.match.walls.length) drawWalls(APP.match.walls, APP.match.groundY, rStage.theme);
   else if (!APP.match && rStage.walls) { const s = wallSnapshot(rStage, 0.75); drawWalls(s.walls, s.groundY, rStage.theme); }
   ctx.fillStyle = "rgba(0,0,0,0.6)";
@@ -3665,7 +3793,8 @@ window.UCHI = {
   makeMatchState, stepMatch, makePlayer,
   PHYS, ATTACK, SPECIAL, DOWN_ATTACK, GUARD, STAGES, BLAST, STOCKS, ITEM, BALLOON, MOB, rngNext,
   LOBBY_CORNER_CHARACTERS,
-  CRUMBLE, PENDULUM, LAVA, WARP_CD, PLAYER_W, PLAYER_H, DOUBLE_JUMP_FLIP_TICKS,
+  CRUMBLE, PENDULUM, LAVA, WARP_CD, PLAYER_W, PLAYER_H, BODY_COLLISION, DOUBLE_JUMP_FLIP_TICKS,
+  resolvePlayerCollisions,
   fx,
   NET, netHost, netJoin, netHostStart, encodeSample, decodeSample,
   makeCpuSource, cpuThink,
