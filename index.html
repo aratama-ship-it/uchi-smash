@@ -490,7 +490,7 @@ const GUARD = {
 
 // ★オンライン同期の要: 決定論simに影響する変更(stepMatch/ステージ/物理/定数など)をしたら
 //   必ずこの版数を上げること。オンライン接続時に両者で照合し、食い違えば試合させず弾く。
-const GAME_VERSION = "0.9.41";
+const GAME_VERSION = "0.9.43";
 
 const PLAYER_W = 36, PLAYER_H = 48;
 // キャラクター同士の物理衝突。複数人が同時に密集しても、反復して体の重なりを解消する。
@@ -611,6 +611,9 @@ const PENGUIN = {
   damage: 11,
   kbBase: 5.8,
   kbScale: 0.11,
+  guardChipDamage: 1,   // ガード成功時はごく小さな削りだけ受ける
+  guardCost: 24,        // 卵の耐久は通常攻撃より少なめに消費
+  guardInvuln: 12,      // 反転直後の再接触による多段反射を防ぐ
 };
 
 // 45度ふっとばしの係数（√2/2）。Math.cos/sinを避け決定論を担保
@@ -1575,24 +1578,43 @@ function updatePenguin(state, events, playerMotionOrigins = []) {
       player.vy = PENGUIN.stompBounce;
       player.onGround = false;
       player.crouching = false;
-      if (!turnedThisTick) {
-        penguin.dir *= -1;
-        turnedThisTick = true;
-        player.highlights.penguinTurns++;
-        events.push({ type: "penguin-turn", x: penguin.x, y: penguin.y - PENGUIN.chargeHeight,
-          dir: penguin.dir, slot: player.slot });
-      }
+      // 上から踏んでもプレイヤーが跳ねるだけ。進行方向を変えられるのは卵ガードだけ。
       continue;
     }
     if (player.invuln > 0) continue;
     if (!rectsOverlap(penguin.x - PENGUIN.width / 2, penguin.y - PENGUIN.chargeHeight,
                       PENGUIN.width, PENGUIN.chargeHeight,
                       player.x - pHW(player), player.y - pH(player), pHW(player) * 2, pH(player))) continue;
+    // 突進を卵ガードで受けると、耐久と1ダメージだけを支払ってペンギンを反転させる。
+    // 残り耐久が足りない場合は卵が割れ、そのまま従来の突進ダメージを受ける。
+    if (player.guarding) {
+      player.guardHp -= PENGUIN.guardCost;
+      if (player.guardHp > 0) {
+        player.damage += PENGUIN.guardChipDamage;
+        player.hitFlash = 4;
+        player.invuln = PENGUIN.guardInvuln;
+        player.highlights.blocks++;
+        if (!turnedThisTick) {
+          penguin.dir *= -1;
+          turnedThisTick = true;
+          player.highlights.penguinTurns++;
+        }
+        state.hitstop = 4;
+        events.push({ type: "penguin-guard", x: player.x, y: player.y - pH(player) / 2,
+          dir: penguin.dir, slot: player.slot, dmg: player.damage, guardHp: player.guardHp });
+        continue;
+      }
+      player.guardHp = 0;
+      player.guarding = false;
+      player.guardBreakFlash = 20;
+      player.hitstun = GUARD.breakStun;
+      events.push({ type: "guardbreak", x: player.x, y: player.y - pH(player) / 2, slot: player.slot });
+    }
     player.damage += PENGUIN.damage;
     const knockback = PENGUIN.kbBase + player.damage * PENGUIN.kbScale;
     player.vx = knockback * penguin.dir;
     player.vy = -knockback * 0.42;
-    player.hitstun = Math.floor(5 + knockback * 1.7);
+    player.hitstun = Math.max(player.hitstun, Math.floor(5 + knockback * 1.7));
     player.onGround = false;
     player.crouching = false;
     player.tauntTimer = 0;
@@ -3107,6 +3129,85 @@ function applyCpuUnstuckPreviewFromUrl() {
 }
 applyCpuUnstuckPreviewFromUrl();
 
+// ペンギンのガード反射QA用URL（?preview=penguin-guard）。P1が卵を構え、
+// 左から来る腹ばい突進を1ダメージで跳ね返す場面を直接確認できる。
+function applyPenguinGuardPreviewFromUrl() {
+  const params = new URLSearchParams(location.search);
+  if (params.get("preview") !== "penguin-guard") return;
+  const previewMatch = makeMatchState([0, 1], APP.stageIndex);
+  const penguin = previewMatch.penguin;
+  if (!penguin) return;
+  previewMatch.countdown = 0;
+  previewMatch.tick = COUNTDOWN_TICKS + 60;
+  previewMatch.itemTimer = 9999;
+  const defender = previewMatch.players[0];
+  defender.x = 640;
+  defender.y = mainSurfaceYAt(previewMatch, defender.x);
+  defender.vx = 0; defender.vy = 0; defender.onGround = true; defender.invuln = 0;
+  defender.guardHp = GUARD.max;
+  const observer = previewMatch.players[1];
+  observer.x = 1020;
+  observer.y = mainSurfaceYAt(previewMatch, observer.x);
+  observer.vx = 0; observer.vy = 0; observer.onGround = true; observer.invuln = 9999;
+  const mains = previewMatch.platforms.filter(platform => platform.main);
+  penguin.state = "charge";
+  penguin.x = defender.x - 210;
+  penguin.y = mainSurfaceYAt(previewMatch, penguin.x);
+  penguin.dir = 1;
+  penguin.platformIndex = -1;
+  penguin.lane = "main";
+  penguin.airborne = false;
+  penguin.vy = 0;
+  penguin.exitLeftEdge = Math.min(...mains.map(platform => platform.x));
+  penguin.exitRightEdge = Math.max(...mains.map(platform => platform.x + platform.w));
+  attachPreviewInputs(previewMatch);
+  APP.slots[defender.slot] = {
+    source: { sample: () => ({ ...NEUTRAL, guard: true }) },
+    cpu: false,
+  };
+  APP.match = previewMatch;
+  APP.phase = "match";
+}
+applyPenguinGuardPreviewFromUrl();
+
+// ペンギン踏みつけQA用URL（?preview=penguin-stomp）。上から踏むとプレイヤーだけが
+// 跳ね、ペンギンは元の方向へ走り続ける場面を直接確認できる。
+function applyPenguinStompPreviewFromUrl() {
+  const params = new URLSearchParams(location.search);
+  if (params.get("preview") !== "penguin-stomp") return;
+  const previewMatch = makeMatchState([0, 1], APP.stageIndex);
+  const penguin = previewMatch.penguin;
+  if (!penguin) return;
+  previewMatch.countdown = 0;
+  previewMatch.tick = COUNTDOWN_TICKS + 60;
+  previewMatch.itemTimer = 9999;
+  const jumper = previewMatch.players[0];
+  const observer = previewMatch.players[1];
+  const mains = previewMatch.platforms.filter(platform => platform.main);
+  penguin.state = "charge";
+  penguin.x = 520;
+  penguin.y = mainSurfaceYAt(previewMatch, penguin.x);
+  penguin.dir = 1;
+  penguin.platformIndex = -1;
+  penguin.lane = "main";
+  penguin.airborne = false;
+  penguin.vy = 0;
+  penguin.exitLeftEdge = Math.min(...mains.map(platform => platform.x));
+  penguin.exitRightEdge = Math.max(...mains.map(platform => platform.x + platform.w));
+  const contactX = penguin.x + PENGUIN.speed;
+  const contactY = mainSurfaceYAt(previewMatch, contactX);
+  jumper.x = contactX;
+  jumper.y = contactY - PENGUIN.chargeHeight - 4;
+  jumper.vx = 0; jumper.vy = 4; jumper.onGround = false; jumper.invuln = 0;
+  observer.x = 1020;
+  observer.y = mainSurfaceYAt(previewMatch, observer.x);
+  observer.vx = 0; observer.vy = 0; observer.onGround = true; observer.invuln = 9999;
+  attachPreviewInputs(previewMatch);
+  APP.match = previewMatch;
+  APP.phase = "match";
+}
+applyPenguinStompPreviewFromUrl();
+
 /* ==================== オンライン対戦（2〜4人・入力同期lockstep） ====================
  * 方式: delay-based lockstep
  *  - 両クライアントが同一の決定論的sim(stepMatch)を実行する
@@ -4019,6 +4120,21 @@ function handleEvents(events) {
           vx: Math.cos(angle) * speed, vy: -Math.sin(angle) * speed,
           life: 14 + Math.random() * 8, size: 2 + Math.random() * 4,
           color: k % 3 === 0 ? "#ffd34d" : "#effcff",
+        });
+      }
+    } else if (ev.type === "penguin-guard") {
+      fx.shake = 6;
+      for (let k = 0; k < 18; k++) {
+        const angle = Math.PI * (0.1 + Math.random() * 0.8);
+        const speed = 2.5 + Math.random() * 5.5;
+        fx.particles.push({
+          x: ev.x + (Math.random() - 0.5) * 20,
+          y: ev.y + (Math.random() - 0.5) * 20,
+          vx: -ev.dir * Math.cos(angle) * speed,
+          vy: -Math.sin(angle) * speed,
+          life: 15 + Math.random() * 9,
+          size: 2 + Math.random() * 4,
+          color: k % 3 === 0 ? "#ffd34d" : k % 2 === 0 ? "#bfe8ff" : "#effcff",
         });
       }
     } else if (ev.type === "penguin-hit") {

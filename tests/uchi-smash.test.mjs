@@ -127,7 +127,7 @@ test("release constants and input codec stay coherent", () => {
   const { UCHI: game } = sandbox;
   assert.match(HTML, /<title>PYGMIX BONBON<\/title>/);
   assert.match(HTML, /ctx\.fillText\("PYGMIX BONBON", W \/ 2, 120\)/);
-  assert.match(HTML, /const GAME_VERSION = "0\.9\.41"/);
+  assert.match(HTML, /const GAME_VERSION = "0\.9\.43"/);
   assert.match(HTML, /リーチ・速度・ビーム・巨大化・風船補充の5種類/);
   assert.equal(game.PHYS.gravity, 0.495);
   assert.equal(game.DOWN_ATTACK.damageMult, 1.2);
@@ -228,6 +228,9 @@ test("release constants and input codec stay coherent", () => {
   assert.equal(game.PENGUIN.fallGravity, 0.55);
   assert.equal(game.PENGUIN.maxFall, 12);
   assert.equal(game.PENGUIN.stompBounce, -8.5);
+  assert.equal(game.PENGUIN.guardChipDamage, 1);
+  assert.equal(game.PENGUIN.guardCost, 24);
+  assert.equal(game.PENGUIN.guardInvuln, 12);
   assert.deepEqual([...game.DEFAULT_GAMEPAD_MAPPING.stagePrev], [14]);
   assert.deepEqual([...game.DEFAULT_GAMEPAD_MAPPING.stageNext], [15]);
   assert.deepEqual([...game.DEFAULT_GAMEPAD_MAPPING.start], [9]);
@@ -1645,7 +1648,7 @@ test("ice stage can be opened directly from its preview URL", () => {
   assert.equal(game.STAGES[game.APP.stageIndex].name, "こおり");
 });
 
-test("landing on a charging penguin from above reverses it without taking damage", () => {
+test("landing on a charging penguin bounces the player without changing its direction", () => {
   const { UCHI: game } = loadGame();
   const iceIndex = game.STAGES.findIndex(stage => stage.name === "こおり");
   const match = game.makeMatchState([0, 1], iceIndex);
@@ -1681,14 +1684,100 @@ test("landing on a charging penguin from above reverses it without taking damage
 
   const events = game.stepMatch(match, [neutral, neutral]);
 
-  assert.equal(penguin.dir, -1);
+  assert.equal(penguin.dir, 1);
   assert.equal(player.damage, 0);
   assert.equal(player.y, penguin.y - game.PENGUIN.chargeHeight);
   assert.equal(player.vy, game.PENGUIN.stompBounce);
   assert.equal(player.onGround, false);
-  assert.equal(events.some(event => event.type === "penguin-turn" && event.slot === player.slot), true);
+  assert.equal(events.some(event => event.type === "penguin-turn" && event.slot === player.slot), false);
   assert.equal(events.some(event => event.type === "penguin-hit"), false);
-  assert.equal(player.highlights.penguinTurns, 1);
+  assert.equal(player.highlights.penguinTurns, 0);
+});
+
+test("the penguin-stomp QA URL opens an ice duel above a forward-charging penguin", () => {
+  const { UCHI: game } = loadGame("?stage=%E3%81%93%E3%81%8A%E3%82%8A&preview=penguin-stomp");
+  const [jumper] = game.APP.match.players;
+
+  assert.equal(game.APP.phase, "match");
+  assert.equal(game.APP.match.stage.name, "こおり");
+  assert.equal(game.APP.match.penguin.state, "charge");
+  assert.equal(game.APP.match.penguin.dir, 1);
+  assert.equal(jumper.onGround, false);
+  assert.ok(jumper.y < game.APP.match.penguin.y - game.PENGUIN.chargeHeight);
+  assert.doesNotThrow(() => game.renderNow());
+});
+
+test("guarding reflects a charging penguin for one chip damage, while a weak guard breaks", () => {
+  const { UCHI: game } = loadGame();
+  const iceIndex = game.STAGES.findIndex(stage => stage.name === "こおり");
+  const neutral = {
+    left: false, right: false, up: false, down: false,
+    jump: false, attack: false, guard: false, balloon: false, taunt: false, start: false,
+  };
+  const guardInput = { ...neutral, guard: true };
+
+  function runGuardCollision(guardHp) {
+    const match = game.makeMatchState([0, 1], iceIndex);
+    const [player, spectator] = match.players;
+    const penguin = match.penguin;
+    const mains = match.platforms.filter(platform => platform.main);
+    match.countdown = 0;
+    match.itemTimer = 9999;
+    spectator.alive = false;
+    penguin.state = "charge";
+    penguin.x = 400;
+    penguin.y = game.mainSurfaceYAt(match, penguin.x);
+    penguin.dir = 1;
+    penguin.platformIndex = -1;
+    penguin.lane = "main";
+    penguin.airborne = false;
+    penguin.exitLeftEdge = Math.min(...mains.map(platform => platform.x));
+    penguin.exitRightEdge = Math.max(...mains.map(platform => platform.x + platform.w));
+    const nextX = penguin.x + game.PENGUIN.speed;
+    player.x = nextX;
+    player.y = game.mainSurfaceYAt(match, nextX);
+    player.vx = player.vy = 0;
+    player.onGround = true;
+    player.invuln = 0;
+    player.guardHp = guardHp;
+    const events = game.stepMatch(match, [guardInput, neutral]);
+    return { match, player, penguin, events };
+  }
+
+  const reflected = runGuardCollision(game.GUARD.max);
+  assert.equal(reflected.penguin.dir, -1);
+  assert.equal(reflected.player.damage, game.PENGUIN.guardChipDamage);
+  assert.ok(Math.abs(reflected.player.guardHp
+    - (game.GUARD.max - game.GUARD.drain - game.PENGUIN.guardCost)) < 1e-9);
+  assert.equal(reflected.player.onGround, true);
+  assert.equal(reflected.player.hitstun, 0);
+  assert.equal(reflected.player.invuln, game.PENGUIN.guardInvuln);
+  assert.equal(reflected.player.highlights.blocks, 1);
+  assert.equal(reflected.player.highlights.penguinTurns, 1);
+  assert.equal(reflected.events.some(event => event.type === "penguin-guard"), true);
+  assert.equal(reflected.events.some(event => event.type === "penguin-hit"), false);
+
+  const broken = runGuardCollision(game.PENGUIN.guardCost);
+  assert.equal(broken.penguin.dir, 1);
+  assert.equal(broken.player.damage, game.PENGUIN.damage);
+  assert.equal(broken.player.guardHp, 0);
+  assert.equal(broken.player.guarding, false);
+  assert.equal(broken.player.hitstun, game.GUARD.breakStun);
+  assert.equal(broken.events.some(event => event.type === "guardbreak"), true);
+  assert.equal(broken.events.some(event => event.type === "penguin-hit"), true);
+  assert.equal(broken.events.some(event => event.type === "penguin-guard"), false);
+});
+
+test("the penguin-guard QA URL opens an ice duel with P1 holding guard", () => {
+  const { UCHI: game } = loadGame("?stage=%E3%81%93%E3%81%8A%E3%82%8A&preview=penguin-guard");
+  const defenderInput = game.APP.slots[0].source.sample();
+
+  assert.equal(game.APP.phase, "match");
+  assert.equal(game.APP.match.stage.name, "こおり");
+  assert.equal(game.APP.match.penguin.state, "charge");
+  assert.equal(game.APP.match.penguin.dir, 1);
+  assert.equal(defenderInput.guard, true);
+  assert.doesNotThrow(() => game.renderNow());
 });
 
 test("penguin appears, warns, belly-charges, and alternates between ground and upper ice", () => {
