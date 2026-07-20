@@ -127,7 +127,7 @@ test("release constants and input codec stay coherent", () => {
   const { UCHI: game } = sandbox;
   assert.match(HTML, /<title>PYGMIX BONBON<\/title>/);
   assert.match(HTML, /ctx\.fillText\("PYGMIX BONBON", W \/ 2, 120\)/);
-  assert.match(HTML, /const GAME_VERSION = "0\.9\.39"/);
+  assert.match(HTML, /const GAME_VERSION = "0\.9\.41"/);
   assert.match(HTML, /リーチ・速度・ビーム・巨大化・風船補充の5種類/);
   assert.equal(game.PHYS.gravity, 0.495);
   assert.equal(game.DOWN_ATTACK.damageMult, 1.2);
@@ -141,6 +141,8 @@ test("release constants and input codec stay coherent", () => {
   assert.equal(game.FAN.windTop, 155);
   assert.equal(game.FAN.lift, 0.58);
   assert.equal(game.FAN.maxRise, 4.1);
+  assert.equal(game.CPU_AI.stallTicks, 180);
+  assert.equal(game.CPU_AI.escapeTicks, 90);
   assert.equal(game.TAUNT_TICKS, 90);
   assert.equal(game.MID_CHARGE, 60);
   assert.equal(game.SPECIAL_CHARGE, 120);
@@ -1815,6 +1817,106 @@ test("all stages remain deterministic and finite for four players", () => {
     assert.deepEqual(left, right, game.STAGES[stageIndex].name);
     assert.ok(allFinite(left), `${game.STAGES[stageIndex].name} should not contain NaN/Infinity`);
   }
+});
+
+test("CPU keeps ballooning until it clears a main floor from below", () => {
+  const { UCHI: game } = loadGame();
+  const match = game.makeMatchState([0, 1], 0);
+  const cpu = game.makeCpuSource();
+  const player = match.players[0];
+  const opponent = match.players[1];
+  const main = match.platforms.find(platform => platform.main);
+  const surfaceY = game.platformYAt(main, 640);
+  const neutral = {
+    left: false, right: false, up: false, down: false,
+    jump: false, attack: false, guard: false, balloon: false, taunt: false, start: false,
+  };
+
+  match.countdown = 0;
+  match.itemTimer = 9999;
+  player.x = 640;
+  player.y = surfaceY + 30;
+  player.vx = 0;
+  player.vy = 0;
+  player.onGround = false;
+  player.airJumps = 0;
+  player.hitstun = 0;
+  opponent.x = 400;
+  opponent.y = surfaceY;
+  opponent.vx = opponent.vy = 0;
+  opponent.onGround = true;
+
+  let highestY = player.y;
+  for (let tick = 0; tick < 120; tick++) {
+    const cpuInput = game.cpuThink(cpu, player.slot, match);
+    game.stepMatch(match, [cpuInput, neutral]);
+    highestY = Math.min(highestY, player.y);
+  }
+
+  assert.ok(highestY < surfaceY - 8,
+    `CPU never cleared the floor: highest foot y=${highestY}, surface y=${surfaceY}`);
+  assert.ok(player.balloonFuel > 0, "recovery should not waste the whole balloon below the floor");
+});
+
+test("the CPU recovery QA URL starts a CPU directly below the plaza floor", () => {
+  const { UCHI: game } = loadGame("?stage=%E3%81%B2%E3%82%8D%E3%81%B0&preview=cpu-recovery");
+  const player = game.APP.match.players[0];
+  const main = game.APP.match.platforms.find(platform => platform.main);
+  const surfaceY = game.platformYAt(main, player.x);
+
+  assert.equal(game.APP.phase, "match");
+  assert.equal(game.APP.match.stage.name, "ひろば");
+  assert.equal(game.APP.slots[0].source.isCpu, true);
+  assert.equal(player.y, surfaceY + 30);
+  assert.equal(player.airJumps, 0);
+  assert.doesNotThrow(() => game.renderNow());
+});
+
+test("two CPUs cannot repeat a no-progress loop for eight seconds", () => {
+  const { UCHI: game } = loadGame();
+  for (let stageIndex = 0; stageIndex < game.STAGES.length; stageIndex++) {
+    const match = game.makeMatchState([0, 1], stageIndex);
+    const sources = [game.makeCpuSource(), game.makeCpuSource()];
+    match.countdown = 0;
+    match.itemTimer = 99999;
+    let progressTick = 0;
+    let anchorX = match.players.map(player => player.x);
+    let previousDamage = match.players.map(player => player.damage);
+    let previousStocks = match.players.map(player => player.stocks);
+
+    for (let tick = 0; tick < 6000 && !match.finished; tick++) {
+      const inputs = [0, 1].map(slot => game.cpuThink(sources[slot], slot, match));
+      game.stepMatch(match, inputs);
+      const combatProgress = match.players.some((player, index) =>
+        player.damage !== previousDamage[index] || player.stocks !== previousStocks[index]);
+      const horizontalProgress = match.players.some((player, index) =>
+        Math.abs(player.x - anchorX[index]) >= 90);
+      if (combatProgress || horizontalProgress) {
+        progressTick = tick;
+        anchorX = match.players.map(player => player.x);
+        previousDamage = match.players.map(player => player.damage);
+        previousStocks = match.players.map(player => player.stocks);
+      }
+      assert.ok(tick - progressTick < 480,
+        `${game.STAGES[stageIndex].name} entered a two-CPU no-progress loop at tick ${tick}: `
+        + JSON.stringify(match.players.map((player, index) => ({
+          x: player.x, y: player.y, vx: player.vx, vy: player.vy,
+          onGround: player.onGround, damage: player.damage, input: inputs[index], cpu: sources[index].st,
+        }))));
+    }
+  }
+});
+
+test("the CPU unstuck QA URL starts a vertical attack loop near its escape trigger", () => {
+  const { UCHI: game } = loadGame("?stage=%E3%81%B2%E3%82%8D%E3%81%B0&preview=cpu-unstuck");
+  const [lower, upper] = game.APP.match.players;
+
+  assert.equal(game.APP.phase, "match");
+  assert.equal(game.APP.slots.slice(0, 2).every(slot => slot?.source?.isCpu), true);
+  assert.ok(Math.abs(lower.x - upper.x) < 10);
+  assert.ok(Math.abs(lower.y - upper.y - game.pH(lower)) < 1);
+  assert.equal(game.APP.slots[0].source.st.stalledTicks, game.CPU_AI.stallTicks - 12);
+  assert.doesNotThrow(() => game.renderNow());
 });
 
 test("four-CPU matches complete deterministically on every stage", () => {

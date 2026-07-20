@@ -490,7 +490,7 @@ const GUARD = {
 
 // ★オンライン同期の要: 決定論simに影響する変更(stepMatch/ステージ/物理/定数など)をしたら
 //   必ずこの版数を上げること。オンライン接続時に両者で照合し、食い違えば試合させず弾く。
-const GAME_VERSION = "0.9.39";
+const GAME_VERSION = "0.9.41";
 
 const PLAYER_W = 36, PLAYER_H = 48;
 // キャラクター同士の物理衝突。複数人が同時に密集しても、反復して体の重なりを解消する。
@@ -1006,12 +1006,21 @@ function makeGamepadSource(index) {
 
 // CPU（AI）入力ソース。ローカル専用。sample(slot, match) で盤面を見て入力を決める
 let cpuCounter = 0;
+const CPU_AI = Object.freeze({
+  stallTicks: 180,          // 3秒間、距離短縮も命中もなければ膠着とみなす
+  escapeTicks: 90,          // 1.5秒だけ通常判断を上書きして配置を崩す
+  progressDistance: 45,     // 相手への評価距離がこれだけ縮めば進展
+});
 function makeCpuSource() {
   return {
     id: "cpu" + (cpuCounter++),
     label: "CPU",
     isCpu: true,
-    st: { jumpCd: 0, atkCd: 0, atkHold: 0, guardCd: 0 },
+    st: {
+      jumpCd: 0, atkCd: 0, atkHold: 0, guardCd: 0,
+      progressBest: Infinity, progressCombat: "", progressTargetSlot: null,
+      stalledTicks: 0, escapeTicks: 0, escapeMode: 0, escapeCount: 0,
+    },
     sample(slot, m) { return m ? cpuThink(this, slot, m) : NEUTRAL; },
   };
 }
@@ -1035,20 +1044,97 @@ function cpuThink(src, slot, m) {
   }
 
   const g = m.groundY;
-  const overGround = m.platforms.some(pl => pl.main && me.x > pl.x - 20 && me.x < pl.x + pl.w + 20);
-  const needRecover = !me.onGround && me.y > 200 && (me.y > g + 30 || !overGround);
+  const mainPlatforms = m.platforms.filter(platform => platform.main);
+  let recoveryPlatform = null;
+  let recoveryTargetX = W / 2;
+  let recoveryDistance = Infinity;
+  for (const platform of mainPlatforms) {
+    const safeMargin = Math.min(platform.w * 0.25, pHW(me) + 14);
+    const safeLeft = platform.x + safeMargin;
+    const safeRight = platform.x + platform.w - safeMargin;
+    const targetX = Math.max(safeLeft, Math.min(safeRight, me.x));
+    const distance = Math.abs(targetX - me.x);
+    if (distance < recoveryDistance) {
+      recoveryDistance = distance;
+      recoveryPlatform = platform;
+      recoveryTargetX = targetX;
+    }
+  }
+  const overGround = !!recoveryPlatform
+    && me.x + pHW(me) > recoveryPlatform.x
+    && me.x - pHW(me) < recoveryPlatform.x + recoveryPlatform.w;
+  const recoverySurfaceY = recoveryPlatform
+    ? platformYAt(recoveryPlatform, recoveryTargetX)
+    : g;
+  // 足元が床面を明確に越えるまで復帰を継続する。以前は床下30pxで風船を止めてしまい、
+  // 重力との間で上下を繰り返して燃料だけを失っていた。
+  const belowRecoverySurface = me.y > recoverySurfaceY - 8;
+  const needRecover = !me.onGround && me.y > 200 && (belowRecoverySurface || !overGround);
+
+  // 二人戦では完全に対称な判断が続きやすい。距離短縮・命中・撃墜のどれも起きない時間を測り、
+  // 同じ待機や空振りが続いた場合だけ、決定論的な膠着解除へ切り替える。
+  const combatStamp = tgt
+    ? [me.damage, me.damageDealt, me.stocks, tgt.slot, tgt.damage, tgt.stocks].join("|")
+    : "none";
+  const suppressStallCheck = !tgt || m.countdown > 0 || m.ending || needRecover
+    || me.hitstun > 0 || st.escapeTicks > 0;
+  if (suppressStallCheck || st.progressTargetSlot !== tgt?.slot) {
+    st.progressBest = best;
+    st.progressCombat = combatStamp;
+    st.progressTargetSlot = tgt?.slot ?? null;
+    st.stalledTicks = 0;
+  } else if (combatStamp !== st.progressCombat || best <= st.progressBest - CPU_AI.progressDistance) {
+    st.progressBest = best;
+    st.progressCombat = combatStamp;
+    st.stalledTicks = 0;
+  } else if (++st.stalledTicks >= CPU_AI.stallTicks) {
+    st.escapeTicks = CPU_AI.escapeTicks;
+    st.escapeMode = st.escapeCount % 3;
+    st.escapeCount++;
+    st.progressBest = best;
+    st.progressCombat = combatStamp;
+    st.stalledTicks = 0;
+  }
 
   // --- 復帰: 崖外/落下中は中央へ確実に戻る（ジャンプ→風船） ---
   if (needRecover) {
-    if (me.x < W / 2) inp.right = true; else inp.left = true;
+    if (me.x < recoveryTargetX - 6) inp.right = true;
+    else if (me.x > recoveryTargetX + 6) inp.left = true;
     if (me.airJumps > 0 && st.jumpCd <= 0) { inp.jump = true; st.jumpCd = 10; }
-    if (me.y > g + 70 && me.balloonFuel > 0) inp.balloon = true;   // やや深いと即風船
+    // 床の真下では上面を越えるまで押し続ける。崖外では床面付近まで落ちたら使い始める。
+    if (me.balloonFuel > 0 && (belowRecoverySurface || (!overGround && me.y > recoverySurfaceY - 30))) {
+      inp.balloon = true;
+    }
     return inp;
   }
 
   if (!tgt) return inp;
   const dx = tgt.x - me.x, dy = tgt.y - me.y, adx = Math.abs(dx), ady = Math.abs(dy);
   const face = dx >= 0 ? 1 : -1;
+
+  // 膠着解除中は「安全なので何もしない」という通常判断を短時間だけ上書きする。
+  // 近距離では偶数・奇数slotを左右へ分け、遠距離では互いへ踏み込むことで対称ループを壊す。
+  if (st.escapeTicks > 0) {
+    const phase = CPU_AI.escapeTicks - st.escapeTicks;
+    let escapeDir = adx < 80 ? (slot % 2 === 0 ? -1 : 1) : face;
+    if (st.escapeMode === 2 && phase < 30) escapeDir = -escapeDir;  // 一度引いてから入り直す
+    if (me.x < 72 && escapeDir < 0) escapeDir = 1;
+    else if (me.x > W - 72 && escapeDir > 0) escapeDir = -1;
+    if (escapeDir < 0) inp.left = true;
+    else inp.right = true;
+
+    const standing = me.onGround ? platformUnder(me, m.platforms) : null;
+    if (st.escapeMode === 1 && standing?.droppable && phase < 4) {
+      inp.down = true;             // 上段で詰まった回は、まず下の層へ降りる
+      inp.left = false; inp.right = false;
+    } else if (me.onGround && st.jumpCd <= 0 && (phase === 0 || phase === 34)) {
+      inp.jump = true; st.jumpCd = 12;
+    } else if (!me.onGround && me.airJumps > 0 && st.jumpCd <= 0 && phase === 26) {
+      inp.jump = true; st.jumpCd = 12;
+    }
+    st.escapeTicks--;
+    return inp;
+  }
 
   // 接近（近づき切るまで詰める）。進む先の足場/奈落を見て自滅を避ける
   if (adx > 30) {
@@ -2957,6 +3043,69 @@ function applyFanPreviewFromUrl() {
   APP.phase = "match";
 }
 applyFanPreviewFromUrl();
+
+// CPUの床下復帰QA用URL（?preview=cpu-recovery）。P1を地面の直下へ置き、
+// 風船を止めずに床面を越えて復帰する様子をロビー操作なしで確認できる。
+function applyCpuRecoveryPreviewFromUrl() {
+  const params = new URLSearchParams(location.search);
+  if (params.get("preview") !== "cpu-recovery") return;
+  const previewMatch = makeMatchState([0, 1], APP.stageIndex);
+  const main = previewMatch.platforms.find(platform => platform.main);
+  if (!main) return;
+  previewMatch.countdown = 0;
+  previewMatch.tick = COUNTDOWN_TICKS + 60;
+  previewMatch.itemTimer = 9999;
+  const player = previewMatch.players[0];
+  player.x = main.x + main.w / 2;
+  player.y = platformYAt(main, player.x) + 30;
+  player.vx = 0; player.vy = 0; player.onGround = false; player.airJumps = 0;
+  player.invuln = 9999;
+  const observer = previewMatch.players[1];
+  observer.x = main.x + Math.min(80, main.w * 0.2);
+  observer.y = platformYAt(main, observer.x);
+  observer.vx = 0; observer.vy = 0; observer.onGround = true; observer.invuln = 9999;
+  attachPreviewInputs(previewMatch);
+  APP.slots[player.slot] = { source: makeCpuSource(), cpu: true };
+  APP.match = previewMatch;
+  APP.phase = "match";
+}
+applyCpuRecoveryPreviewFromUrl();
+
+// 二人CPUの膠着解除QA用URL（?preview=cpu-unstuck）。上下に重なって空振りを続ける直前から始め、
+// 左右へ分かれて通常戦闘へ戻ることを短時間で確認する。
+function applyCpuUnstuckPreviewFromUrl() {
+  const params = new URLSearchParams(location.search);
+  if (params.get("preview") !== "cpu-unstuck") return;
+  const previewMatch = makeMatchState([0, 1], APP.stageIndex);
+  const platform = previewMatch.platforms.find(candidate => !candidate.main)
+    || previewMatch.platforms.find(candidate => candidate.main);
+  if (!platform) return;
+  previewMatch.countdown = 0;
+  previewMatch.tick = COUNTDOWN_TICKS + 60;
+  previewMatch.itemTimer = 9999;
+  const lower = previewMatch.players[0], upper = previewMatch.players[1];
+  lower.x = platform.x + Math.min(40, platform.w * 0.25);
+  lower.y = platformYAt(platform, lower.x);
+  lower.vx = 0; lower.vy = 0; lower.onGround = true; lower.invuln = 120;
+  upper.x = lower.x - 8;
+  upper.y = lower.y - pH(lower) - BODY_COLLISION.separationEpsilon;
+  upper.vx = 0; upper.vy = 0; upper.onGround = true; upper.invuln = 120;
+  attachPreviewInputs(previewMatch);
+  for (let index = 0; index < 2; index++) {
+    const source = makeCpuSource();
+    const me = previewMatch.players[index], target = previewMatch.players[1 - index];
+    const distance = Math.abs(target.x - me.x) + Math.abs(target.y - me.y) * 0.6;
+    source.st.progressBest = distance;
+    source.st.progressTargetSlot = target.slot;
+    source.st.progressCombat = [me.damage, me.damageDealt, me.stocks,
+      target.slot, target.damage, target.stocks].join("|");
+    source.st.stalledTicks = CPU_AI.stallTicks - 12;
+    APP.slots[me.slot] = { source, cpu: true };
+  }
+  APP.match = previewMatch;
+  APP.phase = "match";
+}
+applyCpuUnstuckPreviewFromUrl();
 
 /* ==================== オンライン対戦（2〜4人・入力同期lockstep） ====================
  * 方式: delay-based lockstep
@@ -5692,7 +5841,7 @@ window.UCHI = {
   STAGES, BLAST, STOCKS, ITEM, BALLOON, MOB, PENGUIN, rngNext,
   LOBBY_CORNER_CHARACTERS,
   CRUMBLE, PENDULUM, LAVA, WARP_CD, FAN, PLAYER_W, PLAYER_H, BODY_COLLISION, BODY_BOUNCE,
-  DOUBLE_JUMP_FLIP_TICKS, TAUNT_TICKS,
+  DOUBLE_JUMP_FLIP_TICKS, TAUNT_TICKS, CPU_AI,
   resolvePlayerCollisions, resolveFloorPenetrations, playerSupportedByWorld,
   applyStageBodyBounce, resolveKnockbackPlatformBody,
   updateFan, applyFanWind,
