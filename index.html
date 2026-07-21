@@ -155,14 +155,16 @@
     font-size: 12px;
     text-align: right;
   }
-  #pad-config-open {
+  #pad-config-open, .key-config-open {
     width: 100%; margin-top: 12px; padding: 9px 10px;
     border: 1px solid #8fd3ff; border-radius: 7px;
     background: #202f48; color: #fff; font-family: inherit; font-size: 13px; font-weight: 700; cursor: pointer;
   }
-  #pad-config-open:hover, #pad-config-open:focus-visible { background: #294262; outline: 2px solid rgba(143,211,255,0.35); }
-  #gamepad-config[hidden] { display: none; }
-  #gamepad-config {
+  #pad-config-open:hover, #pad-config-open:focus-visible,
+  .key-config-open:hover, .key-config-open:focus-visible { background: #294262; outline: 2px solid rgba(143,211,255,0.35); }
+  .help-notes .key-config-open { width: auto; margin-top: 8px; padding: 6px 10px; font-size: 11px; }
+  #gamepad-config[hidden], #keyboard-config[hidden] { display: none; }
+  #gamepad-config, #keyboard-config {
     position: fixed; inset: 0; z-index: 12;
     display: flex; align-items: center; justify-content: center;
     box-sizing: border-box; padding: 16px; background: rgba(5,7,16,0.9);
@@ -175,7 +177,7 @@
   }
   .pad-config-panel h2 { margin: 0 0 6px; color: #8fd3ff; font-size: 24px; }
   .pad-config-panel > p { margin: 0 0 16px; color: #bcbcd0; font-size: 13px; line-height: 1.6; }
-  #pad-config-device {
+  #pad-config-device, #keyboard-config-profile {
     width: 100%; box-sizing: border-box; margin-bottom: 14px; padding: 9px 10px;
     border: 1px solid #555779; border-radius: 7px; background: #101021; color: #fff;
     font-family: inherit; font-size: 14px; font-weight: 700;
@@ -195,9 +197,9 @@
   }
   .pad-map-row button.listening { border-color: #ffd34d; background: #4b3b20; color: #ffd34d; }
   .pad-map-row button:disabled { opacity: 0.45; cursor: default; }
-  #pad-config-status { min-height: 22px; margin-top: 12px; color: #ffd34d; font-size: 13px; }
+  #pad-config-status, #keyboard-config-status { min-height: 22px; margin-top: 12px; color: #ffd34d; font-size: 13px; }
   .pad-config-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
-  .pad-config-actions #pad-config-reset { margin-right: auto; color: #ffd0d0; }
+  .pad-config-actions #pad-config-reset, .pad-config-actions #keyboard-config-reset { margin-right: auto; color: #ffd0d0; }
   @media (max-width: 820px), (max-height: 620px) {
     .help-panel { max-height: calc(100vh - 24px); }
     .help-grid { grid-template-columns: 1fr; }
@@ -260,33 +262,35 @@
       </div>
       <button id="help-close" type="button" aria-label="操作方法を閉じる">閉じる　Esc</button>
     </header>
-    <p class="help-lead">参加キー：キーボード左は F、キーボード右は L、ゲームパッドは設定した攻撃ボタン（初期 X / □）。2人以上で Enter、または設定した決定ボタン（初期 Start / Options）を押すと開始します。</p>
+    <p id="help-lead" class="help-lead">参加キー：キーボード左は F、キーボード右は L、ゲームパッドは設定した攻撃ボタン（初期 X / □）。2人以上で Enter、または設定した決定ボタン（初期 Start / Options）を押すと開始します。</p>
     <div class="help-grid">
       <article class="control-sheet">
         <h3>キーボード左</h3>
-        <p class="device">WASD ＋ F / G</p>
+        <p id="kb0-device" class="device">WASD ＋ F / G</p>
         <dl>
-          <div><dt>移動</dt><dd>A / D</dd></div>
-          <div><dt>ジャンプ</dt><dd>W</dd></div>
-          <div><dt>急降下</dt><dd>S</dd></div>
-          <div><dt>攻撃</dt><dd>F</dd></div>
-          <div><dt>ガード</dt><dd>G</dd></div>
-          <div><dt>風船</dt><dd>Space</dd></div>
-          <div><dt>アピール</dt><dd>Y</dd></div>
+          <div><dt>移動</dt><dd id="kb0-move">A / D</dd></div>
+          <div><dt>ジャンプ</dt><dd id="kb0-up">W</dd></div>
+          <div><dt>急降下</dt><dd id="kb0-down">S</dd></div>
+          <div><dt>攻撃</dt><dd id="kb0-attack">F</dd></div>
+          <div><dt>ガード</dt><dd id="kb0-guard">G</dd></div>
+          <div><dt>風船</dt><dd id="kb0-balloon">Space</dd></div>
+          <div><dt>アピール</dt><dd id="kb0-taunt">Y</dd></div>
         </dl>
+        <button id="key-config-open-left" class="key-config-open" type="button">キーボード左のキー設定</button>
       </article>
       <article class="control-sheet">
         <h3>キーボード右</h3>
-        <p class="device">HJKU ＋ L / −</p>
+        <p id="kb1-device" class="device">HJKU ＋ L / −</p>
         <dl>
-          <div><dt>移動</dt><dd>H / K</dd></div>
-          <div><dt>ジャンプ</dt><dd>U</dd></div>
-          <div><dt>急降下</dt><dd>J</dd></div>
-          <div><dt>攻撃</dt><dd>L</dd></div>
-          <div><dt>ガード</dt><dd>−（ハイフン）</dd></div>
-          <div><dt>風船</dt><dd>.（ピリオド）</dd></div>
-          <div><dt>アピール</dt><dd>I</dd></div>
+          <div><dt>移動</dt><dd id="kb1-move">H / K</dd></div>
+          <div><dt>ジャンプ</dt><dd id="kb1-up">U</dd></div>
+          <div><dt>急降下</dt><dd id="kb1-down">J</dd></div>
+          <div><dt>攻撃</dt><dd id="kb1-attack">L</dd></div>
+          <div><dt>ガード</dt><dd id="kb1-guard">−（ハイフン）</dd></div>
+          <div><dt>風船</dt><dd id="kb1-balloon">.（ピリオド）</dd></div>
+          <div><dt>アピール</dt><dd id="kb1-taunt">I</dd></div>
         </dl>
+        <button id="key-config-open-right" class="key-config-open" type="button">キーボード右のキー設定</button>
       </article>
       <article class="control-sheet">
         <h3>ゲームパッド</h3>
@@ -306,7 +310,7 @@
       </article>
     </div>
     <div class="help-notes">
-      <p><strong>1人・オンライン操作</strong><br>移動は WASD / 矢印、攻撃 J、ガード K、風船 Space、アピール Y。</p>
+      <p><strong>1人・オンライン操作</strong><br><span id="kb2-summary">移動は WASD / 矢印、攻撃 J、ガード K、風船 Space、アピール Y。</span><br><button id="key-config-open-solo" class="key-config-open" type="button">1人・オンラインのキー設定</button></p>
       <p><strong>攻撃の使い分け</strong><br>上か下だけを入力しながら攻撃で上下攻撃。1秒以上で中間溜め、2秒でフルチャージ。</p>
       <p><strong>風船</strong><br>長押しで浮上。1ストックにつき1回で、使い切ると割れます。</p>
       <p><strong>しゃがみ</strong><br>通常の地面で下入力すると高さが半分になり、正面レーザーを避けられます。</p>
@@ -314,6 +318,40 @@
       <p><strong>タイムアップ</strong><br>時間切れになった瞬間の残ストックで判定し、その後の撃墜ではストックが減りません。</p>
     </div>
     <div class="help-footer">背景の暗い部分をクリックしても閉じられます。</div>
+  </section>
+</div>
+
+<div id="keyboard-config" hidden>
+  <section class="pad-config-panel" role="dialog" aria-modal="true" aria-labelledby="keyboard-config-title">
+    <h2 id="keyboard-config-title">キーボードのキー設定</h2>
+    <p>操作を選んでから、割り当てたいキーを1つ押してください。設定はこのブラウザに保存されます。TabとEscは操作用に予約されています。</p>
+    <select id="keyboard-config-profile" aria-label="設定するキーボード操作">
+      <option value="0">キーボード左（ローカル対戦）</option>
+      <option value="1">キーボード右（ローカル対戦）</option>
+      <option value="2">1人・オンライン操作</option>
+    </select>
+    <div class="pad-config-groups">
+      <section class="pad-config-group" aria-labelledby="keyboard-move-actions-title">
+        <h3 id="keyboard-move-actions-title">移動・上下操作</h3>
+        <div class="pad-map-row"><span>左移動・ステージ前へ</span><button id="keyboard-map-left" type="button" data-keyboard-action="left"></button></div>
+        <div class="pad-map-row"><span>右移動・ステージ次へ</span><button id="keyboard-map-right" type="button" data-keyboard-action="right"></button></div>
+        <div class="pad-map-row"><span>ジャンプ・上攻撃</span><button id="keyboard-map-up" type="button" data-keyboard-action="up"></button></div>
+        <div class="pad-map-row"><span>しゃがみ・急降下・下攻撃</span><button id="keyboard-map-down" type="button" data-keyboard-action="down"></button></div>
+      </section>
+      <section class="pad-config-group" aria-labelledby="keyboard-game-actions-title">
+        <h3 id="keyboard-game-actions-title">試合・ロビー操作</h3>
+        <div class="pad-map-row"><span>攻撃・ロビー参加</span><button id="keyboard-map-attack" type="button" data-keyboard-action="attack"></button></div>
+        <div class="pad-map-row"><span>ガード</span><button id="keyboard-map-guard" type="button" data-keyboard-action="guard"></button></div>
+        <div class="pad-map-row"><span>風船</span><button id="keyboard-map-balloon" type="button" data-keyboard-action="balloon"></button></div>
+        <div class="pad-map-row"><span>アピール</span><button id="keyboard-map-taunt" type="button" data-keyboard-action="taunt"></button></div>
+        <div class="pad-map-row"><span>試合開始・再戦</span><button id="keyboard-map-start" type="button" data-keyboard-action="start"></button></div>
+      </section>
+    </div>
+    <div id="keyboard-config-status" role="status"></div>
+    <div class="pad-config-actions">
+      <button id="keyboard-config-reset" type="button">この系統を初期設定に戻す</button>
+      <button id="keyboard-config-close" type="button">閉じる</button>
+    </div>
   </section>
 </div>
 
@@ -490,7 +528,7 @@ const GUARD = {
 
 // ★オンライン同期の要: 決定論simに影響する変更(stepMatch/ステージ/物理/定数など)をしたら
 //   必ずこの版数を上げること。オンライン接続時に両者で照合し、食い違えば試合させず弾く。
-const GAME_VERSION = "0.9.43";
+const GAME_VERSION = "0.9.44";
 
 const PLAYER_W = 36, PLAYER_H = 48;
 // キャラクター同士の物理衝突。複数人が同時に密集しても、反復して体の重なりを解消する。
@@ -811,6 +849,7 @@ const LOBBY_CORNER_CHARACTERS = [
 const keys = new Set();
 let lobbyHelpOpen = false;
 let gamepadConfigOpen = false;
+let keyboardConfigOpen = false;
 const USED_CODES = new Set([
   "KeyW","KeyA","KeyS","KeyD","KeyF","KeyG","KeyH","KeyO","KeyJ","KeyK","KeyC","KeyX",
   "KeyU","KeyL","KeyY","KeyI","Minus","Tab",
@@ -824,6 +863,10 @@ function typingInField() {
 }
 window.addEventListener("keydown", e => {
   if (typingInField()) return;                 // コード入力中はそのまま入力欄へ
+  if (keyboardConfigOpen) {
+    handleKeyboardConfigKeydown(e);
+    return;
+  }
   if (gamepadConfigOpen) {
     e.stopImmediatePropagation();
     if (e.code === "Tab") return;
@@ -844,7 +887,7 @@ window.addEventListener("keydown", e => {
     if (!e.repeat) setLobbyHelpOpen(true);
     return;
   }
-  if (USED_CODES.has(e.code)) e.preventDefault();
+  if (USED_CODES.has(e.code) || keyboardCodeInUse(e.code)) e.preventDefault();
   if (!e.repeat) keys.add(e.code);
 });
 window.addEventListener("keyup", e => { if (typingInField()) return; keys.delete(e.code); });
@@ -852,11 +895,121 @@ window.addEventListener("blur", () => keys.clear());
 
 const NEUTRAL = Object.freeze({ left:false,right:false,up:false,down:false,jump:false,attack:false,guard:false,balloon:false,taunt:false,stagePrev:false,stageNext:false,start:false });
 
-// キーボード2系統のマッピング
-const KB_MAPS = [
-  { left:"KeyA", right:"KeyD", up:"KeyW", down:"KeyS", jump:"KeyW", attack:"KeyF", guard:"KeyG", balloon:"Space", taunt:"KeyY" },
-  { left:"KeyH", right:"KeyK", up:"KeyU", down:"KeyJ", jump:"KeyU", attack:"KeyL", guard:"Minus", balloon:"Period", taunt:"KeyI" },
-];
+// キーボードはローカル左・ローカル右・1人/オンラインの3系統を個別保存する。
+// 配列にしているのは、1人/オンラインのWASDと矢印キーの両対応を保持するため。
+const KEYBOARD_ACTIONS = ["left", "right", "up", "down", "attack", "guard", "balloon", "taunt", "start"];
+const KEYBOARD_MAPPING_STORAGE_KEY = "pygmix-bonbon-keyboard-mappings-v1";
+const KEYBOARD_RESERVED_CODES = new Set(["Tab", "Escape"]);
+const DEFAULT_KEYBOARD_MAPPINGS = Object.freeze([
+  Object.freeze({
+    left:Object.freeze(["KeyA"]), right:Object.freeze(["KeyD"]), up:Object.freeze(["KeyW"]), down:Object.freeze(["KeyS"]),
+    attack:Object.freeze(["KeyF"]), guard:Object.freeze(["KeyG"]), balloon:Object.freeze(["Space"]), taunt:Object.freeze(["KeyY"]), start:Object.freeze(["Enter"]),
+  }),
+  Object.freeze({
+    left:Object.freeze(["KeyH"]), right:Object.freeze(["KeyK"]), up:Object.freeze(["KeyU"]), down:Object.freeze(["KeyJ"]),
+    attack:Object.freeze(["KeyL"]), guard:Object.freeze(["Minus"]), balloon:Object.freeze(["Period"]), taunt:Object.freeze(["KeyI"]), start:Object.freeze(["Enter"]),
+  }),
+  Object.freeze({
+    left:Object.freeze(["KeyA", "ArrowLeft"]), right:Object.freeze(["KeyD", "ArrowRight"]),
+    up:Object.freeze(["KeyW", "ArrowUp"]), down:Object.freeze(["KeyS", "ArrowDown"]),
+    attack:Object.freeze(["KeyJ"]), guard:Object.freeze(["KeyK"]), balloon:Object.freeze(["Space"]), taunt:Object.freeze(["KeyY"]), start:Object.freeze(["Enter"]),
+  }),
+]);
+
+function normalizeKeyboardCodeList(value, fallback) {
+  const source = Array.isArray(value) ? value : typeof value === "string" ? [value] : fallback;
+  const normalized = [...new Set(source.filter(code =>
+    typeof code === "string" && code.length > 0 && code.length <= 40 && !KEYBOARD_RESERVED_CODES.has(code)))];
+  return normalized.length ? normalized : [...fallback];
+}
+
+function normalizeKeyboardMapping(value, profileIndex = 0) {
+  const index = Number.isInteger(profileIndex) && profileIndex >= 0 && profileIndex < DEFAULT_KEYBOARD_MAPPINGS.length ? profileIndex : 0;
+  const defaults = DEFAULT_KEYBOARD_MAPPINGS[index];
+  const raw = value && typeof value === "object" ? value : {};
+  const mapping = {};
+  for (const action of KEYBOARD_ACTIONS) mapping[action] = normalizeKeyboardCodeList(raw[action], defaults[action]);
+  return mapping;
+}
+
+function loadKeyboardMappings() {
+  try {
+    if (typeof localStorage === "undefined") return DEFAULT_KEYBOARD_MAPPINGS.map((mapping, index) => normalizeKeyboardMapping(mapping, index));
+    const raw = JSON.parse(localStorage.getItem(KEYBOARD_MAPPING_STORAGE_KEY) || "[]");
+    return DEFAULT_KEYBOARD_MAPPINGS.map((mapping, index) => normalizeKeyboardMapping(raw[index], index));
+  } catch (error) {
+    return DEFAULT_KEYBOARD_MAPPINGS.map((mapping, index) => normalizeKeyboardMapping(mapping, index));
+  }
+}
+
+let KEYBOARD_MAPPINGS = loadKeyboardMappings();
+
+function getKeyboardMapping(profileIndex) {
+  const index = Number.isInteger(profileIndex) && profileIndex >= 0 && profileIndex < DEFAULT_KEYBOARD_MAPPINGS.length ? profileIndex : 0;
+  if (!KEYBOARD_MAPPINGS[index]) KEYBOARD_MAPPINGS[index] = normalizeKeyboardMapping(null, index);
+  return KEYBOARD_MAPPINGS[index];
+}
+
+function persistKeyboardMappings() {
+  try {
+    if (typeof localStorage !== "undefined") localStorage.setItem(KEYBOARD_MAPPING_STORAGE_KEY, JSON.stringify(KEYBOARD_MAPPINGS));
+  } catch (error) {}
+}
+
+function setKeyboardMapping(profileIndex, mapping) {
+  const index = Number.isInteger(profileIndex) && profileIndex >= 0 && profileIndex < DEFAULT_KEYBOARD_MAPPINGS.length ? profileIndex : 0;
+  const normalized = normalizeKeyboardMapping(mapping, index);
+  KEYBOARD_MAPPINGS[index] = normalized;
+  persistKeyboardMappings();
+  return normalized;
+}
+
+function resetKeyboardMapping(profileIndex) {
+  const index = Number.isInteger(profileIndex) && profileIndex >= 0 && profileIndex < DEFAULT_KEYBOARD_MAPPINGS.length ? profileIndex : 0;
+  return setKeyboardMapping(index, DEFAULT_KEYBOARD_MAPPINGS[index]);
+}
+
+// 同じ系統内で重複するキーは、変更前のキーへ入れ替えて操作不能を防ぐ。
+function remapKeyboardKey(mapping, action, code, profileIndex = 0) {
+  const index = Number.isInteger(profileIndex) && profileIndex >= 0 && profileIndex < DEFAULT_KEYBOARD_MAPPINGS.length ? profileIndex : 0;
+  const next = normalizeKeyboardMapping(mapping, index);
+  if (!KEYBOARD_ACTIONS.includes(action) || typeof code !== "string" || !code || KEYBOARD_RESERVED_CODES.has(code)) return next;
+  const previousTarget = [...next[action]];
+  for (const other of KEYBOARD_ACTIONS) {
+    if (other === action || !next[other].includes(code)) continue;
+    next[other] = next[other].filter(existing => existing !== code);
+    if (!next[other].length) next[other] = previousTarget.length ? [previousTarget[0]] : [...DEFAULT_KEYBOARD_MAPPINGS[index][other]];
+  }
+  next[action] = [code];
+  return next;
+}
+
+function keyboardKeyName(code) {
+  const names = {
+    ArrowLeft:"←", ArrowRight:"→", ArrowUp:"↑", ArrowDown:"↓", Space:"Space", Enter:"Enter",
+    Minus:"−", Equal:"=", Comma:",", Period:".", Slash:"/", Semicolon:";", Quote:"'",
+    BracketLeft:"[", BracketRight:"]", Backslash:"\\", Backquote:"`",
+    ShiftLeft:"左Shift", ShiftRight:"右Shift", ControlLeft:"左Ctrl", ControlRight:"右Ctrl",
+    AltLeft:"左Alt", AltRight:"右Alt", Backspace:"Backspace", Delete:"Delete",
+  };
+  if (names[code]) return names[code];
+  if (/^Key[A-Z]$/.test(code)) return code.slice(3);
+  if (/^Digit[0-9]$/.test(code)) return code.slice(5);
+  if (/^Numpad[0-9]$/.test(code)) return "テンキー" + code.slice(6);
+  return code;
+}
+
+function keyboardMappingLabel(mapping, action) {
+  return (mapping[action] || []).map(keyboardKeyName).join(" / ");
+}
+
+function keyboardActionPressed(mapping, action) {
+  return (mapping[action] || []).some(code => keys.has(code));
+}
+
+function keyboardCodeInUse(code) {
+  return KEYBOARD_MAPPINGS.some(mapping => KEYBOARD_ACTIONS.some(action => (mapping[action] || []).includes(code)));
+}
 
 const GAMEPAD_GAME_ACTIONS = ["jump", "attack", "guard", "balloon", "taunt"];
 const GAMEPAD_MENU_ACTIONS = ["stagePrev", "stageNext", "start"];
@@ -962,18 +1115,18 @@ function gamepadActionPressed(gamepad, mapping, action) {
 
 // 入力ソース: sample() が InputSample を返す。将来 NetworkSource を足すだけでオンライン化できる
 function makeKeyboardSource(mapIdx) {
-  const m = KB_MAPS[mapIdx];
   return {
     id: "kb" + mapIdx,
-    label: mapIdx === 0 ? "キーボード左 (WASD+F)" : "キーボード右 (HJKU+L)",
+    label: mapIdx === 0 ? "キーボード左" : "キーボード右",
     sample() {
+      const m = getKeyboardMapping(mapIdx);
       return {
-        left: keys.has(m.left), right: keys.has(m.right),
-        up: keys.has(m.up), down: keys.has(m.down),
-        jump: keys.has(m.jump), attack: keys.has(m.attack),
-        guard: keys.has(m.guard), balloon: keys.has(m.balloon),
-        taunt: keys.has(m.taunt),
-        start: keys.has("Enter"),
+        left: keyboardActionPressed(m, "left"), right: keyboardActionPressed(m, "right"),
+        up: keyboardActionPressed(m, "up"), down: keyboardActionPressed(m, "down"),
+        jump: keyboardActionPressed(m, "up"), attack: keyboardActionPressed(m, "attack"),
+        guard: keyboardActionPressed(m, "guard"), balloon: keyboardActionPressed(m, "balloon"),
+        taunt: keyboardActionPressed(m, "taunt"),
+        start: keyboardActionPressed(m, "start"),
       };
     },
   };
@@ -3242,12 +3395,9 @@ function decodeSample(b) {
   return { left:!!(b&1), right:!!(b&2), up:!!(b&4), down:!!(b&8), jump:!!(b&16), attack:!!(b&32), guard:!!(b&64), balloon:!!(b&128), taunt:!!(b&256), start:false };
 }
 
-// オンライン時のキー配置（1人が片手で移動WASD/矢印、もう片手でJ/K/Space）
-//   移動: WASD または 矢印（従来通り） / ジャンプ: W・↑ / 急降下: S・↓
-//   攻撃: J（1秒で中間溜め／2秒でフル） / 防御(卵ガード): K / 風船: Space / アピール: Y
-//   ゲームパッドも併用可
+// 1人・オンライン時はキーボード設定の3系統目と、接続中のゲームパッドを併用する。
 function sampleLocalMerged() {
-  const k = keys;
+  const keyboard = getKeyboardMapping(2);
   const gpAction = (action) => {
     const ps = navigator.getGamepads();
     for (let i = 0; i < ps.length; i++) {
@@ -3257,20 +3407,20 @@ function sampleLocalMerged() {
     return false;
   };
   const gpAxis = (ax, lo) => { const ps=navigator.getGamepads(); for(let i=0;i<ps.length;i++){ const g=ps[i]; if(!g)continue; const v=g.axes[ax]||0; if(lo?v<-0.4:v>0.4) return true; const dpad = ax===0?(lo?14:15):(lo?12:13); if(g.buttons[dpad]&&g.buttons[dpad].pressed) return true; } return false; };
-  const up = k.has("KeyW") || k.has("ArrowUp") || gpAction("jump");
+  const up = keyboardActionPressed(keyboard, "up") || gpAction("jump");
   return {
-    left:  k.has("KeyA") || k.has("ArrowLeft")  || gpAxis(0, true),
-    right: k.has("KeyD") || k.has("ArrowRight") || gpAxis(0, false),
+    left:  keyboardActionPressed(keyboard, "left") || gpAxis(0, true),
+    right: keyboardActionPressed(keyboard, "right") || gpAxis(0, false),
     up,
-    down:  k.has("KeyS") || k.has("ArrowDown")  || gpAxis(1, false),
+    down:  keyboardActionPressed(keyboard, "down") || gpAxis(1, false),
     jump:  up,
-    attack: k.has("KeyJ") || gpAction("attack"),
-    guard:  k.has("KeyK") || gpAction("guard"),
-    balloon: k.has("Space") || gpAction("balloon"),
-    taunt: k.has("KeyY") || gpAction("taunt"),
+    attack: keyboardActionPressed(keyboard, "attack") || gpAction("attack"),
+    guard:  keyboardActionPressed(keyboard, "guard") || gpAction("guard"),
+    balloon: keyboardActionPressed(keyboard, "balloon") || gpAction("balloon"),
+    taunt: keyboardActionPressed(keyboard, "taunt") || gpAction("taunt"),
     stagePrev: gpAction("stagePrev"),
     stageNext: gpAction("stageNext"),
-    start: k.has("Enter") || gpAction("start"),
+    start: keyboardActionPressed(keyboard, "start") || gpAction("start"),
   };
 }
 
@@ -3526,6 +3676,24 @@ const $ol = id => document.getElementById(id);
 const helpOpenButton = $ol("help-open");
 const helpModal = $ol("help-modal");
 const helpCloseButton = $ol("help-close");
+const keyboardConfigModal = $ol("keyboard-config");
+const keyboardConfigProfile = $ol("keyboard-config-profile");
+const keyboardConfigCloseButton = $ol("keyboard-config-close");
+const keyboardConfigResetButton = $ol("keyboard-config-reset");
+const keyboardConfigStatus = $ol("keyboard-config-status");
+const keyboardConfigOpenButtons = [
+  { button: $ol("key-config-open-left"), profile: 0 },
+  { button: $ol("key-config-open-right"), profile: 1 },
+  { button: $ol("key-config-open-solo"), profile: 2 },
+];
+const keyboardConfigButtons = {
+  left: $ol("keyboard-map-left"), right: $ol("keyboard-map-right"),
+  up: $ol("keyboard-map-up"), down: $ol("keyboard-map-down"),
+  attack: $ol("keyboard-map-attack"), guard: $ol("keyboard-map-guard"),
+  balloon: $ol("keyboard-map-balloon"), taunt: $ol("keyboard-map-taunt"), start: $ol("keyboard-map-start"),
+};
+let keyboardConfigWaiting = null;
+let keyboardConfigReturnFocus = null;
 const gamepadConfigModal = $ol("gamepad-config");
 const gamepadConfigOpenButton = $ol("pad-config-open");
 const gamepadConfigCloseButton = $ol("pad-config-close");
@@ -3538,6 +3706,153 @@ const gamepadConfigButtons = {
   stagePrev: $ol("pad-map-stage-prev"), stageNext: $ol("pad-map-stage-next"), start: $ol("pad-map-start"),
 };
 let gamepadConfigWaiting = null;
+
+function selectedKeyboardProfileIndex() {
+  const index = Number(keyboardConfigProfile.value);
+  return Number.isInteger(index) && index >= 0 && index < DEFAULT_KEYBOARD_MAPPINGS.length ? index : 0;
+}
+
+function refreshKeyboardHelpLabels() {
+  for (let profile = 0; profile < 2; profile++) {
+    const mapping = getKeyboardMapping(profile);
+    $ol("kb" + profile + "-device").textContent = keyboardMappingLabel(mapping, "left") + " / "
+      + keyboardMappingLabel(mapping, "right") + " ＋ " + keyboardMappingLabel(mapping, "attack") + " / "
+      + keyboardMappingLabel(mapping, "guard");
+    $ol("kb" + profile + "-move").textContent = keyboardMappingLabel(mapping, "left") + " / " + keyboardMappingLabel(mapping, "right");
+    for (const action of ["up", "down", "attack", "guard", "balloon", "taunt"]) {
+      $ol("kb" + profile + "-" + action).textContent = keyboardMappingLabel(mapping, action);
+    }
+  }
+  const left = getKeyboardMapping(0);
+  const right = getKeyboardMapping(1);
+  $ol("help-lead").textContent = "参加キー：キーボード左は " + keyboardMappingLabel(left, "attack")
+    + "、キーボード右は " + keyboardMappingLabel(right, "attack")
+    + "、ゲームパッドは設定した攻撃ボタン。試合開始は " + keyboardMappingLabel(left, "start")
+    + "（左）/ " + keyboardMappingLabel(right, "start") + "（右）、または設定したパッド決定ボタンです。";
+  const solo = getKeyboardMapping(2);
+  $ol("kb2-summary").textContent = "移動は " + keyboardMappingLabel(solo, "left") + " / "
+    + keyboardMappingLabel(solo, "right") + "、攻撃 " + keyboardMappingLabel(solo, "attack")
+    + "、ガード " + keyboardMappingLabel(solo, "guard") + "、風船 "
+    + keyboardMappingLabel(solo, "balloon") + "、アピール " + keyboardMappingLabel(solo, "taunt") + "。";
+}
+
+function refreshKeyboardConfigButtons() {
+  const profile = selectedKeyboardProfileIndex();
+  const mapping = getKeyboardMapping(profile);
+  for (const action of KEYBOARD_ACTIONS) {
+    const button = keyboardConfigButtons[action];
+    button.classList.toggle("listening", !!keyboardConfigWaiting && keyboardConfigWaiting.action === action);
+    button.textContent = keyboardConfigWaiting && keyboardConfigWaiting.action === action
+      ? "キーを押してください…"
+      : keyboardMappingLabel(mapping, action);
+  }
+}
+
+function openKeyboardConfig(profile = 0, returnFocus = null) {
+  if (APP.phase !== "lobby") return;
+  keyboardConfigOpen = true;
+  keyboardConfigWaiting = null;
+  keyboardConfigReturnFocus = returnFocus;
+  keyboardConfigProfile.value = String(profile);
+  keyboardConfigModal.hidden = false;
+  keys.clear();
+  keyboardConfigStatus.textContent = "変更する操作を選んでください。";
+  refreshKeyboardConfigButtons();
+  keyboardConfigCloseButton.focus();
+}
+
+function closeKeyboardConfig() {
+  if (!keyboardConfigOpen) return;
+  keyboardConfigOpen = false;
+  keyboardConfigWaiting = null;
+  keyboardConfigModal.hidden = true;
+  APP.lobbyPrev.clear();
+  keys.clear();
+  if (keyboardConfigReturnFocus) keyboardConfigReturnFocus.focus();
+  keyboardConfigReturnFocus = null;
+}
+
+function beginKeyboardKeyCapture(action) {
+  if (!KEYBOARD_ACTIONS.includes(action)) return;
+  keyboardConfigWaiting = { action };
+  keyboardConfigStatus.textContent = "割り当てたいキーを押してください。Escでキャンセルできます。";
+  refreshKeyboardConfigButtons();
+}
+
+function applyKeyboardConfigCode(code) {
+  if (!keyboardConfigWaiting || KEYBOARD_RESERVED_CODES.has(code)) return false;
+  const profile = selectedKeyboardProfileIndex();
+  const action = keyboardConfigWaiting.action;
+  const mapping = remapKeyboardKey(getKeyboardMapping(profile), action, code, profile);
+  setKeyboardMapping(profile, mapping);
+  keyboardConfigWaiting = null;
+  keyboardConfigStatus.textContent = keyboardKeyName(code) + " を設定しました。";
+  APP.lobbyPrev.clear();
+  refreshKeyboardConfigButtons();
+  refreshKeyboardHelpLabels();
+  return true;
+}
+
+function handleKeyboardConfigKeydown(event) {
+  event.stopImmediatePropagation();
+  if (!keyboardConfigWaiting) {
+    if (event.code === "Escape" && !event.repeat) {
+      event.preventDefault();
+      closeKeyboardConfig();
+    }
+    return;
+  }
+  event.preventDefault();
+  if (event.repeat) return;
+  if (event.code === "Escape") {
+    if (keyboardConfigWaiting) {
+      keyboardConfigWaiting = null;
+      keyboardConfigStatus.textContent = "割り当てをキャンセルしました。";
+      refreshKeyboardConfigButtons();
+    }
+    return;
+  }
+  if (event.code === "Tab") {
+    keyboardConfigStatus.textContent = "Tabは操作方法を開くため予約されています。別のキーを押してください。";
+    return;
+  }
+  applyKeyboardConfigCode(event.code);
+}
+
+for (const entry of keyboardConfigOpenButtons) {
+  entry.button.addEventListener("click", () => openKeyboardConfig(entry.profile, entry.button));
+}
+keyboardConfigCloseButton.addEventListener("click", closeKeyboardConfig);
+keyboardConfigResetButton.addEventListener("click", () => {
+  const profile = selectedKeyboardProfileIndex();
+  resetKeyboardMapping(profile);
+  keyboardConfigWaiting = null;
+  keyboardConfigStatus.textContent = "この系統を初期設定に戻しました。";
+  APP.lobbyPrev.clear();
+  refreshKeyboardConfigButtons();
+  refreshKeyboardHelpLabels();
+});
+keyboardConfigProfile.addEventListener("change", () => {
+  keyboardConfigWaiting = null;
+  keyboardConfigStatus.textContent = "変更する操作を選んでください。";
+  refreshKeyboardConfigButtons();
+});
+for (const action of KEYBOARD_ACTIONS) {
+  keyboardConfigButtons[action].addEventListener("click", () => beginKeyboardKeyCapture(action));
+}
+keyboardConfigModal.addEventListener("click", event => { if (event.target === keyboardConfigModal) closeKeyboardConfig(); });
+refreshKeyboardHelpLabels();
+
+// キーボード設定画面のQA用URL（?preview=keyboard-config&keyboard=0|1|2）。
+function applyKeyboardConfigPreviewFromUrl() {
+  const params = new URLSearchParams(location.search);
+  if (params.get("preview") !== "keyboard-config") return;
+  const requested = Number(params.get("keyboard"));
+  const profile = Number.isInteger(requested) && requested >= 0 && requested < DEFAULT_KEYBOARD_MAPPINGS.length ? requested : 0;
+  setLobbyHelpOpen(true);
+  openKeyboardConfig(profile, keyboardConfigOpenButtons[profile].button);
+}
+applyKeyboardConfigPreviewFromUrl();
 
 function selectedGamepadConfigIndex() {
   const index = Number(gamepadConfigDevice.value);
@@ -3671,10 +3986,11 @@ function setLobbyHelpOpen(open) {
   const canOpen = open && APP.phase === "lobby" && $ol("online").hidden;
   lobbyHelpOpen = !!canOpen;
   if (!lobbyHelpOpen && gamepadConfigOpen) closeGamepadConfig();
+  if (!lobbyHelpOpen && keyboardConfigOpen) closeKeyboardConfig();
   helpModal.hidden = !lobbyHelpOpen;
   helpOpenButton.hidden = lobbyHelpOpen;
   keys.clear();
-  if (lobbyHelpOpen) helpCloseButton.focus();
+  if (lobbyHelpOpen) { refreshKeyboardHelpLabels(); helpCloseButton.focus(); }
   else if (APP.phase === "lobby" && $ol("online").hidden) helpOpenButton.focus();
 }
 
@@ -3806,7 +4122,7 @@ function claimedIds() {
 
 function updateLobby() {
   // モーダル／オンラインメニュー中はローカルロビー操作（参加/CPU/ステージ）を止める
-  if (lobbyHelpOpen || gamepadConfigOpen || !$ol("online").hidden) return;
+  if (lobbyHelpOpen || gamepadConfigOpen || keyboardConfigOpen || !$ol("online").hidden) return;
   // 注意: 全ソースの prev を先に更新しきってから遷移する
   // （ループ途中で抜けると未更新の prev が偽エッジを生む）
   const claimed = claimedIds();
@@ -3853,7 +4169,7 @@ function updateLobby() {
 function startMatch() {
   const slotIndices = [];
   APP.slots.forEach((s, i) => { if (s) slotIndices.push(i); });
-  // 人間が1人だけ（ソロ）なら、その人はオンラインと同じキー操作(J攻撃/K防御/Space風船)にする
+  // 人間が1人だけ（ソロ）なら、その人は「1人・オンライン」用のキー設定を使う。
   const humans = [];
   APP.slots.forEach((s, i) => { if (s && !s.cpu) humans.push(i); });
   APP.soloSlot = humans.length === 1 ? humans[0] : -1;
@@ -5430,8 +5746,18 @@ function drawHUD(m) {
 }
 
 function controlLinesFor(sourceId) {
-  if (sourceId === "kb0") return ["移動: A / D", "ジャンプ: W / 下: S（地上でしゃがむ）", "攻撃: F（1秒で中溜め / 2秒でフル）", "ガード（卵）: G", "風船: Space", "アピール: Y"];
-  if (sourceId === "kb1") return ["移動: H(左) / K(右)", "ジャンプ: U / 下: J（地上でしゃがむ）", "攻撃: L（1秒で中溜め / 2秒でフル）", "ガード（卵）: -（ハイフン）", "風船: .（ピリオド）", "アピール: I"];
+  const keyboardMatch = /^kb([01])$/.exec(sourceId);
+  if (keyboardMatch) {
+    const mapping = getKeyboardMapping(Number(keyboardMatch[1]));
+    return [
+      "移動: " + keyboardMappingLabel(mapping, "left") + " / " + keyboardMappingLabel(mapping, "right"),
+      "ジャンプ: " + keyboardMappingLabel(mapping, "up") + " / 下: " + keyboardMappingLabel(mapping, "down"),
+      "攻撃: " + keyboardMappingLabel(mapping, "attack") + "（1秒で中溜め / 2秒でフル）",
+      "ガード（卵）: " + keyboardMappingLabel(mapping, "guard"),
+      "風船: " + keyboardMappingLabel(mapping, "balloon"),
+      "アピール: " + keyboardMappingLabel(mapping, "taunt"),
+    ];
+  }
   const padMatch = /^pad(\d+)$/.exec(sourceId);
   if (padMatch) {
     const mapping = getGamepadMapping(Number(padMatch[1]));
@@ -5453,13 +5779,14 @@ function cardInfoFor(p) {
   const gamepads = navigator.getGamepads();
   const padIndex = Array.from(gamepads).findIndex(Boolean);
   const padLabel = action => padIndex >= 0 ? gamepadMappingLabel(getGamepadMapping(padIndex), action) : "設定したパッドボタン";
+  const keyboard = getKeyboardMapping(2);
   const onlineControls = { label: "あなた", lines: [
-    "移動: A/D・←/→・スティック/十字",
-    "ジャンプ: W・↑ / " + padLabel("jump") + " / 下でしゃがみ",
-    "攻撃: J / " + padLabel("attack") + "（溜め可）",
-    "ガード（卵）: K / " + padLabel("guard"),
-    "風船: Space / " + padLabel("balloon"),
-    "アピール: Y / " + padLabel("taunt"),
+    "移動: " + keyboardMappingLabel(keyboard, "left") + " / " + keyboardMappingLabel(keyboard, "right") + "・スティック/十字",
+    "ジャンプ: " + keyboardMappingLabel(keyboard, "up") + " / " + padLabel("jump") + " / 下: " + keyboardMappingLabel(keyboard, "down"),
+    "攻撃: " + keyboardMappingLabel(keyboard, "attack") + " / " + padLabel("attack") + "（溜め可）",
+    "ガード（卵）: " + keyboardMappingLabel(keyboard, "guard") + " / " + padLabel("guard"),
+    "風船: " + keyboardMappingLabel(keyboard, "balloon") + " / " + padLabel("balloon"),
+    "アピール: " + keyboardMappingLabel(keyboard, "taunt") + " / " + padLabel("taunt"),
   ] };
   if (APP.mode === "online") {
     if (p.slot === NET.myIndex) return onlineControls;
@@ -5749,6 +6076,10 @@ function drawLobby() {
 
   const joined = APP.slots.filter(Boolean).length;
   const humanCount = APP.slots.filter(s => s && !s.cpu).length;
+  const leftKeyboard = getKeyboardMapping(0);
+  const rightKeyboard = getKeyboardMapping(1);
+  const soloKeyboard = getKeyboardMapping(2);
+  const localStartKeys = [...new Set([...leftKeyboard.start, ...rightKeyboard.start])].map(keyboardKeyName).join(" / ");
 
   // 参加方法は長い1行を詰め込まず、横幅と高さを確保した2段の案内枠にする。
   ctx.fillStyle = "rgba(14,16,34,0.9)";
@@ -5763,7 +6094,7 @@ function drawLobby() {
     if (Math.floor(performance.now() / 400) % 2 === 0) {
       ctx.fillStyle = "#ffd34d";
       ctx.font = "bold 26px sans-serif";
-      ctx.fillText("Enter / 設定した決定ボタンで開始！", W / 2, 386);
+      ctx.fillText(localStartKeys + " / 設定した決定ボタンで開始！", W / 2, 386);
     }
   } else {
     ctx.fillStyle = "#ffd34d";
@@ -5771,7 +6102,8 @@ function drawLobby() {
     ctx.fillText("参加", W / 2, 367);
     ctx.fillStyle = "#fff";
     ctx.font = "bold 19px sans-serif";
-    ctx.fillText("F（左キーボード）／ L（右キーボード）／ パッド：設定した攻撃ボタン", W / 2, 393);
+    ctx.fillText(keyboardMappingLabel(leftKeyboard, "attack") + "（左キーボード）／ "
+      + keyboardMappingLabel(rightKeyboard, "attack") + "（右キーボード）／ パッド：設定した攻撃ボタン", W / 2, 393);
     ctx.fillStyle = "rgba(255,255,255,0.66)";
     ctx.font = "14px sans-serif";
     ctx.fillText("CPU：C で追加 ／ X で削除", W / 2, 422);
@@ -5780,7 +6112,10 @@ function drawLobby() {
   if (humanCount === 1 && joined >= 2) {
     ctx.font = "14px sans-serif";
     ctx.fillStyle = "#8fd3ff";
-    ctx.fillText("1人プレイ → 移動: WASD / 矢印　攻撃: J　ガード: K　風船: Space", W / 2, 418);
+    ctx.fillText("1人プレイ → 移動: " + keyboardMappingLabel(soloKeyboard, "left") + " / "
+      + keyboardMappingLabel(soloKeyboard, "right") + "　攻撃: " + keyboardMappingLabel(soloKeyboard, "attack")
+      + "　ガード: " + keyboardMappingLabel(soloKeyboard, "guard") + "　風船: "
+      + keyboardMappingLabel(soloKeyboard, "balloon"), W / 2, 418);
   }
 
   // ステージ選択（左右キーで変更）
@@ -5789,7 +6124,7 @@ function drawLobby() {
   ctx.fillText("◀  ステージ: " + selStage.name + "  （" + (APP.stageIndex + 1) + "/" + STAGES.length + "）  ▶", W / 2, 482);
   ctx.font = "13px sans-serif";
   ctx.fillStyle = "rgba(255,255,255,0.5)";
-  ctx.fillText("← → ／ 設定したステージボタンで変更", W / 2, 508);
+  ctx.fillText("各キーボードの左右移動キー ／ 設定したステージボタンで変更", W / 2, 508);
 
   // 背景条件に左右されないオンライン対戦専用ボックス。Oをキーキャップとして分離する。
   ctx.fillStyle = "rgba(9,22,38,0.92)";
@@ -5904,14 +6239,14 @@ function drawResult() {
   const arrows = canPick ? "◀  " : "";
   const arrowsR = canPick ? "  ▶" : "";
   ctx.fillText(arrows + "次のステージ: " + STAGES[nextIdx].name + arrowsR, W / 2, selY);
-  if (canPick) { ctx.font = "13px sans-serif"; ctx.fillStyle = "rgba(255,255,255,0.55)"; ctx.fillText("← → ／ 設定したステージボタンで変更", W / 2, selY + 22); }
+  if (canPick) { ctx.font = "13px sans-serif"; ctx.fillStyle = "rgba(255,255,255,0.55)"; ctx.fillText("設定した左右移動キー ／ ステージボタンで変更", W / 2, selY + 22); }
 
   ctx.fillStyle = "#fff"; ctx.font = "bold 22px sans-serif"; ctx.textAlign = "center";
   const btmY = selY + 54;
   if (APP.mode === "online") {
-    ctx.fillText(NET.isHost ? "Enter／設定した決定ボタン: 再戦 ／ Esc: 退出" : "ホストの再戦待ち… ／ Esc: 退出", W / 2, btmY);
+    ctx.fillText(NET.isHost ? "設定した開始キー／決定ボタン: 再戦 ／ Esc: 退出" : "ホストの再戦待ち… ／ Esc: 退出", W / 2, btmY);
   } else {
-    ctx.fillText("Enter／設定した決定ボタン: 再戦 ／ Esc: ロビーへ", W / 2, btmY);
+    ctx.fillText("設定した開始キー／決定ボタン: 再戦 ／ Esc: ロビーへ", W / 2, btmY);
   }
 }
 
@@ -5966,6 +6301,9 @@ window.UCHI = {
   fx,
   NET, netHost, netJoin, netHostStart, encodeSample, decodeSample,
   makeCpuSource, cpuThink,
+  KEYBOARD_ACTIONS, DEFAULT_KEYBOARD_MAPPINGS, KEYBOARD_MAPPING_STORAGE_KEY,
+  normalizeKeyboardMapping, getKeyboardMapping, setKeyboardMapping, resetKeyboardMapping,
+  remapKeyboardKey, keyboardKeyName, keyboardMappingLabel, keyboardActionPressed,
   GAMEPAD_ACTIONS, GAMEPAD_GAME_ACTIONS, GAMEPAD_MENU_ACTIONS, DEFAULT_GAMEPAD_MAPPING, GAMEPAD_MAPPING_STORAGE_KEY,
   normalizeGamepadMapping, getGamepadMapping, setGamepadMapping, resetGamepadMapping,
   remapGamepadButton, gamepadButtonName, gamepadMappingLabel,

@@ -127,7 +127,7 @@ test("release constants and input codec stay coherent", () => {
   const { UCHI: game } = sandbox;
   assert.match(HTML, /<title>PYGMIX BONBON<\/title>/);
   assert.match(HTML, /ctx\.fillText\("PYGMIX BONBON", W \/ 2, 120\)/);
-  assert.match(HTML, /const GAME_VERSION = "0\.9\.43"/);
+  assert.match(HTML, /const GAME_VERSION = "0\.9\.44"/);
   assert.match(HTML, /リーチ・速度・ビーム・巨大化・風船補充の5種類/);
   assert.equal(game.PHYS.gravity, 0.495);
   assert.equal(game.DOWN_ATTACK.damageMult, 1.2);
@@ -234,6 +234,10 @@ test("release constants and input codec stay coherent", () => {
   assert.deepEqual([...game.DEFAULT_GAMEPAD_MAPPING.stagePrev], [14]);
   assert.deepEqual([...game.DEFAULT_GAMEPAD_MAPPING.stageNext], [15]);
   assert.deepEqual([...game.DEFAULT_GAMEPAD_MAPPING.start], [9]);
+  assert.deepEqual([...game.DEFAULT_KEYBOARD_MAPPINGS[0].attack], ["KeyF"]);
+  assert.deepEqual([...game.DEFAULT_KEYBOARD_MAPPINGS[1].attack], ["KeyL"]);
+  assert.deepEqual([...game.DEFAULT_KEYBOARD_MAPPINGS[2].left], ["KeyA", "ArrowLeft"]);
+  assert.deepEqual([...game.DEFAULT_KEYBOARD_MAPPINGS[2].start], ["Enter"]);
   assert.equal(ice.platforms.every(platform => platform.slope !== 0), true);
   assert.equal(ice.platforms.filter(platform => platform.main).length, 2);
   assert.ok(ice.icePhysics.accel < game.PHYS.groundAccel);
@@ -269,6 +273,56 @@ test("keyboard Y and gamepad B-circle trigger only the taunt input", () => {
   const cross = sandbox.makeGamepadSource(0).sample();
   assert.equal(cross.jump, true);
   assert.equal(cross.taunt, false);
+});
+
+test("keyboard actions can be remapped per profile and persist in local storage", () => {
+  const storage = new Map();
+  const sandbox = loadGame("", storage);
+  const { UCHI: game } = sandbox;
+
+  let mapping = game.remapKeyboardKey(game.getKeyboardMapping(0), "attack", "KeyR", 0);
+  mapping = game.remapKeyboardKey(mapping, "guard", "KeyT", 0);
+  game.setKeyboardMapping(0, mapping);
+  assert.deepEqual([...game.getKeyboardMapping(0).attack], ["KeyR"]);
+  assert.deepEqual([...game.getKeyboardMapping(0).guard], ["KeyT"]);
+
+  game.keys.add("KeyR");
+  let sample = sandbox.makeKeyboardSource(0).sample();
+  assert.equal(sample.attack, true);
+  assert.equal(sample.guard, false);
+  game.keys.clear();
+  game.keys.add("KeyT");
+  sample = sandbox.makeKeyboardSource(0).sample();
+  assert.equal(sample.attack, false);
+  assert.equal(sample.guard, true);
+  assert.ok(storage.has(game.KEYBOARD_MAPPING_STORAGE_KEY));
+
+  const reloaded = loadGame("", storage);
+  assert.deepEqual([...reloaded.UCHI.getKeyboardMapping(0).attack], ["KeyR"]);
+  assert.deepEqual([...reloaded.UCHI.getKeyboardMapping(0).guard], ["KeyT"]);
+});
+
+test("keyboard remapping swaps conflicting actions and supports solo-online controls", () => {
+  const sandbox = loadGame();
+  const { UCHI: game } = sandbox;
+
+  const conflicted = game.remapKeyboardKey(game.getKeyboardMapping(0), "attack", "KeyW", 0);
+  assert.deepEqual([...conflicted.attack], ["KeyW"]);
+  assert.deepEqual([...conflicted.up], ["KeyF"]);
+
+  let solo = game.remapKeyboardKey(game.getKeyboardMapping(2), "left", "KeyQ", 2);
+  solo = game.remapKeyboardKey(solo, "attack", "KeyE", 2);
+  solo = game.remapKeyboardKey(solo, "start", "KeyR", 2);
+  game.setKeyboardMapping(2, solo);
+  game.keys.add("KeyQ");
+  game.keys.add("KeyE");
+  game.keys.add("KeyR");
+  const sample = sandbox.sampleLocalMerged();
+  assert.equal(sample.left, true);
+  assert.equal(sample.attack, true);
+  assert.equal(sample.start, true);
+  assert.equal(game.keyboardKeyName("ArrowLeft"), "←");
+  assert.equal(game.keyboardKeyName("KeyQ"), "Q");
 });
 
 test("gamepad actions can be remapped per pad and persist in local storage", () => {
@@ -1380,7 +1434,11 @@ test("lobby controls open in a modal and pause lobby input", () => {
   const helpOpen = sandbox.document.getElementById("help-open");
   const helpModal = sandbox.document.getElementById("help-modal");
   assert.match(HTML, /role="dialog" aria-modal="true"/);
-  assert.match(HTML, /F（左キーボード）／ L（右キーボード）／ パッド：設定した攻撃ボタン/);
+  assert.match(HTML, /keyboardMappingLabel\(leftKeyboard, "attack"\)/);
+  assert.match(HTML, /id="keyboard-config" hidden/);
+  assert.match(HTML, /data-keyboard-action="left"/);
+  assert.match(HTML, /data-keyboard-action="attack"/);
+  assert.match(HTML, /data-keyboard-action="start"/);
   assert.match(HTML, /id="gamepad-config" hidden/);
   assert.match(HTML, /data-pad-action="attack"/);
   assert.match(HTML, /data-pad-action="stagePrev"/);
@@ -1402,12 +1460,27 @@ test("lobby controls open in a modal and pause lobby input", () => {
   assert.match(sandbox.document.getElementById("pad-config-status").textContent, /ゲームパッドを接続/);
   sandbox.closeGamepadConfig();
 
+  sandbox.openKeyboardConfig(1);
+  assert.equal(sandbox.document.getElementById("keyboard-config").hidden, false);
+  assert.equal(sandbox.document.getElementById("keyboard-config-profile").value, "1");
+  sandbox.beginKeyboardKeyCapture("attack");
+  assert.equal(sandbox.applyKeyboardConfigCode("KeyP"), true);
+  assert.deepEqual([...game.getKeyboardMapping(1).attack], ["KeyP"]);
+  sandbox.closeKeyboardConfig();
+
   game.keys.add("KeyC");
   sandbox.updateLobby();
   assert.equal(game.APP.slots.filter(Boolean).length, 0);
 
   sandbox.setLobbyHelpOpen(false);
   assert.equal(helpModal.hidden, true);
+});
+
+test("the keyboard-config QA URL opens the requested keyboard profile", () => {
+  const sandbox = loadGame("?preview=keyboard-config&keyboard=2");
+  assert.equal(sandbox.document.getElementById("help-modal").hidden, false);
+  assert.equal(sandbox.document.getElementById("keyboard-config").hidden, false);
+  assert.equal(sandbox.document.getElementById("keyboard-config-profile").value, "2");
 });
 
 test("circus warps choose two of four candidates and change every cycle", () => {
