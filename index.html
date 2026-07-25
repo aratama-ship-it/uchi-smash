@@ -526,9 +526,16 @@ const GUARD = {
   breakStun: 45,   // ガードブレイク時の硬直
 };
 
+// 被弾硬直中も左右入力だけは弱く受け付ける。
+// 攻撃・ジャンプ・ガード等は従来どおり封じ、完全に動けない連続ハメだけを防ぐ。
+const HITSTUN_CONTROL = {
+  accelScale: 0.2,    // 通常の20%の加速で、吹き飛び方向へ少しだけ抵抗できる
+  maxSpeedScale: 0.4, // 長い硬直でも通常走行速度までは戻らない
+};
+
 // ★オンライン同期の要: 決定論simに影響する変更(stepMatch/ステージ/物理/定数など)をしたら
 //   必ずこの版数を上げること。オンライン接続時に両者で照合し、食い違えば試合させず弾く。
-const GAME_VERSION = "0.9.44";
+const GAME_VERSION = "0.9.46";
 
 const PLAYER_W = 36, PLAYER_H = 48;
 // キャラクター同士の物理衝突。複数人が同時に密集しても、反復して体の重なりを解消する。
@@ -832,7 +839,47 @@ const STAGES = [
       downTicks: 372, riseTicks: 96, upTicks: 72, fallTicks: 60,  // 約10秒周期(600tick): 奈落6.2s→上昇1.6s→滞留1.2s→下降1.0s
     },
   },
+  {
+    // しせん回廊: 物理と入力は従来の2Dのまま、試合開始10秒後に各自の視点だけを
+    // 自キャラクターの後ろから回廊を見通す三人称風へ切り替えるオンライン専用ステージ。
+    name: "しせん回廊",
+    onlineOnly: true,
+    perspectiveShift: { afterTicks: 600, warningTicks: 120, transitionTicks: 45 },
+    theme: { sky:["#080b10","#151c24","#252d34"], mountain:"rgba(4,7,10,0.8)", corridor:true,
+             dirt:"#242a2e", grass:"#d9c07a", grass2:"#857448", plat:"#59636a", platTop:"#d7dee2" },
+    platforms: [
+      { x: 100, y: 590, w: 1080, droppable: false, main: true },
+      { x: 245, y: 465, w: 220, droppable: true },
+      { x: 815, y: 465, w: 220, droppable: true },
+      { x: 530, y: 345, w: 220, droppable: true },
+    ],
+    spawns: [ {x:340,y:465}, {x:940,y:465}, {x:430,y:590}, {x:850,y:590} ],
+  },
 ];
+
+function selectableStageIndices(allowOnlineOnly = false) {
+  const indices = [];
+  for (let i = 0; i < STAGES.length; i++) {
+    if (allowOnlineOnly || !STAGES[i].onlineOnly) indices.push(i);
+  }
+  return indices;
+}
+
+// ローカルではonlineOnly面を飛ばし、オンラインのホスト選択だけ全ステージを巡回する。
+function nextStageIndex(current, delta, allowOnlineOnly = false) {
+  const indices = selectableStageIndices(allowOnlineOnly);
+  if (!indices.length) return 0;
+  let position = indices.indexOf(current);
+  if (position < 0) position = 0;
+  else position = ((position + delta) % indices.length + indices.length) % indices.length;
+  return indices[position];
+}
+
+function stageOrdinal(stageIndex, allowOnlineOnly = false) {
+  const indices = selectableStageIndices(allowOnlineOnly);
+  const position = indices.indexOf(stageIndex);
+  return { position: position >= 0 ? position + 1 : 1, total: indices.length };
+}
 
 const COLORS   = ["#e74c3c", "#3ee657", "#f1c40f", "#3498db"];  // P1赤 P2緑 P3黄 P4青
 const COLORS_D = ["#a93226", "#1fa83b", "#b7950b", "#21618c"];
@@ -847,6 +894,11 @@ const LOBBY_CORNER_CHARACTERS = [
 /* ======================= 入力レイヤー ======================= */
 // 押下中キーの集合（ブラウザイベント → ここに集約）
 const keys = new Set();
+const PRACTICE_TAP_TICKS = 12;
+const practiceInputPulses = new Map();
+function queuePracticeInput(code) {
+  practiceInputPulses.set(code, PRACTICE_TAP_TICKS);
+}
 let lobbyHelpOpen = false;
 let gamepadConfigOpen = false;
 let keyboardConfigOpen = false;
@@ -888,10 +940,13 @@ window.addEventListener("keydown", e => {
     return;
   }
   if (USED_CODES.has(e.code) || keyboardCodeInUse(e.code)) e.preventDefault();
-  if (!e.repeat) keys.add(e.code);
+  if (!e.repeat) {
+    keys.add(e.code);
+    if (APP.match && APP.match.perspectivePlayable) queuePracticeInput(e.code);
+  }
 });
 window.addEventListener("keyup", e => { if (typingInField()) return; keys.delete(e.code); });
-window.addEventListener("blur", () => keys.clear());
+window.addEventListener("blur", () => { keys.clear(); practiceInputPulses.clear(); });
 
 const NEUTRAL = Object.freeze({ left:false,right:false,up:false,down:false,jump:false,attack:false,guard:false,balloon:false,taunt:false,stagePrev:false,stageNext:false,start:false });
 
@@ -2353,7 +2408,8 @@ function stepMatch(state, samples) {
     }
     const locked = p.guarding;        // ガード中は左右上下・攻撃すべて不可
 
-    const dir = (canAct && !locked) ? ((cur.right ? 1 : 0) - (cur.left ? 1 : 0)) : 0;
+    // 硬直中も左右だけは弱く反映する。これにより連続被弾中でも少しずつ間合い・軌道をずらせる。
+    const dir = !locked ? ((cur.right ? 1 : 0) - (cur.left ? 1 : 0)) : 0;
     if (dir !== 0) p.facing = dir;
 
     // アピールは純粋な演出。地上で入力した時だけ始まり、別の行動をすると即終了する。
@@ -2378,14 +2434,17 @@ function stepMatch(state, samples) {
     const icePhysics = state.stage.icePhysics;
     const spd = p.itemType === "speed" ? ITEM.speedMult : p.itemType === "giant" ? GIANT.speedMult : 1;
     const maxRun = PHYS.maxRun * spd * moveScale, maxAir = PHYS.maxAir * spd * moveScale;
+    const controlAccelScale = canAct ? 1 : HITSTUN_CONTROL.accelScale;
+    const controlMaxRun = maxRun * (canAct ? 1 : HITSTUN_CONTROL.maxSpeedScale);
+    const controlMaxAir = maxAir * (canAct ? 1 : HITSTUN_CONTROL.maxSpeedScale);
     if (p.onGround) {
       if (dir !== 0) {
-        if (p.vx * dir < maxRun) {
+        if (p.vx * dir < controlMaxRun) {
           const baseAccel = icePhysics
             ? (p.vx * dir < 0 ? icePhysics.turnAccel : icePhysics.accel)
             : PHYS.groundAccel;
-          p.vx += baseAccel * spd * moveScale * dir;
-          if (p.vx * dir > maxRun) p.vx = maxRun * dir;
+          p.vx += baseAccel * spd * moveScale * controlAccelScale * dir;
+          if (p.vx * dir > controlMaxRun) p.vx = controlMaxRun * dir;
         }
       } else {
         p.vx *= icePhysics ? icePhysics.friction : PHYS.friction;
@@ -2401,9 +2460,9 @@ function stepMatch(state, samples) {
       }
     } else {
       if (dir !== 0) {
-        if (p.vx * dir < maxAir) {
-          p.vx += PHYS.airAccel * spd * moveScale * dir;
-          if (p.vx * dir > maxAir) p.vx = maxAir * dir;
+        if (p.vx * dir < controlMaxAir) {
+          p.vx += PHYS.airAccel * spd * moveScale * controlAccelScale * dir;
+          if (p.vx * dir > controlMaxAir) p.vx = controlMaxAir * dir;
         }
       } else {
         p.vx *= PHYS.airDrag;
@@ -3073,10 +3132,14 @@ function platformUnder(p, platforms) {
 
 // 確認用URLの ?stage=ステージ名 で、ロビーを直接その面のプレビューから開ける。
 function initialStageIndex() {
-  const requested = new URLSearchParams(location.search).get("stage");
+  const params = new URLSearchParams(location.search);
+  const requested = params.get("stage");
   if (!requested) return 0;
   const index = STAGES.findIndex(stage => stage.name === requested);
-  return index >= 0 ? index : 0;
+  if (index < 0) return 0;
+  // オンライン専用面は専用QAプレビュー以外のローカル起動へ混ぜない。
+  if (STAGES[index].onlineOnly && params.get("preview") !== "perspective") return 0;
+  return index;
 }
 
 /* ==================== アプリ状態（ロビー等） ==================== */
@@ -3176,6 +3239,52 @@ function applyBodyBouncePreviewFromUrl() {
   APP.phase = "match";
 }
 applyBodyBouncePreviewFromUrl();
+
+// オンライン専用「しせん回廊」のQA用URL（?preview=perspective&view=normal|warning|transition|first|third）。
+// 通信を開始せず、同じ2D状態を通常・一人称風・三人称風の各視点で即確認できる。
+function applyPerspectivePreviewFromUrl() {
+  const params = new URLSearchParams(location.search);
+  if (params.get("preview") !== "perspective") return;
+  const stageIndex = STAGES.findIndex(stage => stage.perspectiveShift);
+  if (stageIndex < 0) return;
+  APP.stageIndex = stageIndex;
+  const previewMatch = makeMatchState([0, 1, 2, 3], stageIndex);
+  const config = previewMatch.stage.perspectiveShift;
+  const requestedView = params.get("view") || "third";
+  previewMatch.perspectivePreviewMode = requestedView === "first" || requestedView === "third" ? requestedView : null;
+  previewMatch.countdown = 0;
+  if (requestedView === "normal") previewMatch.tick = COUNTDOWN_TICKS + 120;
+  else if (requestedView === "warning") previewMatch.tick = COUNTDOWN_TICKS + config.afterTicks - 60;
+  else if (requestedView === "transition") previewMatch.tick = COUNTDOWN_TICKS + config.afterTicks + Math.floor(config.transitionTicks / 2);
+  else previewMatch.tick = COUNTDOWN_TICKS + config.afterTicks + config.transitionTicks + 60;
+  previewMatch.itemTimer = 9999;
+
+  const positions = [
+    { x: 340, y: 465 },   // 視点になるP1
+    { x: 900, y: 465 },   // 回廊の奥に見えるP2
+    { x: 640, y: 345 },   // 上段に見えるP3
+    { x: 230, y: 590 },   // 背後警告になるP4
+  ];
+  for (let i = 0; i < previewMatch.players.length; i++) {
+    const player = previewMatch.players[i], position = positions[i];
+    player.x = position.x; player.y = position.y;
+    player.vx = player.vy = 0; player.onGround = true; player.invuln = 0;
+  }
+  attachPreviewInputs(previewMatch);
+  // 三人称の操作体験ではP1だけを、1人・オンライン用のキーボード設定と
+  // 接続中のゲームパッドへ割り当てる。P2〜P4は狙いや距離感を試す静止ターゲット。
+  previewMatch.perspectivePlayable = true;
+  APP.soloSlot = previewMatch.players[0].slot;
+  APP.slots[APP.soloSlot] = { source: { sample: sampleLocalMerged }, cpu: false };
+  APP.match = previewMatch;
+  APP.phase = "match";
+  const previewCanvas = document.getElementById("game");
+  if (previewCanvas) {
+    previewCanvas.tabIndex = 0;
+    if (typeof previewCanvas.focus === "function") previewCanvas.focus();
+  }
+}
+applyPerspectivePreviewFromUrl();
 
 // 地面から生えるタケノコのQA用URL（?preview=sprout）。ロビー操作なしで実戦中の動きを確認する。
 function applyBambooShootPreviewFromUrl() {
@@ -3398,6 +3507,7 @@ function decodeSample(b) {
 // 1人・オンライン時はキーボード設定の3系統目と、接続中のゲームパッドを併用する。
 function sampleLocalMerged() {
   const keyboard = getKeyboardMapping(2);
+  const perspectivePractice = !!(APP.match && APP.match.perspectivePlayable);
   const gpAction = (action) => {
     const ps = navigator.getGamepads();
     for (let i = 0; i < ps.length; i++) {
@@ -3407,21 +3517,40 @@ function sampleLocalMerged() {
     return false;
   };
   const gpAxis = (ax, lo) => { const ps=navigator.getGamepads(); for(let i=0;i<ps.length;i++){ const g=ps[i]; if(!g)continue; const v=g.axes[ax]||0; if(lo?v<-0.4:v>0.4) return true; const dpad = ax===0?(lo?14:15):(lo?12:13); if(g.buttons[dpad]&&g.buttons[dpad].pressed) return true; } return false; };
-  const up = keyboardActionPressed(keyboard, "up") || gpAction("jump");
-  return {
-    left:  keyboardActionPressed(keyboard, "left") || gpAxis(0, true),
-    right: keyboardActionPressed(keyboard, "right") || gpAxis(0, false),
+  // 操作体験版では、カスタム設定に関係なく画面記載の標準キーも必ず使える。
+  const fixed = (...codes) => perspectivePractice && codes.some(code => keys.has(code) || (practiceInputPulses.get(code) || 0) > 0);
+  const up = keyboardActionPressed(keyboard, "up") || gpAction("jump") || fixed("KeyW", "ArrowUp");
+  const sample = {
+    left:  keyboardActionPressed(keyboard, "left") || gpAxis(0, true) || fixed("KeyA", "ArrowLeft"),
+    right: keyboardActionPressed(keyboard, "right") || gpAxis(0, false) || fixed("KeyD", "ArrowRight"),
     up,
-    down:  keyboardActionPressed(keyboard, "down") || gpAxis(1, false),
+    down:  keyboardActionPressed(keyboard, "down") || gpAxis(1, false) || fixed("KeyS", "ArrowDown"),
     jump:  up,
-    attack: keyboardActionPressed(keyboard, "attack") || gpAction("attack"),
-    guard:  keyboardActionPressed(keyboard, "guard") || gpAction("guard"),
-    balloon: keyboardActionPressed(keyboard, "balloon") || gpAction("balloon"),
-    taunt: keyboardActionPressed(keyboard, "taunt") || gpAction("taunt"),
+    attack: keyboardActionPressed(keyboard, "attack") || gpAction("attack") || fixed("KeyJ", "KeyF"),
+    guard:  keyboardActionPressed(keyboard, "guard") || gpAction("guard") || fixed("KeyK", "KeyG"),
+    balloon: keyboardActionPressed(keyboard, "balloon") || gpAction("balloon") || fixed("Space"),
+    taunt: keyboardActionPressed(keyboard, "taunt") || gpAction("taunt") || fixed("KeyY"),
     stagePrev: gpAction("stagePrev"),
     stageNext: gpAction("stageNext"),
     start: keyboardActionPressed(keyboard, "start") || gpAction("start"),
   };
+  if (perspectivePractice) {
+    const labels = [];
+    if (sample.left) labels.push("左");
+    if (sample.right) labels.push("右");
+    if (sample.jump) labels.push("ジャンプ");
+    if (sample.down) labels.push("下");
+    if (sample.attack) labels.push("攻撃");
+    if (sample.guard) labels.push("ガード");
+    if (sample.balloon) labels.push("風船");
+    if (sample.taunt) labels.push("アピール");
+    APP.match.perspectiveInputLabel = labels.join("・");
+    for (const [code, ticks] of practiceInputPulses) {
+      if (ticks <= 1) practiceInputPulses.delete(code);
+      else practiceInputPulses.set(code, ticks - 1);
+    }
+  }
+  return sample;
 }
 
 function netResetBuffers(n) {
@@ -4042,7 +4171,8 @@ function refreshOnlineUI() {
     // ステージ選択はホストのみ（接続後）
     const stageBox = $ol("ol-stage");
     stageBox.hidden = !(NET.isHost && NET.status === "connected");
-    $ol("ol-stage-name").textContent = STAGES[APP.stageIndex].name;
+    const selectedStage = STAGES[APP.stageIndex];
+    $ol("ol-stage-name").textContent = selectedStage.name + (selectedStage.onlineOnly ? "（オンライン専用）" : "");
     // コピーボタンはホストのみ
     $ol("btn-copy-code").style.display = NET.isHost ? "" : "none";
     $ol("btn-copy-url").style.display = NET.isHost ? "" : "none";
@@ -4051,7 +4181,7 @@ function refreshOnlineUI() {
 }
 
 function olChangeStage(delta) {
-  APP.stageIndex = ((APP.stageIndex + delta) % STAGES.length + STAGES.length) % STAGES.length;
+  APP.stageIndex = nextStageIndex(APP.stageIndex, delta, true);
   refreshOnlineUI();
 }
 $ol("ol-stage-prev").addEventListener("click", () => olChangeStage(-1));
@@ -4090,6 +4220,7 @@ $ol("btn-close").addEventListener("click", () => {
   netCleanup();
   $ol("online").hidden = true;
   if (APP.mode === "online") { APP.match = null; APP.mode = "local"; APP.phase = "lobby"; }
+  APP.stageIndex = nextStageIndex(APP.stageIndex, 0, false);
 });
 
 // ロビーで O キー → オンラインメニュー
@@ -4149,7 +4280,7 @@ function updateLobby() {
     if (cur.start && !prev.start) wantStart = true;  // Enter or 設定したパッド決定ボタン
   }
   if (stageDelta !== 0) {
-    APP.stageIndex = ((APP.stageIndex + stageDelta) % STAGES.length + STAGES.length) % STAGES.length;
+    APP.stageIndex = nextStageIndex(APP.stageIndex, stageDelta, false);
   }
   // C=CPU追加 / X=CPU削除（エッジ検出）
   if (keys.has("KeyC") && !APP._prevC) {
@@ -4167,6 +4298,7 @@ function updateLobby() {
 }
 
 function startMatch() {
+  APP.stageIndex = nextStageIndex(APP.stageIndex, 0, false);
   const slotIndices = [];
   APP.slots.forEach((s, i) => { if (s) slotIndices.push(i); });
   // 人間が1人だけ（ソロ）なら、その人は「1人・オンライン」用のキー設定を使う。
@@ -4200,7 +4332,7 @@ function updateMatch() {
 }
 
 function changeStage(delta) {
-  APP.stageIndex = ((APP.stageIndex + delta) % STAGES.length + STAGES.length) % STAGES.length;
+  APP.stageIndex = nextStageIndex(APP.stageIndex, delta, APP.mode === "online");
 }
 
 function updateResult() {
@@ -4251,8 +4383,111 @@ const fx = {
   flips: Array(MAX_PLAYERS).fill(null),  // slotごとの二段ジャンプ宙返り
 };  // tramp: 床x→ビヨン揺れ
 
+// ===== 効果音（WebAudio・手続き合成） =====
+// simには一切依存しない演出レイヤー。handleEvents(=stepMatchの後)から鳴らすのでオンライン同期
+// (決定論)には無影響。音の揺らぎにMath.randomを使うのもsim外なので問題ない。音源ファイル不要。
+const SFX = (() => {
+  let ctx = null, master = null, muted = false;
+  try { muted = (typeof localStorage !== "undefined" && localStorage.getItem("bonbon_muted") === "1"); } catch (e) {}
+  const last = {};
+  function ensure() {
+    if (ctx || typeof window === "undefined") return;
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    ctx = new AC();
+    master = ctx.createGain();
+    master.gain.value = 0.26;
+    master.connect(ctx.destination);
+  }
+  function unlock() { ensure(); if (ctx && ctx.state === "suspended") ctx.resume(); }
+  function tone(freq, dur, opt) {
+    if (!ctx || muted) return;
+    opt = opt || {};
+    const t0 = ctx.currentTime + (opt.delay || 0);
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = opt.type || "square";
+    o.frequency.setValueAtTime(freq, t0);
+    if (opt.to) o.frequency.exponentialRampToValueAtTime(Math.max(1, opt.to), t0 + dur);
+    const vol = opt.vol == null ? 0.4 : opt.vol;
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.exponentialRampToValueAtTime(vol, t0 + (opt.attack || 0.005));
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    o.connect(g); g.connect(master);
+    o.start(t0); o.stop(t0 + dur + 0.03);
+  }
+  function noise(dur, opt) {
+    if (!ctx || muted) return;
+    opt = opt || {};
+    const t0 = ctx.currentTime + (opt.delay || 0);
+    const n = Math.max(1, Math.floor(ctx.sampleRate * dur));
+    const buf = ctx.createBuffer(1, n, ctx.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < n; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / n);
+    const src = ctx.createBufferSource(); src.buffer = buf;
+    const f = ctx.createBiquadFilter(); f.type = opt.filter || "bandpass"; f.frequency.value = opt.freq || 900; f.Q.value = opt.q || 0.8;
+    const g = ctx.createGain(); const vol = opt.vol == null ? 0.3 : opt.vol;
+    g.gain.setValueAtTime(vol, t0); g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    src.connect(f); f.connect(g); g.connect(master);
+    src.start(t0); src.stop(t0 + dur + 0.03);
+  }
+  function debounce(key, ms) {
+    const t = (typeof performance !== "undefined" ? performance.now() : Date.now());
+    if (last[key] && t - last[key] < ms) return false;
+    last[key] = t; return true;
+  }
+  function event(ev) {
+    if (!ctx || muted || !ev) return;
+    switch (ev.type) {
+      case "hit": if (!debounce("hit", 24)) return; tone(560, 0.08, { to: 200, vol: 0.34 }); noise(0.05, { freq: 1400, vol: 0.16 }); break;
+      case "charged-hit": tone(360, 0.16, { to: 120, type: "sawtooth", vol: 0.4 }); noise(0.10, { freq: 700, vol: 0.24 }); break;
+      case "special-hit": tone(300, 0.28, { to: 90, type: "sawtooth", vol: 0.45 }); noise(0.20, { freq: 500, vol: 0.3, filter: "lowpass" }); break;
+      case "special": tone(700, 0.1, { to: 1200, vol: 0.28 }); tone(1050, 0.14, { to: 1500, vol: 0.2, delay: 0.06 }); break;
+      case "ko": tone(520, 0.45, { to: 40, type: "sawtooth", vol: 0.42 }); noise(0.4, { freq: 500, vol: 0.34, filter: "lowpass" }); break;
+      case "block": if (!debounce("block", 30)) return; tone(1500, 0.05, { type: "sine", vol: 0.22 }); break;
+      case "guardbreak": case "ceiling-break": noise(0.16, { freq: 2200, vol: 0.3, filter: "highpass" }); tone(900, 0.12, { to: 300, vol: 0.24 }); break;
+      case "ceiling-hit": tone(1200, 0.05, { type: "sine", vol: 0.18 }); break;
+      case "item-get": tone(660, 0.08, { vol: 0.3 }); tone(880, 0.08, { vol: 0.3, delay: 0.07 }); tone(1320, 0.12, { vol: 0.3, delay: 0.14 }); break;
+      case "item-land": case "item-spawn": if (!debounce("item-spawn", 40)) return; tone(880, 0.06, { to: 1200, type: "sine", vol: 0.18 }); break;
+      case "balloon-pop": tone(1400, 0.04, { to: 500, vol: 0.24 }); noise(0.04, { freq: 2000, vol: 0.14 }); break;
+      case "double-jump": tone(500, 0.12, { to: 1000, type: "sine", vol: 0.22 }); break;
+      case "bounce": tone(300, 0.16, { to: 720, type: "sine", vol: 0.28 }); break;
+      case "body-bounce": if (!debounce("body-bounce", 40)) return; tone(360, 0.05, { to: 240, type: "sine", vol: 0.14 }); break;
+      case "land": if (!debounce("land", 45)) return; tone(180, 0.05, { to: 110, type: "sine", vol: 0.1 }); break;
+      case "lava-hit": noise(0.22, { freq: 1200, vol: 0.24 }); tone(200, 0.18, { to: 90, type: "sawtooth", vol: 0.18 }); break;
+      case "mob-land": tone(120, 0.22, { to: 55, vol: 0.34 }); noise(0.16, { freq: 300, vol: 0.24, filter: "lowpass" }); break;
+      case "mob-hit": case "penguin-hit": tone(420, 0.12, { to: 140, vol: 0.32 }); noise(0.08, { freq: 900, vol: 0.18 }); break;
+      case "penguin-guard": tone(1300, 0.06, { type: "sine", vol: 0.2 }); break;
+      case "penguin-charge": case "penguin-warn": case "penguin-appear": if (!debounce("peng-tell", 60)) return; tone(760, 0.08, { to: 520, type: "triangle", vol: 0.12 }); break;
+      case "penguin-turn": tone(300, 0.06, { to: 520, type: "sine", vol: 0.14 }); break;
+      case "mob-pop": tone(700, 0.06, { to: 300, vol: 0.16 }); break;
+      case "warp": case "penguin-warp": tone(400, 0.14, { to: 1600, type: "sine", vol: 0.2 }); break;
+      case "respawn-pop": tone(500, 0.16, { to: 1100, type: "sine", vol: 0.2 }); break;
+      case "go": tone(660, 0.12, { vol: 0.34 }); tone(990, 0.2, { vol: 0.34, delay: 0.1 }); break;
+      case "finish": if (!debounce("finish", 200)) return; tone(880, 0.14, { vol: 0.34 }); tone(660, 0.14, { vol: 0.34, delay: 0.13 }); tone(1320, 0.3, { vol: 0.34, delay: 0.26 }); break;
+      case "taunt": tone(520, 0.07, { type: "triangle", vol: 0.2 }); tone(720, 0.09, { type: "triangle", vol: 0.2, delay: 0.08 }); break;
+    }
+  }
+  return {
+    unlock, event,
+    toggle() { muted = !muted; try { if (typeof localStorage !== "undefined") localStorage.setItem("bonbon_muted", muted ? "1" : "0"); } catch (e) {} return muted; },
+    isMuted() { return muted; },
+  };
+})();
+if (typeof window !== "undefined") {
+  window.SFX = SFX;
+  window.addEventListener("pointerdown", () => SFX.unlock(), { passive: true });
+  window.addEventListener("keydown", (e) => {
+    SFX.unlock();
+    if (e.code === "KeyM") {
+      const el = document.activeElement;
+      if (!el || (el.tagName !== "INPUT" && el.tagName !== "TEXTAREA")) SFX.toggle();
+    }
+  });
+}
+
 function handleEvents(events) {
   for (const ev of events) {
+    SFX.event(ev);
     if (ev.type === "double-jump") {
       // 向きを開始時に固定し、空中で反転入力しても回転方向を飛ばさない。
       fx.flips[ev.slot] = { remaining: DOUBLE_JUMP_FLIP_TICKS, direction: ev.facing < 0 ? -1 : 1 };
@@ -4548,6 +4783,40 @@ function drawBackground(stage) {
   g.addColorStop(1, th.sky[2]);
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, W, H);
+  // しせん回廊の通常視点。奥の観測扉と反復する梁で、後の視点転換をさりげなく予告する。
+  if (th.corridor) {
+    ctx.save();
+    const aperture = ctx.createLinearGradient(470, 0, 810, 0);
+    aperture.addColorStop(0, "rgba(8,12,16,0)");
+    aperture.addColorStop(0.5, "rgba(214,192,122,0.20)");
+    aperture.addColorStop(1, "rgba(8,12,16,0)");
+    ctx.fillStyle = aperture;
+    ctx.fillRect(370, 80, 540, 500);
+
+    ctx.strokeStyle = "rgba(215,222,226,0.15)";
+    ctx.lineWidth = 5;
+    for (let x = 80; x <= W - 80; x += 160) {
+      ctx.beginPath();
+      ctx.moveTo(x, 0); ctx.lineTo(x + (W / 2 - x) * 0.34, 560);
+      ctx.stroke();
+    }
+    ctx.strokeStyle = "rgba(217,192,122,0.26)";
+    ctx.lineWidth = 2;
+    for (let y = 115; y < 560; y += 92) {
+      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+    }
+
+    ctx.fillStyle = "rgba(5,8,11,0.62)";
+    ctx.fillRect(0, 0, 74, H);
+    ctx.fillRect(W - 74, 0, 74, H);
+    ctx.fillStyle = "rgba(217,192,122,0.45)";
+    for (let y = 54; y < 560; y += 104) {
+      ctx.fillRect(25, y, 24, 5);
+      ctx.fillRect(W - 49, y, 24, 5);
+    }
+    ctx.restore();
+    return;
+  }
   // うちゅうは地表を置かず、星雲と星だけで宇宙空間の奥行きを作る。
   // 固定式で配置し、対戦シミュレーション用の乱数には一切触れない。
   if (th.space) {
@@ -5329,7 +5598,12 @@ function drawPenguin(penguin) {
 
 // アピール専用ポーズ。仰向けの本体から両足だけを上へ出し、交互にバタバタさせる。
 // 攻撃判定・移動・当たり判定には影響しない純粋な描画演出。
-function drawTauntPose(p) {
+function thirdPersonEyeMode(facing, cameraDirection = 0) {
+  if (!cameraDirection) return "side";
+  return facing === cameraDirection ? "hidden" : "center";
+}
+
+function drawTauntPose(p, cameraDirection = 0) {
   const elapsed = TAUNT_TICKS - p.tauntTimer;
   const bodyW = 44, bodyH = 24;
   const bodyX = p.x - bodyW / 2, bodyY = p.y - bodyH - 2;
@@ -5363,21 +5637,25 @@ function drawTauntPose(p) {
   ctx.fill();
   ctx.stroke();
 
-  const eyeX = p.x + p.facing * 9;
-  const eyeY = bodyY + 10;
-  ctx.fillStyle = "#fff";
-  ctx.beginPath();
-  ctx.arc(eyeX - 5, eyeY, 4.2, 0, Math.PI * 2);
-  ctx.arc(eyeX + 5, eyeY, 4.2, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = "#222";
-  ctx.beginPath();
-  ctx.arc(eyeX - 5 + p.facing, eyeY, 1.9, 0, Math.PI * 2);
-  ctx.arc(eyeX + 5 + p.facing, eyeY, 1.9, 0, Math.PI * 2);
-  ctx.fill();
+  const eyeMode = thirdPersonEyeMode(p.facing, cameraDirection);
+  if (eyeMode !== "hidden") {
+    const eyeX = eyeMode === "center" ? p.x : p.x + p.facing * 9;
+    const eyeY = bodyY + 10;
+    const pupilShift = eyeMode === "center" ? 0 : p.facing;
+    ctx.fillStyle = "#fff";
+    ctx.beginPath();
+    ctx.arc(eyeX - 5, eyeY, 4.2, 0, Math.PI * 2);
+    ctx.arc(eyeX + 5, eyeY, 4.2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "#222";
+    ctx.beginPath();
+    ctx.arc(eyeX - 5 + pupilShift, eyeY, 1.9, 0, Math.PI * 2);
+    ctx.arc(eyeX + 5 + pupilShift, eyeY, 1.9, 0, Math.PI * 2);
+    ctx.fill();
+  }
 }
 
-function drawPlayer(p) {
+function drawPlayer(p, cameraDirection = 0) {
   if (!p.alive) return;
   // 巨大化中は足元(p.x,p.y)を基準に拡大して描く
   const _gs = p.itemType === "giant" ? GIANT.size : 1;
@@ -5403,7 +5681,7 @@ function drawPlayer(p) {
   }
 
   if (p.tauntTimer > 0) {
-    drawTauntPose(p);
+    drawTauntPose(p, cameraDirection);
   } else {
     // 二段ジャンプ時だけ、名前・ガード・攻撃判定を除いたキャラクター本体を1回転。
     // 右向きは時計回り、左向きは反時計回りで前方宙返りに見せる。
@@ -5446,18 +5724,24 @@ function drawPlayer(p) {
   ctx.fill();
   ctx.stroke();
 
-  // 目（向いてる方向）
-  ctx.fillStyle = "#fff";
-  const eyeX = p.x + p.facing * 6;
-  ctx.beginPath();
-  ctx.arc(eyeX - 4, by + 14, 4.5, 0, Math.PI * 2);
-  ctx.arc(eyeX + 6, by + 14, 4.5, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = "#222";
-  ctx.beginPath();
-  ctx.arc(eyeX - 4 + p.facing * 1.5, by + 14, 2, 0, Math.PI * 2);
-  ctx.arc(eyeX + 6 + p.facing * 1.5, by + 14, 2, 0, Math.PI * 2);
-  ctx.fill();
+  // 通常2Dでは進行方向へ寄せる。三人称では背中を向けた時は隠し、正面時は中央へ揃える。
+  const eyeMode = thirdPersonEyeMode(p.facing, cameraDirection);
+  if (eyeMode !== "hidden") {
+    const eyeX = eyeMode === "center" ? p.x : p.x + p.facing * 6;
+    const leftEyeX = eyeMode === "center" ? eyeX - 5 : eyeX - 4;
+    const rightEyeX = eyeMode === "center" ? eyeX + 5 : eyeX + 6;
+    const pupilShift = eyeMode === "center" ? 0 : p.facing * 1.5;
+    ctx.fillStyle = "#fff";
+    ctx.beginPath();
+    ctx.arc(leftEyeX, by + 14, 4.5, 0, Math.PI * 2);
+    ctx.arc(rightEyeX, by + 14, 4.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "#222";
+    ctx.beginPath();
+    ctx.arc(leftEyeX + pupilShift, by + 14, 2, 0, Math.PI * 2);
+    ctx.arc(rightEyeX + pupilShift, by + 14, 2, 0, Math.PI * 2);
+    ctx.fill();
+  }
     ctx.restore();   // しゃがみ／二段ジャンプ宙返りを解除
   }
 
@@ -5831,12 +6115,376 @@ function drawControlCards(m, topY) {
   }
 }
 
-function drawMatch() {
-  const m = APP.match;
-  ctx.save();
-  if (fx.shake > 0.5) {
-    ctx.translate((Math.random() - 0.5) * fx.shake, (Math.random() - 0.5) * fx.shake);
+function perspectiveViewState(m) {
+  const config = m && m.stage && m.stage.perspectiveShift;
+  if (!config || m.countdown > 0) return { mode: "normal", progress: 0, remainingTicks: 0 };
+  // QAでは旧一人称と採用した三人称を直接比較できる。本番の転換先は三人称。
+  if (m.perspectivePreviewMode === "first") return { mode: "first", progress: 1, remainingTicks: 0 };
+  if (m.perspectivePreviewMode === "third") return { mode: "third", progress: 1, remainingTicks: 0 };
+  const elapsed = Math.max(0, m.tick - COUNTDOWN_TICKS);
+  const warningStart = Math.max(0, config.afterTicks - config.warningTicks);
+  if (elapsed < warningStart) return { mode: "normal", progress: 0, remainingTicks: config.afterTicks - elapsed };
+  if (elapsed < config.afterTicks) {
+    return { mode: "warning", progress: (elapsed - warningStart) / Math.max(1, config.warningTicks),
+      remainingTicks: config.afterTicks - elapsed };
   }
+  if (elapsed < config.afterTicks + config.transitionTicks) {
+    return { mode: "transition", progress: (elapsed - config.afterTicks) / Math.max(1, config.transitionTicks),
+      remainingTicks: 0 };
+  }
+  return { mode: "third", progress: 1, remainingTicks: 0 };
+}
+
+function perspectiveViewer(m) {
+  const preferredSlot = APP.mode === "online" ? NET.myIndex : 0;
+  return m.players.find(player => player.slot === preferredSlot && player.alive)
+    || m.players.find(player => player.alive) || m.players[0];
+}
+
+function perspectiveDirection(m, viewer) {
+  const spawn = m.stage.spawns[viewer.slot] || m.stage.spawns[0];
+  return spawn.x <= W / 2 ? 1 : -1;
+}
+
+function thirdPersonCamera(viewer, direction) {
+  // プレイヤーの少し後ろ・上に追従カメラを置く。物理座標や入力には影響させない。
+  return { ...viewer, x: viewer.x - direction * 155, y: viewer.y - 42 };
+}
+
+function perspectiveProjectDepth(viewer, worldY, depth, lateral = 0) {
+  const safeDepth = Math.max(25, depth);
+  const scale = Math.min(10, 1000 / (safeDepth + 55));
+  const eyeY = viewer.y - pH(viewer) * 0.68;
+  const verticalScale = 0.62;  // 2Dの大きな高低差を一人称画面内で追えるよう、表示だけ圧縮する
+  return {
+    x: W / 2 + lateral * scale,
+    y: 250 + (worldY - eyeY) * scale * verticalScale,
+    scale,
+    depth: safeDepth,
+  };
+}
+
+function perspectiveProjectPoint(viewer, direction, worldX, worldY, lateral = 0) {
+  const depth = (worldX - viewer.x) * direction;
+  if (depth < 25 || depth > 1500) return null;
+  return perspectiveProjectDepth(viewer, worldY, depth, lateral);
+}
+
+function perspectiveHalfWidth(scale, widthScale = 1) {
+  return Math.min(610, 95 * scale) * widthScale;
+}
+
+// 敵キャラクターは奥行き差が一目で分かるよう、背景やアイテムより強い遠近倍率を使う。
+// これは描画だけの値で、身体サイズ・攻撃判定・接触判定には一切影響しない。
+function perspectiveEnemyScale(depth) {
+  const nearDepth = 25, farDepth = 900;
+  const t = Math.max(0, Math.min(1, (depth - nearDepth) / (farDepth - nearDepth)));
+  return 0.38 + Math.pow(1 - t, 1.35) * 2.62;
+}
+
+const THIRD_PERSON_VIEW = {
+  corridorWidthScale: 0.84,
+  viewerScale: 2.2,
+  enemyPerspectiveFactor: 0.46,
+  enemyMin: 0.52,
+  enemyMax: 2.35,
+  attackCircleScale: 0.62,
+  attackCircleMin: 24,
+  attackCircleMax: 112,
+};
+
+function thirdPersonPlayerScale(depth, isViewer = false) {
+  // カメラが自分を追従するので自分の大きさは固定。相手だけを自然な1/depthの透視倍率へ通す。
+  if (isViewer) return THIRD_PERSON_VIEW.viewerScale;
+  const safeDepth = Math.max(25, depth);
+  const projected = 1000 / (safeDepth + 55) * THIRD_PERSON_VIEW.enemyPerspectiveFactor;
+  return Math.max(THIRD_PERSON_VIEW.enemyMin, Math.min(THIRD_PERSON_VIEW.enemyMax, projected));
+}
+
+function thirdPersonAttackCircleState(player, scale) {
+  if (!player || player.attackTimer <= 0) return null;
+  const attack = attackData(player);
+  const window = attackActiveWindow(player, attack);
+  const active = player.attackTimer <= window.activeFrom && player.attackTimer >= window.activeTo;
+  return {
+    active,
+    radius: Math.max(THIRD_PERSON_VIEW.attackCircleMin,
+      Math.min(THIRD_PERSON_VIEW.attackCircleMax, attack.range * scale * THIRD_PERSON_VIEW.attackCircleScale)),
+    color: player.attackIsSpecial ? "#ffad4a" : player.attackIsCharged ? "#ffd85a" : COLORS[player.slot],
+  };
+}
+
+function drawPerspectiveBackdrop(m, viewer, direction, widthScale = 1) {
+  const gradient = ctx.createLinearGradient(0, 0, 0, H);
+  gradient.addColorStop(0, "#05070a");
+  gradient.addColorStop(0.54, "#111820");
+  gradient.addColorStop(1, "#24282a");
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, W, H);
+
+  // 同じ2D床を、視点の先へ伸びる回廊として描く。横幅は見た目だけで当たり判定には使わない。
+  const depths = [900, 720, 560, 420, 300, 210, 140, 90, 50, 25];
+  for (const depth of depths) {
+    const ground = perspectiveProjectDepth(viewer, m.groundY, depth);
+    const ceiling = perspectiveProjectDepth(viewer, 90, depth);
+    const half = perspectiveHalfWidth(ground.scale, widthScale);
+    ctx.strokeStyle = depth % 2 === 0 ? "rgba(217,192,122,0.28)" : "rgba(215,222,226,0.20)";
+    ctx.lineWidth = Math.max(1, Math.min(5, ground.scale * 0.7));
+    ctx.beginPath();
+    ctx.moveTo(W / 2 - half, ground.y);
+    ctx.lineTo(W / 2 - half, ceiling.y);
+    ctx.lineTo(W / 2 + half, ceiling.y);
+    ctx.lineTo(W / 2 + half, ground.y);
+    ctx.stroke();
+  }
+
+  const farGround = perspectiveProjectDepth(viewer, m.groundY, 1000);
+  const nearGround = perspectiveProjectDepth(viewer, m.groundY, 25);
+  const farHalf = perspectiveHalfWidth(farGround.scale, widthScale);
+  const nearHalf = perspectiveHalfWidth(nearGround.scale, widthScale);
+  ctx.fillStyle = "rgba(217,192,122,0.07)";
+  ctx.beginPath();
+  ctx.moveTo(W / 2 - farHalf, farGround.y);
+  ctx.lineTo(W / 2 + farHalf, farGround.y);
+  ctx.lineTo(W / 2 + nearHalf, nearGround.y);
+  ctx.lineTo(W / 2 - nearHalf, nearGround.y);
+  ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = "rgba(217,192,122,0.45)";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(W / 2 - farHalf, farGround.y); ctx.lineTo(W / 2 - nearHalf, nearGround.y);
+  ctx.moveTo(W / 2 + farHalf, farGround.y); ctx.lineTo(W / 2 + nearHalf, nearGround.y);
+  ctx.stroke();
+
+  // 視点の固定方向を、奥の小さな矢印で示す。左右キーはこの線上の前後移動になる。
+  ctx.fillStyle = "rgba(255,255,255,0.25)";
+  ctx.font = "bold 13px sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText(direction > 0 ? "X+ 方向" : "X− 方向", W / 2, 222);
+}
+
+function drawPerspectivePlatforms(m, viewer, direction, widthScale = 1) {
+  const visible = [];
+  for (const platform of m.platforms) {
+    if (platform.crumbleState === "gone") continue;
+    let nearX = direction > 0 ? platform.x : platform.x + platform.w;
+    const farX = direction > 0 ? platform.x + platform.w : platform.x;
+    let nearDepth = (nearX - viewer.x) * direction;
+    const farDepth = (farX - viewer.x) * direction;
+    if (farDepth < 25) continue;
+    if (nearDepth < 25) { nearDepth = 25; nearX = viewer.x + direction * nearDepth; }
+    visible.push({ platform, nearX, farX, nearDepth, farDepth });
+  }
+  visible.sort((a, b) => b.farDepth - a.farDepth);
+
+  for (const entry of visible) {
+    const platform = entry.platform;
+    const near = perspectiveProjectDepth(viewer, platformYAt(platform, entry.nearX), entry.nearDepth);
+    const far = perspectiveProjectDepth(viewer, platformYAt(platform, entry.farX), entry.farDepth);
+    const nearHalf = perspectiveHalfWidth(near.scale, widthScale);
+    const farHalf = perspectiveHalfWidth(far.scale, widthScale);
+    const thickness = Math.max(6, Math.min(28, (platform.main ? 8 : 5) * near.scale));
+    ctx.fillStyle = platform.main ? m.stage.theme.dirt : m.stage.theme.plat;
+    ctx.beginPath();
+    ctx.moveTo(W / 2 - farHalf, far.y);
+    ctx.lineTo(W / 2 + farHalf, far.y);
+    ctx.lineTo(W / 2 + nearHalf, near.y);
+    ctx.lineTo(W / 2 - nearHalf, near.y);
+    ctx.closePath(); ctx.fill();
+    ctx.fillStyle = platform.main ? m.stage.theme.grass : m.stage.theme.platTop;
+    ctx.beginPath();
+    ctx.moveTo(W / 2 - farHalf, far.y);
+    ctx.lineTo(W / 2 + farHalf, far.y);
+    ctx.lineTo(W / 2 + nearHalf, near.y + thickness);
+    ctx.lineTo(W / 2 - nearHalf, near.y + thickness);
+    ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = "rgba(255,255,255,0.30)";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(W / 2 - farHalf, far.y); ctx.lineTo(W / 2 + farHalf, far.y); ctx.stroke();
+  }
+}
+
+function drawPerspectiveEntity(draw, worldX, worldY, projection, scale) {
+  ctx.save();
+  ctx.translate(projection.x, projection.y);
+  ctx.scale(scale, scale);
+  ctx.translate(-worldX, -worldY);
+  draw();
+  ctx.restore();
+}
+
+function drawPerspectiveLocalFeedback(viewer, behind) {
+  // 自分の身体や余計な手は描かず、照準と攻撃軌跡だけで操作結果を返す。
+  ctx.save();
+  ctx.strokeStyle = "rgba(255,255,255,0.58)";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(W / 2 - 15, H / 2); ctx.lineTo(W / 2 - 5, H / 2);
+  ctx.moveTo(W / 2 + 5, H / 2); ctx.lineTo(W / 2 + 15, H / 2);
+  ctx.moveTo(W / 2, H / 2 - 15); ctx.lineTo(W / 2, H / 2 - 5);
+  ctx.moveTo(W / 2, H / 2 + 5); ctx.lineTo(W / 2, H / 2 + 15);
+  ctx.stroke();
+
+  const attack = attackData(viewer);
+  const active = attackActiveWindow(viewer, attack);
+  if (viewer.attackTimer > 0 && viewer.attackTimer <= active.activeFrom && viewer.attackTimer >= active.activeTo) {
+    const progress = (active.activeFrom - viewer.attackTimer) / Math.max(1, active.activeFrom - active.activeTo);
+    ctx.globalAlpha = 0.86 - progress * 0.35;
+    ctx.strokeStyle = viewer.attackIsSpecial ? "#ffad4a" : viewer.attackIsCharged ? "#ffd85a" : "#ffffff";
+    ctx.lineWidth = viewer.attackIsSpecial ? 18 : viewer.attackIsCharged ? 13 : 9;
+    ctx.beginPath();
+    if (viewer.attackDir === "up") ctx.arc(W / 2, H / 2 + 35, 130, Math.PI + 0.3, Math.PI * 2 - 0.3);
+    else if (viewer.attackDir === "down") ctx.arc(W / 2, H / 2 - 20, 130, 0.3, Math.PI - 0.3);
+    else ctx.arc(W / 2, H / 2, 155, -1.15, 1.15);
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+
+  if (viewer.guarding && viewer.guardHp > 0) {
+    const fraction = viewer.guardHp / GUARD.max;
+    ctx.fillStyle = "rgba(180,230,255," + (0.06 + fraction * 0.08) + ")";
+    ctx.strokeStyle = "rgba(210,245,255," + (0.45 + fraction * 0.35) + ")";
+    ctx.lineWidth = 9;
+    ctx.beginPath();
+    ctx.ellipse(W / 2, H / 2, W * 0.47, H * 0.43, 0, 0, Math.PI * 2);
+    ctx.fill(); ctx.stroke();
+  }
+
+  ctx.font = "bold 15px sans-serif";
+  ctx.textAlign = "right";
+  behind.forEach((player, index) => {
+    const y = 92 + index * 30;
+    ctx.fillStyle = COLORS[player.slot];
+    ctx.beginPath();
+    ctx.moveTo(W - 30, y); ctx.lineTo(W - 48, y - 9); ctx.lineTo(W - 48, y + 9); ctx.closePath(); ctx.fill();
+    ctx.fillText("背後 " + NAMES[player.slot], W - 58, y + 5);
+  });
+  ctx.restore();
+}
+
+function drawPerspectiveScene(m) {
+  const viewer = perspectiveViewer(m);
+  if (!viewer) { drawBackground(m.stage); drawStage(m.platforms, m.stage.theme); return; }
+  const direction = perspectiveDirection(m, viewer);
+  drawPerspectiveBackdrop(m, viewer, direction);
+  drawPerspectivePlatforms(m, viewer, direction);
+
+  const visibleItems = [];
+  for (const item of m.items) {
+    const projection = perspectiveProjectPoint(viewer, direction, item.x, item.y);
+    if (projection) visibleItems.push({ item, projection });
+  }
+  visibleItems.sort((a, b) => b.projection.depth - a.projection.depth);
+  for (const entry of visibleItems) {
+    const scale = Math.max(0.35, Math.min(1.65, entry.projection.scale * 0.38));
+    drawPerspectiveEntity(() => drawItem(entry.item), entry.item.x, entry.item.y, entry.projection, scale);
+  }
+
+  const visiblePlayers = [], behind = [];
+  for (const player of m.players) {
+    if (!player.alive || player.slot === viewer.slot) continue;
+    const lateral = player.slot % 2 === 0 ? -7 : 7;
+    const projection = perspectiveProjectPoint(viewer, direction, player.x, player.y, lateral);
+    if (projection) visiblePlayers.push({ player, projection });
+    else if ((player.x - viewer.x) * direction < 25) behind.push(player);
+  }
+  visiblePlayers.sort((a, b) => b.projection.depth - a.projection.depth);
+  for (const entry of visiblePlayers) {
+    const scale = perspectiveEnemyScale(entry.projection.depth);
+    drawPerspectiveEntity(() => drawPlayer(entry.player), entry.player.x, entry.player.y, entry.projection, scale);
+  }
+
+  // ヒット粒子も同じ射影へ通し、攻撃の手応えが通常視点から失われないようにする。
+  for (const particle of fx.particles) {
+    const projection = perspectiveProjectPoint(viewer, direction, particle.x, particle.y);
+    if (!projection) continue;
+    ctx.globalAlpha = Math.min(1, particle.life / 12);
+    ctx.fillStyle = particle.color;
+    const size = Math.max(1.5, Math.min(12, particle.size * projection.scale * 0.35));
+    ctx.fillRect(projection.x - size / 2, projection.y - size / 2, size, size);
+  }
+  ctx.globalAlpha = 1;
+  drawPerspectiveLocalFeedback(viewer, behind);
+}
+
+function drawThirdPersonAttackCircle(player, projection, scale, isViewer) {
+  const state = thirdPersonAttackCircleState(player, scale);
+  if (!state) return;
+  const centerY = projection.y - pH(player) * scale * 0.5;
+  ctx.save();
+  ctx.fillStyle = state.color;
+  ctx.globalAlpha = state.active ? 0.14 : 0.045;
+  ctx.beginPath(); ctx.arc(projection.x, centerY, state.radius, 0, Math.PI * 2); ctx.fill();
+  ctx.globalAlpha = state.active ? 0.9 : 0.38;
+  ctx.strokeStyle = state.color;
+  ctx.lineWidth = isViewer ? 5 : 3;
+  ctx.beginPath(); ctx.arc(projection.x, centerY, state.radius, 0, Math.PI * 2); ctx.stroke();
+  ctx.restore();
+}
+
+function drawThirdPersonScene(m) {
+  const viewer = perspectiveViewer(m);
+  if (!viewer) { drawBackground(m.stage); drawStage(m.platforms, m.stage.theme); return; }
+  const direction = perspectiveDirection(m, viewer);
+  const camera = thirdPersonCamera(viewer, direction);
+  drawPerspectiveBackdrop(m, camera, direction, THIRD_PERSON_VIEW.corridorWidthScale);
+  drawPerspectivePlatforms(m, camera, direction, THIRD_PERSON_VIEW.corridorWidthScale);
+
+  const visibleItems = [];
+  for (const item of m.items) {
+    const projection = perspectiveProjectPoint(camera, direction, item.x, item.y);
+    if (projection) visibleItems.push({ item, projection });
+  }
+  visibleItems.sort((a, b) => b.projection.depth - a.projection.depth);
+  for (const entry of visibleItems) {
+    const scale = Math.max(0.35, Math.min(1.65, entry.projection.scale * 0.38));
+    drawPerspectiveEntity(() => drawItem(entry.item), entry.item.x, entry.item.y, entry.projection, scale);
+  }
+
+  const visiblePlayers = [];
+  for (const player of m.players) {
+    if (!player.alive) continue;
+    const lateral = player.slot === viewer.slot ? 0 : player.slot % 2 === 0 ? -7 : 7;
+    const projection = perspectiveProjectPoint(camera, direction, player.x, player.y, lateral);
+    if (projection) visiblePlayers.push({ player, projection });
+  }
+  visiblePlayers.sort((a, b) => b.projection.depth - a.projection.depth);
+  let viewerProjection = null;
+  let viewerDrawScale = 1;
+  for (const entry of visiblePlayers) {
+    const isViewer = entry.player.slot === viewer.slot;
+    const scale = thirdPersonPlayerScale(entry.projection.depth, isViewer);
+    drawThirdPersonAttackCircle(entry.player, entry.projection, scale, isViewer);
+    drawPerspectiveEntity(() => drawPlayer(entry.player, direction), entry.player.x, entry.player.y, entry.projection, scale);
+    if (isViewer) { viewerProjection = entry.projection; viewerDrawScale = scale; }
+  }
+
+  for (const particle of fx.particles) {
+    const projection = perspectiveProjectPoint(camera, direction, particle.x, particle.y);
+    if (!projection) continue;
+    ctx.globalAlpha = Math.min(1, particle.life / 12);
+    ctx.fillStyle = particle.color;
+    const size = Math.max(1.5, Math.min(12, particle.size * projection.scale * 0.35));
+    ctx.fillRect(projection.x - size / 2, projection.y - size / 2, size, size);
+  }
+  ctx.globalAlpha = 1;
+
+  // 自キャラクターの横に小さなマーカーだけを足し、名前表示や照準と重ねない。
+  if (viewerProjection) {
+    const markerTipX = viewerProjection.x - PLAYER_W * viewerDrawScale / 2 - 9;
+    const markerCenterY = viewerProjection.y - PLAYER_H * viewerDrawScale * 0.55;
+    ctx.fillStyle = COLORS[viewer.slot];
+    ctx.strokeStyle = "rgba(255,255,255,0.9)";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(markerTipX, markerCenterY);
+    ctx.lineTo(markerTipX - 19, markerCenterY - 10);
+    ctx.lineTo(markerTipX - 19, markerCenterY + 10);
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+  }
+}
+
+function drawWorldScene(m) {
   drawBackground(m.stage);
   drawStage(m.platforms, m.stage.theme);
   if (m.fan) drawFan(m.fan, m.stage.theme, m.tick);
@@ -5851,24 +6499,81 @@ function drawMatch() {
   if (m.penguin) drawPenguin(m.penguin);
   if (m.pendulums.length) drawPendulums(m.pendulums);
 
-  // 撃墜リング（拡がる輪）
-  for (const rg of fx.rings) {
-    const r = rg.t * 9;
-    ctx.globalAlpha = Math.max(0, 1 - rg.t / 30);
-    ctx.strokeStyle = rg.color; ctx.lineWidth = 6;
-    ctx.beginPath(); ctx.arc(rg.x, rg.y, r, 0, Math.PI * 2); ctx.stroke();
+  for (const ring of fx.rings) {
+    const radius = ring.t * 9;
+    ctx.globalAlpha = Math.max(0, 1 - ring.t / 30);
+    ctx.strokeStyle = ring.color; ctx.lineWidth = 6;
+    ctx.beginPath(); ctx.arc(ring.x, ring.y, radius, 0, Math.PI * 2); ctx.stroke();
     ctx.strokeStyle = "#fff"; ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.arc(rg.x, rg.y, r * 0.7, 0, Math.PI * 2); ctx.stroke();
+    ctx.beginPath(); ctx.arc(ring.x, ring.y, radius * 0.7, 0, Math.PI * 2); ctx.stroke();
   }
   ctx.globalAlpha = 1;
+  for (const particle of fx.particles) {
+    ctx.globalAlpha = Math.min(1, particle.life / 12);
+    ctx.fillStyle = particle.color;
+    ctx.fillRect(particle.x - particle.size / 2, particle.y - particle.size / 2, particle.size, particle.size);
+  }
+  ctx.globalAlpha = 1;
+}
 
-  // パーティクル
-  for (const pt of fx.particles) {
-    ctx.globalAlpha = Math.min(1, pt.life / 12);
-    ctx.fillStyle = pt.color;
-    ctx.fillRect(pt.x - pt.size / 2, pt.y - pt.size / 2, pt.size, pt.size);
+function drawPerspectiveOverlay(m, viewState) {
+  if (!m.stage.perspectiveShift || m.countdown > 0) return;
+  if (viewState.mode === "warning") {
+    const seconds = Math.max(1, Math.ceil(viewState.remainingTicks / 60));
+    ctx.fillStyle = "rgba(5,8,11,0.76)";
+    ctx.fillRect(W / 2 - 245, 76, 490, 70);
+    ctx.strokeStyle = "rgba(217,192,122,0.86)";
+    ctx.lineWidth = 2; ctx.strokeRect(W / 2 - 245, 76, 490, 70);
+    ctx.fillStyle = "#d9c07a"; ctx.font = "bold 18px sans-serif"; ctx.textAlign = "center";
+    ctx.fillText("CAMERA SHIFT", W / 2, 101);
+    ctx.fillStyle = "#fff"; ctx.font = "bold 25px sans-serif";
+    ctx.fillText("視点転換まで " + seconds, W / 2, 132);
+  } else if (viewState.mode === "transition") {
+    const shutter = 1 - Math.abs(viewState.progress - 0.5) * 2;
+    ctx.fillStyle = "rgba(0,0,0," + (0.18 + shutter * 0.76) + ")";
+    ctx.fillRect(0, 0, W, H);
+    ctx.strokeStyle = "rgba(217,192,122," + (0.35 + shutter * 0.55) + ")";
+    ctx.lineWidth = 4;
+    ctx.beginPath(); ctx.moveTo(W / 2, 0); ctx.lineTo(W / 2, H); ctx.stroke();
+    ctx.fillStyle = "#fff"; ctx.font = "bold 22px sans-serif"; ctx.textAlign = "center";
+    ctx.fillText("視点同期中", W / 2, H / 2 + 42);
+  } else if (viewState.mode === "first" || viewState.mode === "third") {
+    const viewer = perspectiveViewer(m);
+    const playable = viewState.mode === "third" && !!m.perspectivePlayable;
+    const cardW = playable ? 420 : 255;
+    const cardH = playable ? 126 : 60;
+    ctx.fillStyle = "rgba(5,8,11,0.72)";
+    roundRect(18, 18, cardW, cardH, 8); ctx.fill();
+    ctx.strokeStyle = "rgba(217,192,122,0.58)"; ctx.lineWidth = 1.5;
+    roundRect(18, 18, cardW, cardH, 8); ctx.stroke();
+    ctx.fillStyle = "#d9c07a"; ctx.font = "bold 14px sans-serif"; ctx.textAlign = "left";
+    ctx.fillText((viewState.mode === "third" ? "三人称視点 / " : "一人称比較モック / ") + (viewer ? NAMES[viewer.slot] : "P1"), 32, 42);
+    ctx.fillStyle = "rgba(255,255,255,0.72)"; ctx.font = "13px sans-serif";
+    if (playable) {
+      ctx.fillText("移動 A/D・←/→　ジャンプ W・↑", 32, 64);
+      ctx.fillText("攻撃 J/F　ガード K/G　下 S・↓　風船 Space", 32, 84);
+      ctx.fillStyle = "rgba(217,192,122,0.72)"; ctx.font = "12px sans-serif";
+      ctx.fillText("キーカスタム・接続中のゲームパッドにも対応", 32, 105);
+      ctx.fillStyle = m.perspectiveInputLabel ? "#8ff0a4" : "rgba(255,255,255,0.58)";
+      ctx.fillText(m.perspectiveInputLabel ? "入力：" + m.perspectiveInputLabel : "入力待ち：画面をクリックしてキーを長押し", 32, 126);
+    } else {
+      ctx.fillText(viewState.mode === "third" ? "背後追従カメラ / 操作・物理は2D" : "左右＝前後移動　ジャンプ＝上", 32, 64);
+    }
   }
-  ctx.globalAlpha = 1;
+}
+
+function drawMatch() {
+  const m = APP.match;
+  const viewState = perspectiveViewState(m);
+  ctx.save();
+  if (fx.shake > 0.5) {
+    ctx.translate((Math.random() - 0.5) * fx.shake, (Math.random() - 0.5) * fx.shake);
+  }
+  const useThirdPerson = viewState.mode === "third"
+    || (viewState.mode === "transition" && viewState.progress >= 0.5);
+  if (useThirdPerson) drawThirdPersonScene(m);
+  else if (viewState.mode === "first") drawPerspectiveScene(m);
+  else drawWorldScene(m);
   ctx.restore();
 
   if (fx.koFlash > 0) {
@@ -5900,6 +6605,8 @@ function drawMatch() {
     ctx.fillStyle = secs <= 10 ? "#ff5b5b" : "#fff";
     ctx.fillText(txt, W / 2, 40);
   }
+
+  drawPerspectiveOverlay(m, viewState);
 
   // 試合中: Tab長押しで操作確認、右上に常時ヒント（HはキーボードP2の左移動に使うため）
   if (m.countdown === 0 && !m.ending) {
@@ -6014,8 +6721,74 @@ function drawLobbyCornerCharacter(character) {
   ctx.restore();
 }
 
+// リザルト右側の敗者専用ポーズ。腕や口は足さず、横倒しの体と×目だけで
+// 「ばたんきゅー」を表現する。勝者用の紙吹雪や上下動は入れない。
+function drawResultDefeatedCharacter(character) {
+  const { slot, x, y, scale, tilt } = character;
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(tilt);
+  ctx.scale(scale, scale);
+
+  // 力の抜けた短い足。
+  ctx.strokeStyle = COLORS_D[slot];
+  ctx.lineWidth = 7;
+  ctx.lineCap = "round";
+  ctx.beginPath();
+  ctx.moveTo(-9, 23); ctx.lineTo(-18, 29);
+  ctx.moveTo(9, 23); ctx.lineTo(18, 29);
+  ctx.stroke();
+
+  ctx.fillStyle = COLORS[slot];
+  ctx.strokeStyle = COLORS_D[slot];
+  ctx.lineWidth = 3;
+  roundRect(-21, -24, 42, 50, 10); ctx.fill(); ctx.stroke();
+
+  // 白目に濃い×を置き、口を描かずに気絶状態を伝える。
+  ctx.fillStyle = "#fff";
+  ctx.beginPath();
+  ctx.arc(-8, -8, 5.2, 0, Math.PI * 2);
+  ctx.arc(8, -8, 5.2, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = "#20202b";
+  ctx.lineWidth = 2.2;
+  for (const eyeX of [-8, 8]) {
+    ctx.beginPath();
+    ctx.moveTo(eyeX - 2.2, -10.2); ctx.lineTo(eyeX + 2.2, -5.8);
+    ctx.moveTo(eyeX + 2.2, -10.2); ctx.lineTo(eyeX - 2.2, -5.8);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function resultDefeatedSlots(info) {
+  if (!info || info.winnerSlot === null) return [];
+  return (info.scores || []).map(score => score.slot).filter(slot => slot !== info.winnerSlot);
+}
+
+function drawResultDefeatedGroup(info) {
+  const slots = resultDefeatedSlots(info);
+  const layouts = {
+    1: [{ x: 990, y: 145, scale: 1.72, tilt: 1.36 }],
+    2: [
+      { x: 942, y: 128, scale: 1.48, tilt: 1.34 },
+      { x: 1040, y: 158, scale: 1.48, tilt: -1.34 },
+    ],
+    3: [
+      { x: 925, y: 101, scale: 1.3, tilt: 1.36 },
+      { x: 1043, y: 107, scale: 1.3, tilt: -1.36 },
+      { x: 985, y: 191, scale: 1.34, tilt: 1.42 },
+    ],
+  };
+  const positions = layouts[Math.min(3, slots.length)] || [];
+  for (let i = 0; i < slots.length && i < positions.length; i++) {
+    drawResultDefeatedCharacter({ slot: slots[i], ...positions[i] });
+  }
+}
+
 function drawLobby() {
   const selStage = STAGES[APP.stageIndex];
+  const lobbyStageOrdinal = stageOrdinal(APP.stageIndex, false);
   drawBackground(selStage);
   drawStage(selStage.platforms, selStage.theme);   // 選択中ステージを背景にプレビュー
   if (selStage.fan) drawFan(fanSnapshot(selStage), selStage.theme, 20);
@@ -6121,7 +6894,7 @@ function drawLobby() {
   // ステージ選択（左右キーで変更）
   ctx.font = "bold 22px sans-serif";
   ctx.fillStyle = "#fff";
-  ctx.fillText("◀  ステージ: " + selStage.name + "  （" + (APP.stageIndex + 1) + "/" + STAGES.length + "）  ▶", W / 2, 482);
+  ctx.fillText("◀  ステージ: " + selStage.name + "  （" + lobbyStageOrdinal.position + "/" + lobbyStageOrdinal.total + "）  ▶", W / 2, 482);
   ctx.font = "13px sans-serif";
   ctx.fillStyle = "rgba(255,255,255,0.5)";
   ctx.fillText("各キーボードの左右移動キー ／ 設定したステージボタンで変更", W / 2, 508);
@@ -6173,28 +6946,29 @@ function drawResult() {
   if (ws !== null) {
     const award = info.winnerTitle || { title: "生き残り名人", detail: "最後まで勝ち残って優勝" };
     ctx.fillStyle = "rgba(12,14,28,0.88)";
-    roundRect(230, 28, 820, 200, 22); ctx.fill();
+    roundRect(150, 24, 980, 224, 22); ctx.fill();
     ctx.strokeStyle = COLORS[ws]; ctx.lineWidth = 4;
-    roundRect(230, 28, 820, 200, 22); ctx.stroke();
-    drawLobbyCornerCharacter({ slot: ws, x: 350, y: 178, scale: 1.9, tilt: -0.035, pose: "cheer" });
+    roundRect(150, 24, 980, 224, 22); ctx.stroke();
+    drawLobbyCornerCharacter({ slot: ws, x: 270, y: 170, scale: 1.9, tilt: -0.035, pose: "cheer" });
+    drawResultDefeatedGroup(info);
 
-    ctx.textAlign = "left";
-    ctx.fillStyle = "rgba(255,255,255,0.7)"; ctx.font = "bold 16px sans-serif";
-    ctx.fillText("WINNER", 470, 60);
-    ctx.fillStyle = COLORS[ws]; ctx.font = "bold 62px sans-serif";
-    ctx.fillText(NAMES[ws] + " 優勝！", 470, 119);
-    ctx.fillStyle = "#ffd34d"; ctx.font = "bold 15px sans-serif";
-    ctx.fillText("称号", 472, 150);
-    ctx.font = "bold 31px sans-serif";
-    ctx.fillText("「" + award.title + "」", 470, 184);
-    ctx.fillStyle = "rgba(255,255,255,0.78)"; ctx.font = "16px sans-serif";
-    ctx.fillText(award.detail, 472, 211);
+    const awardCenterX = W / 2;
     ctx.textAlign = "center";
+    ctx.fillStyle = "rgba(255,255,255,0.7)"; ctx.font = "bold 16px sans-serif";
+    ctx.fillText("WINNER", awardCenterX, 55);
+    ctx.fillStyle = COLORS[ws]; ctx.font = "bold 62px sans-serif";
+    ctx.fillText(NAMES[ws] + " 優勝！", awardCenterX, 113);
+    ctx.fillStyle = "#ffd34d"; ctx.font = "bold 15px sans-serif";
+    ctx.fillText("称号", awardCenterX, 143);
+    ctx.font = "bold 31px sans-serif";
+    ctx.fillText("「" + award.title + "」", awardCenterX, 178);
+    ctx.fillStyle = "rgba(255,255,255,0.78)"; ctx.font = "16px sans-serif";
+    ctx.fillText(award.detail, awardCenterX, 209);
     if (info.timeUp) {
       ctx.fillStyle = "#ffd34d"; ctx.font = "bold 19px sans-serif";
-      ctx.fillText("タイムアップ（残ストック→与ダメージで判定）", W / 2, 258);
+      ctx.fillText("タイムアップ（残ストック→与ダメージで判定）", W / 2, 272);
     }
-    scoreStartY = info.timeUp ? 300 : 274;
+    scoreStartY = info.timeUp ? 314 : 288;
   } else {
     ctx.fillStyle = "#fff"; ctx.font = "bold 66px sans-serif";
     ctx.fillText("引き分け！", W / 2, 130);
@@ -6209,22 +6983,22 @@ function drawResult() {
   const scores = (info.scores || []).slice().sort((a, b) => (b.stocks - a.stocks) || (b.dealt - a.dealt));
   const rowH = 46, tableW = 560, x0 = (W - tableW) / 2;
   let y = scoreStartY;
-  ctx.font = "bold 16px sans-serif"; ctx.textAlign = "left";
+  ctx.font = "bold 16px sans-serif"; ctx.textAlign = "center";
   ctx.fillStyle = "rgba(255,255,255,0.6)";
-  ctx.fillText("プレイヤー", x0 + 14, y - 12);
-  ctx.textAlign = "center"; ctx.fillText("与えたダメージ", x0 + 300, y - 12);
+  ctx.fillText("プレイヤー", x0 + 95, y - 12);
+  ctx.fillText("与えたダメージ", x0 + 300, y - 12);
   ctx.fillText("残ストック", x0 + 450, y - 12);
   for (const s of scores) {
     ctx.fillStyle = s.slot === ws ? "rgba(255,255,255,0.16)" : "rgba(15,15,28,0.8)";
     roundRect(x0, y, tableW, rowH - 8, 8); ctx.fill();
     ctx.strokeStyle = COLORS[s.slot]; ctx.lineWidth = s.slot === ws ? 4 : 2.5; roundRect(x0, y, tableW, rowH - 8, 8); ctx.stroke();
-    ctx.fillStyle = COLORS[s.slot]; ctx.font = "bold 20px sans-serif"; ctx.textAlign = "left";
+    ctx.fillStyle = COLORS[s.slot]; ctx.font = "bold 20px sans-serif"; ctx.textAlign = "center";
     let nm = NAMES[s.slot];
     if (APP.mode === "online") nm += (s.slot === NET.myIndex ? " (あなた)" : "");
     else if (s.slot === APP.soloSlot) nm += " (あなた)";
     else if (APP.slots[s.slot] && APP.slots[s.slot].cpu) nm += " (CPU)";
-    ctx.fillText(nm, x0 + 14, y + 26);
-    ctx.textAlign = "center"; ctx.fillStyle = "#ffd34d"; ctx.font = "bold 24px sans-serif";
+    ctx.fillText(nm, x0 + 95, y + 26);
+    ctx.fillStyle = "#ffd34d"; ctx.font = "bold 24px sans-serif";
     ctx.fillText(s.dealt + "%", x0 + 300, y + 27);
     ctx.fillStyle = "#fff"; ctx.font = "bold 20px sans-serif";
     ctx.fillText(s.stocks > 0 ? "●".repeat(s.stocks) : "—", x0 + 450, y + 27);
@@ -6287,17 +7061,22 @@ requestAnimationFrame(frame);
 // デバッグ/テスト用API（決定論的simを外から直接駆動できる）
 window.UCHI = {
   APP, keys, runTick, renderNow,
+  queuePracticeInput, PRACTICE_TAP_TICKS,
   makeMatchState, stepMatch, makePlayer,
-  PHYS, ATTACK, CHARGED_ATTACK, SPECIAL, MID_CHARGE, SPECIAL_CHARGE, DOWN_ATTACK, GUARD,
-  STAGES, BLAST, STOCKS, ITEM, BALLOON, MOB, PENGUIN, rngNext,
+  PHYS, ATTACK, CHARGED_ATTACK, SPECIAL, MID_CHARGE, SPECIAL_CHARGE, DOWN_ATTACK, GUARD, HITSTUN_CONTROL,
+  STAGES, selectableStageIndices, nextStageIndex, stageOrdinal,
+  perspectiveViewState, perspectiveViewer, perspectiveDirection, thirdPersonCamera,
+  perspectiveProjectPoint, perspectiveEnemyScale, thirdPersonPlayerScale, thirdPersonAttackCircleState,
+  thirdPersonEyeMode, THIRD_PERSON_VIEW,
+  BLAST, STOCKS, ITEM, BALLOON, MOB, PENGUIN, rngNext,
   LOBBY_CORNER_CHARACTERS,
   CRUMBLE, PENDULUM, LAVA, WARP_CD, FAN, PLAYER_W, PLAYER_H, BODY_COLLISION, BODY_BOUNCE,
-  DOUBLE_JUMP_FLIP_TICKS, TAUNT_TICKS, CPU_AI,
+  COUNTDOWN_TICKS, DOUBLE_JUMP_FLIP_TICKS, TAUNT_TICKS, CPU_AI,
   resolvePlayerCollisions, resolveFloorPenetrations, playerSupportedByWorld,
   applyStageBodyBounce, resolveKnockbackPlatformBody,
   updateFan, applyFanWind,
   pH, attackData, attackActiveWindow, itemTimeFraction,
-  platformYAt, mainSurfaceYAt, updatePenguin, selectWinnerTitle, buildResultInfo,
+  platformYAt, mainSurfaceYAt, updatePenguin, selectWinnerTitle, buildResultInfo, resultDefeatedSlots,
   fx,
   NET, netHost, netJoin, netHostStart, encodeSample, decodeSample,
   makeCpuSource, cpuThink,

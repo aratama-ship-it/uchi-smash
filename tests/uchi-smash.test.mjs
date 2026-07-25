@@ -127,7 +127,7 @@ test("release constants and input codec stay coherent", () => {
   const { UCHI: game } = sandbox;
   assert.match(HTML, /<title>PYGMIX BONBON<\/title>/);
   assert.match(HTML, /ctx\.fillText\("PYGMIX BONBON", W \/ 2, 120\)/);
-  assert.match(HTML, /const GAME_VERSION = "0\.9\.44"/);
+  assert.match(HTML, /const GAME_VERSION = "0\.9\.46"/);
   assert.match(HTML, /リーチ・速度・ビーム・巨大化・風船補充の5種類/);
   assert.equal(game.PHYS.gravity, 0.495);
   assert.equal(game.DOWN_ATTACK.damageMult, 1.2);
@@ -137,6 +137,8 @@ test("release constants and input codec stay coherent", () => {
   assert.equal(game.BODY_BOUNCE.restitution, 0.58);
   assert.equal(game.BODY_BOUNCE.tangentRetention, 0.82);
   assert.equal(game.BODY_BOUNCE.minNormalSpeed, 3.8);
+  assert.equal(game.HITSTUN_CONTROL.accelScale, 0.2);
+  assert.equal(game.HITSTUN_CONTROL.maxSpeedScale, 0.4);
   assert.equal(game.FAN.windWidth, 118);
   assert.equal(game.FAN.windTop, 155);
   assert.equal(game.FAN.lift, 0.58);
@@ -154,12 +156,16 @@ test("release constants and input codec stay coherent", () => {
   assert.equal(game.SPECIAL.activeTo, 12);
   assert.equal(game.ITEM.chargedBeamRangeMult, 2);
   assert.equal(game.ITEM.chargedBeamThick, 64);
-  assert.equal(game.STAGES.length, 7);
-  assert.equal(new Set(game.STAGES.map(stage => stage.name)).size, 7);
+  assert.equal(game.STAGES.length, 8);
+  assert.equal(new Set(game.STAGES.map(stage => stage.name)).size, 8);
   assert.equal(game.STAGES.some(stage => stage.name === "エレベーター"), false);
   assert.equal(game.STAGES.some(stage => stage.name === "ワープ広場"), false);
   assert.equal(game.STAGES.some(stage => stage.name === "うごく壁"), false);
   assert.equal(game.STAGES.some(stage => stage.name === "ながれ場"), false);
+  const perspectiveStage = game.STAGES.find(stage => stage.name === "しせん回廊");
+  assert.ok(perspectiveStage);
+  assert.equal(perspectiveStage.onlineOnly, true);
+  assert.deepEqual({ ...perspectiveStage.perspectiveShift }, { afterTicks: 600, warningTicks: 120, transitionTicks: 45 });
   assert.equal(game.LOBBY_CORNER_CHARACTERS.length, 4);
   assert.deepEqual([...game.LOBBY_CORNER_CHARACTERS].map(character => character.slot), [0, 1, 2, 3]);
   assert.equal(game.LOBBY_CORNER_CHARACTERS.filter(character => character.x < 640).length, 2);
@@ -249,6 +255,109 @@ test("release constants and input codec stay coherent", () => {
   for (let mask = 0; mask < 512; mask++) {
     assert.equal(game.encodeSample(game.decodeSample(mask)), mask);
   }
+});
+
+test("the perspective corridor is selectable online but skipped by local stage rotation", () => {
+  const { UCHI: game } = loadGame();
+  const perspectiveIndex = game.STAGES.findIndex(stage => stage.name === "しせん回廊");
+  const previousIndex = perspectiveIndex - 1;
+
+  assert.equal(game.selectableStageIndices(false).includes(perspectiveIndex), false);
+  assert.equal(game.selectableStageIndices(false).length, 7);
+  assert.equal(game.selectableStageIndices(true).includes(perspectiveIndex), true);
+  assert.equal(game.nextStageIndex(previousIndex, 1, false), 0);
+  assert.equal(game.nextStageIndex(previousIndex, 1, true), perspectiveIndex);
+  assert.equal(game.nextStageIndex(perspectiveIndex, 0, false), 0);
+
+  // URLでオンライン専用面を直接指定しても、通常ロビーでは選択状態にしない。
+  const direct = loadGame("?stage=%E3%81%97%E3%81%9B%E3%82%93%E5%9B%9E%E5%BB%8A");
+  assert.equal(direct.UCHI.APP.stageIndex, 0);
+});
+
+test("the perspective corridor changes only its view after a deterministic warning", () => {
+  const { UCHI: game } = loadGame();
+  const stageIndex = game.STAGES.findIndex(stage => stage.name === "しせん回廊");
+  const match = game.makeMatchState([0, 1], stageIndex);
+  const config = match.stage.perspectiveShift;
+  match.countdown = 0;
+
+  match.tick = game.COUNTDOWN_TICKS + config.afterTicks - config.warningTicks - 1;
+  assert.equal(game.perspectiveViewState(match).mode, "normal");
+  match.tick++;
+  assert.equal(game.perspectiveViewState(match).mode, "warning");
+  match.tick = game.COUNTDOWN_TICKS + config.afterTicks;
+  assert.equal(game.perspectiveViewState(match).mode, "transition");
+  match.tick += config.transitionTicks;
+  assert.equal(game.perspectiveViewState(match).mode, "third");
+
+  // 視点の向きは各slotの初期側で固定され、物理座標や操作軸は変更しない。
+  assert.equal(game.perspectiveDirection(match, match.players[0]), 1);
+  assert.equal(game.perspectiveDirection(match, match.players[1]), -1);
+  const camera = game.thirdPersonCamera(match.players[0], 1);
+  assert.equal(camera.x, match.players[0].x - 155);
+  assert.equal(camera.y, match.players[0].y - 42);
+  const before = { x: match.players[0].x, y: match.players[0].y };
+  game.perspectiveViewState(match);
+  assert.deepEqual({ x: match.players[0].x, y: match.players[0].y }, before);
+
+  // 敵の表示だけは距離で大きく変え、近距離＞中距離＞遠距離を明確にする。
+  const nearScale = game.perspectiveEnemyScale(25);
+  const middleScale = game.perspectiveEnemyScale(350);
+  const farScale = game.perspectiveEnemyScale(900);
+  assert.ok(nearScale > middleScale && middleScale > farScale);
+  assert.equal(nearScale, 3);
+  assert.equal(farScale, 0.38);
+
+  // 三人称では自分の大きさを固定し、相手だけを自然な透視倍率で遠いほど小さくする。
+  assert.equal(game.THIRD_PERSON_VIEW.corridorWidthScale, 0.84);
+  assert.equal(game.thirdPersonPlayerScale(25, true), 2.2);
+  assert.equal(game.thirdPersonPlayerScale(900, true), 2.2);
+  const opponentNear = game.thirdPersonPlayerScale(155, false);
+  const opponentMiddle = game.thirdPersonPlayerScale(455, false);
+  const opponentFar = game.thirdPersonPlayerScale(900, false);
+  assert.ok(opponentNear > opponentMiddle && opponentMiddle > opponentFar);
+  assert.ok(opponentMiddle < game.thirdPersonPlayerScale(455, true));
+  assert.equal(game.thirdPersonEyeMode(1, 1), "hidden");
+  assert.equal(game.thirdPersonEyeMode(-1, 1), "center");
+  assert.equal(game.thirdPersonEyeMode(1, 0), "side");
+
+  const attacker = match.players[0];
+  attacker.attackTimer = game.ATTACK.total;
+  assert.equal(game.thirdPersonAttackCircleState(attacker, 2.2).active, false);
+  attacker.attackTimer = game.ATTACK.activeFrom;
+  const activeCircle = game.thirdPersonAttackCircleState(attacker, 2.2);
+  assert.equal(activeCircle.active, true);
+  assert.ok(activeCircle.radius >= game.THIRD_PERSON_VIEW.attackCircleMin);
+  attacker.attackTimer = 0;
+  assert.equal(game.thirdPersonAttackCircleState(attacker, 2.2), null);
+});
+
+test("the perspective QA URL opens normal, warning, first-person, and third-person mock views", () => {
+  for (const [view, expected] of [["normal", "normal"], ["warning", "warning"], ["first", "first"], ["third", "third"]]) {
+    const { UCHI: game } = loadGame("?preview=perspective&view=" + view);
+    assert.equal(game.APP.phase, "match");
+    assert.equal(game.APP.match.stage.name, "しせん回廊");
+    assert.equal(game.APP.match.stage.onlineOnly, true);
+    assert.equal(game.perspectiveViewState(game.APP.match).mode, expected);
+    assert.doesNotThrow(() => game.renderNow());
+  }
+  const defaultPreview = loadGame("?preview=perspective").UCHI;
+  assert.equal(defaultPreview.perspectiveViewState(defaultPreview.APP.match).mode, "third");
+  assert.equal(defaultPreview.APP.match.perspectivePlayable, true);
+  assert.equal(defaultPreview.APP.soloSlot, 0);
+  assert.equal(defaultPreview.APP.slots[0].cpu, false);
+
+  const beforeX = defaultPreview.APP.match.players[0].x;
+  defaultPreview.keys.add("KeyD");
+  for (let tick = 0; tick < 5; tick++) defaultPreview.runTick();
+  assert.ok(defaultPreview.APP.match.players[0].x > beforeX);
+  assert.match(defaultPreview.APP.match.perspectiveInputLabel, /右/);
+  defaultPreview.keys.delete("KeyD");
+
+  const tapStartX = defaultPreview.APP.match.players[0].x;
+  defaultPreview.queuePracticeInput("ArrowRight");
+  for (let tick = 0; tick < defaultPreview.PRACTICE_TAP_TICKS; tick++) defaultPreview.runTick();
+  assert.ok(defaultPreview.APP.match.players[0].x > tapStartX);
 });
 
 test("keyboard Y and gamepad B-circle trigger only the taunt input", () => {
@@ -446,6 +555,55 @@ test("down on main ground halves body height and ducks under a forward laser", (
   assert.equal(dropper.crouching, false);
   assert.equal(dropper.onGround, false);
   assert.ok(dropper.dropTimer > 0);
+});
+
+test("hitstun keeps weak horizontal resistance without restoring combat actions", () => {
+  const { UCHI: game } = loadGame();
+  const neutral = {
+    left: false, right: false, up: false, down: false,
+    jump: false, attack: false, guard: false, balloon: false, taunt: false, start: false,
+  };
+  const input = { ...neutral, right: true, jump: true, attack: true, guard: true, balloon: true };
+  const match = game.makeMatchState([0, 1], 0);
+  const player = match.players[0];
+  match.countdown = 0;
+  match.itemTimer = 9999;
+  match.players[1].x = 1000;
+  player.x = 400;
+  player.y = 300;
+  player.vx = player.vy = 0;
+  player.onGround = false;
+  player.airJumps = 1;
+  player.hitstun = 12;
+  player.prev = neutral;
+
+  game.stepMatch(match, [input, neutral]);
+
+  assert.equal(player.hitstun, 11);
+  assert.ok(Math.abs(player.vx - game.PHYS.airAccel * game.HITSTUN_CONTROL.accelScale) < 1e-9);
+  assert.ok(player.vx < game.PHYS.airAccel, "hitstun steering should remain much weaker than normal air control");
+  assert.ok(player.vy > 0, "jump must stay locked during hitstun");
+  assert.equal(player.airJumps, 1);
+  assert.equal(player.attackTimer, 0);
+  assert.equal(player.guarding, false);
+  assert.equal(player.ballooning, false);
+
+  // 長い硬直で入力し続けても通常走行速度までは加速しない。
+  const ground = game.makeMatchState([0, 1], 0);
+  const grounded = ground.players[0];
+  ground.countdown = 0;
+  ground.itemTimer = 9999;
+  ground.players[1].x = 1000;
+  grounded.x = 400;
+  grounded.y = game.mainSurfaceYAt(ground, grounded.x);
+  grounded.vx = grounded.vy = 0;
+  grounded.onGround = true;
+  grounded.hitstun = 200;
+  grounded.prev = neutral;
+  for (let tick = 0; tick < 90; tick++) game.stepMatch(ground, [{ ...neutral, right: true }, neutral]);
+  assert.ok(grounded.x > 400, "a stunned grounded player should be able to inch away from a combo");
+  assert.ok(grounded.vx <= game.PHYS.maxRun * game.HITSTUN_CONTROL.maxSpeedScale + 1e-9);
+  assert.ok(grounded.vx < game.PHYS.maxRun);
 });
 
 test("a charged forward beam is twice as long and hits crouching players", () => {
@@ -1350,9 +1508,11 @@ test("the result gives one large highlight title to the winner only", () => {
     detail: "2回、ペンギンの突進を反転",
   });
   assert.equal(result.scores.every(score => !("title" in score)), true);
-  assert.match(HTML, /drawLobbyCornerCharacter\(\{ slot: ws/);
+  assert.match(HTML, /drawLobbyCornerCharacter\(\{ slot: ws, x: 270, y: 170, scale: 1\.9/);
+  assert.match(HTML, /drawResultDefeatedGroup\(info\)/);
   assert.match(HTML, /ctx\.font = "bold 62px sans-serif"/);
-  assert.match(HTML, /ctx\.fillText\("称号", 472, 150\)/);
+  assert.match(HTML, /ctx\.fillText\("称号", awardCenterX, 143\)/);
+  assert.deepEqual([...game.resultDefeatedSlots(result)], [loser.slot]);
   game.APP.match = match;
   game.APP.resultInfo = result;
   game.APP.phase = "result";
@@ -1419,6 +1579,7 @@ test("the result-screen QA URL opens a four-player winner award preview", () => 
   assert.equal(game.APP.resultInfo.winnerSlot, 2);
   assert.equal(game.APP.resultInfo.winnerTitle.title, "ペンギン調教師");
   assert.equal(game.APP.resultInfo.scores.length, 4);
+  assert.deepEqual([...game.resultDefeatedSlots(game.APP.resultInfo)], [0, 1, 3]);
   assert.doesNotThrow(() => game.renderNow());
 });
 

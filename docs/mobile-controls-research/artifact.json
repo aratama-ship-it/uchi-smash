@@ -1,0 +1,262 @@
+{
+  "surface": "report",
+  "manifest": {
+    "version": 1,
+    "surface": "report",
+    "title": "ウチスマ スマホ操作の可能性 — 競合調査と試作方針",
+    "description": "現行ウチスマをスマホ向けに展開できるかを、公式情報と現行コードから判断した共有用レポート。",
+    "generatedAt": "2026-07-18T00:00:00Z",
+    "charts": [
+      {
+        "id": "right_thumb_zones_chart",
+        "title": "右親指のアクション領域数",
+        "subtitle": "忠実版は4領域、タッチ最適化版は3領域。少ない方が良いという結論ではなく、検証する設計差。",
+        "type": "bar",
+        "dataset": "touch_control_counts",
+        "sourceId": "touch_control_design_query",
+        "valueFormat": "number",
+        "encodings": {
+          "x": { "field": "prototype", "type": "nominal", "label": "試作" },
+          "y": { "field": "right_action_zones", "type": "quantitative", "label": "右親指の操作領域数" },
+          "tooltip": [
+            { "field": "right_action_zones", "type": "quantitative", "label": "操作領域数", "format": "number" },
+            { "field": "controls", "type": "nominal", "label": "内訳" }
+          ]
+        }
+      }
+    ],
+    "tables": [
+      {
+        "id": "reference_games_table",
+        "title": "参考タイトルと、ウチスマへの示唆",
+        "subtitle": "規模指標は定義が異なるため、相互の優劣比較には使わない。",
+        "dataset": "reference_games",
+        "sourceId": "reference_games_query",
+        "defaultSort": { "field": "order", "direction": "asc" },
+        "columns": [
+          { "field": "order", "label": "順", "type": "number" },
+          { "field": "game", "label": "タイトル", "type": "text" },
+          { "field": "similarity", "label": "近さ", "type": "text" },
+          { "field": "public_scale", "label": "公開規模の参考値", "type": "text" },
+          { "field": "verified_control", "label": "確認できた操作情報", "type": "text" },
+          { "field": "lesson", "label": "ウチスマへの示唆", "type": "text" },
+          { "field": "limit", "label": "解釈上の限界", "type": "text" }
+        ]
+      },
+      {
+        "id": "prototype_table",
+        "title": "段階別の操作試作",
+        "subtitle": "まず比較基準を作り、その後にタッチ専用の簡略化を検証する。",
+        "dataset": "prototypes",
+        "sourceId": "prototype_comparison_query",
+        "defaultSort": { "field": "order", "direction": "asc" },
+        "columns": [
+          { "field": "order", "label": "段階", "type": "number" },
+          { "field": "prototype", "label": "試作", "type": "text" },
+          { "field": "left_thumb", "label": "左親指", "type": "text" },
+          { "field": "right_thumb", "label": "右親指", "type": "text" },
+          { "field": "mechanic_change", "label": "ルール変更", "type": "text" },
+          { "field": "implementation_risk", "label": "実装リスク", "type": "text" },
+          { "field": "purpose", "label": "目的", "type": "text" }
+        ]
+      }
+    ],
+    "sources": [
+      {
+        "id": "research_notes",
+        "label": "公式情報・現行コードの調査メモ",
+        "path": "source-notes.md"
+      },
+      {
+        "id": "touch_control_design_query",
+        "label": "試作ごとの右親指アクション領域数",
+        "path": "source-notes.md"
+      },
+      {
+        "id": "reference_games_query",
+        "label": "参考タイトル比較スナップショット",
+        "path": "source-notes.md"
+      },
+      {
+        "id": "prototype_comparison_query",
+        "label": "操作試作比較スナップショット",
+        "path": "source-notes.md"
+      }
+    ],
+    "blocks": [
+      {
+        "id": "title",
+        "type": "markdown",
+        "body": "# ウチスマ スマホ操作の可能性 — 競合調査と試作方針\n\n**判断日:** 2026-07-18　**判断:** スマホ化は可能。まず現行ルール忠実版を作り、次にタッチ最適化版と比較する。"
+      },
+      {
+        "id": "executive_summary",
+        "type": "markdown",
+        "body": "## Executive Summary｜結論\n\n横視点のプラットフォームファイターは、スマホ上ですでに成立している。[Brawlhalla](https://news.ubisoft.com/en-us/article/1kyM6xMlvLXtYa0un5XpKN/brawlhalla-now-available-on-mobile) はカスタマイズ可能なタッチ操作とコントローラーを提供し、Google Playでは1,000万+ダウンロード。[Flash Party](https://apps.apple.com/us/app/flash-party/id1579850555) も同形式で現行配信されている。したがって「スマホでは方式そのものが成立しない」という懸念は退けられる。\n\nウチスマは、キーボードとゲームパッドを共通の `InputSample` に変換している。このため最初のタッチ試作は、シミュレーションとオンライン同期を変えず、入力源を追加する形で作れる。\n\n推奨は二段階。最初は **左スティック＋攻撃・ジャンプ・ガード・風船** の忠実版で操作可能性を測る。次に **攻撃のタップ・上下ドラッグ・長押し** と状況依存ボタンを使う簡略版をA/B比較する。公開規模は操作満足度の証明ではないため、最終判断は5人程度の実機テストで行う。"
+      },
+      {
+        "id": "key_findings_heading",
+        "type": "markdown",
+        "body": "## Key Findings｜確認できた実例\n\n- **最も近い基準:** Brawlhalla、Flash Party。どちらも横視点のプラットフォームファイター。\n- **モバイル簡略化の基準:** [Smash Legends](https://play.google.com/store/apps/details?hl=en-US&id=com.linegames.sl) はスライド＋タッチの簡潔な操作を掲げるが、3D / 2.5Dアリーナ型。\n- **習熟差への対応:** [Brawl Stars](https://supercell.com/en/games/brawlstars/blog/news/new-power-brawl-pass-changes-and-a-new-starr-drop-2/) には、同じ動作をタップと照準ドラッグの両方で扱う設計例がある。\n- **端末設計:** [Appleの指針](https://developer.apple.com/design/human-interface-guidelines/game-controls) は、左側移動・右側アクション、フローティングスティック、頻用操作44×44pt以上、押下フィードバック、長押しへの機能統合を推奨している。"
+      },
+      { "id": "reference_games", "type": "table", "tableId": "reference_games_table" },
+      {
+        "id": "current_fit",
+        "type": "markdown",
+        "body": "## 現行ウチスマに適用しやすい理由\n\n現在のゲーム入力は `left / right / up / down / jump / attack / guard / balloon / start` に統一されている。タッチ入力も同じ真偽値を返せば、ゲーム本体は入力元を意識しない。オンライン対戦も8個の真偽入力を1バイトに詰めているため、**忠実版は同期プロトコルを変えずに実装できる**。\n\n一方、攻撃パッドの上下ドラッグを独立した攻撃方向として送る場合や、地上と空中で同じボタンの役割を切り替える場合は、入力仕様・ルール・オンライン互換性を明示的に変更する必要がある。"
+      },
+      {
+        "id": "recommendation_heading",
+        "type": "markdown",
+        "body": "## Recommended Next Steps｜推奨する進め方\n\n1. **忠実版を先に作る。** 横画面、左のフローティング4方向スティック、右に攻撃・ジャンプ・ガード・風船。攻撃はタップして離すと通常、2秒長押しで必殺技。\n2. **タッチ最適化版を分岐試作する。** 大きな攻撃パッドをタップ=正面、上下ドラッグ=方向攻撃、長押し=必殺技にする。ジャンプを独立させ、ガードと風船を状況依存の1ボタンへまとめる。\n3. **物理コントローラーは残す。** 接続中はタッチUIを隠し、タブレットや慣れたユーザーの選択肢にする。\n4. **スマホは1人1端末を前提にする。** 同一画面の複数人操作は指の衝突と遮蔽が大きい。オンライン対戦を中心にする。"
+      },
+      { "id": "right_thumb_zones", "type": "chart", "chartId": "right_thumb_zones_chart" },
+      { "id": "prototypes", "type": "table", "tableId": "prototype_table" },
+      {
+        "id": "validation",
+        "type": "markdown",
+        "body": "## 検証計画\n\n5人の協力者にA/Bの順序を入れ替えて両方を触ってもらい、基本操作課題と各3試合を行う。以下は未計測の仮説的な合格基準。\n\n- 5人中4人以上が、最初の説明後、口頭救助なしで基本チュートリアルを完了\n- 方向攻撃の意図一致率80%以上\n- 3試合あたり、操作起因の自滅が1回以下 / 人\n- 5人中4人以上が、タッチ操作のまま即再戦を選ぶ\n\n押し損ね、方向誤り、意図しないジャンプ・ガード・風船、指による遮蔽、利き手、快適さ5段階を記録する。"
+      },
+      {
+        "id": "further_questions",
+        "type": "markdown",
+        "body": "## Further Questions｜次に答えるべき問い\n\n- 攻撃方向は、移動スティックとの同時入力より攻撃パッドのドラッグの方が誤操作を減らすか。\n- 地上=ガード、空中=風船の自動切替は理解しやすいか。それとも予測不能に感じるか。\n- 初心者向けに正面攻撃を最寄りの相手へ自動で向ける補助が必要か。競技モードでは切るべきか。\n- 横長スマホで指がキャラクターや足場をどの程度隠すか。端末サイズ別の配置保存が必要か。\n- Web版で操作感を検証した後、PWA・App Store向けラッパー・ネイティブ移植のどれを選ぶか。"
+      },
+      {
+        "id": "caveats",
+        "type": "markdown",
+        "body": "## Caveats & Assumptions｜注意点\n\n- ダウンロード数・評価数は、タッチ操作の満足度や継続率を直接示さない。\n- Flash Partyの現在の詳細なボタン配置は、公式ストア本文だけでは確認できていない。実機確認が必要。\n- Brawlhallaの累計1億プレイヤーは全プラットフォーム合計であり、モバイル単独ではない。\n- 今回は公開情報とコード構造からの実現可能性判断であり、ウチスマのスマホ実機プレイデータはまだない。\n- 物理コントローラーなしでも遊べることを合格条件にし、コントローラー対応は代替手段として扱う。"
+      }
+    ]
+  },
+  "snapshot": {
+    "version": 1,
+    "generatedAt": "2026-07-18T00:00:00Z",
+    "status": "ready",
+    "datasets": {
+      "reference_games": [
+        {
+          "order": 1,
+          "game": "Brawlhalla",
+          "similarity": "非常に近い（横視点プラットフォームファイター）",
+          "public_scale": "Google Play 1,000万+ DL / 4.4 / 約34.5万レビュー",
+          "verified_control": "カスタマイズ可能なタッチ操作＋物理コントローラー",
+          "lesson": "同ジャンルがスマホで成立。HUDカスタマイズとコントローラー併存",
+          "limit": "規模は操作満足度を直接示さない"
+        },
+        {
+          "order": 2,
+          "game": "Flash Party",
+          "similarity": "非常に近い（横視点プラットフォームファイター）",
+          "public_scale": "App Store 4.8 / 約1.5万評価",
+          "verified_control": "公式ストアでジャンル・モードを確認",
+          "lesson": "キャラクター固有技と複数モードのスマホ展開例",
+          "limit": "詳細な現行タッチ配置は実機確認が必要"
+        },
+        {
+          "order": 3,
+          "game": "SMASH LEGENDS",
+          "similarity": "隣接（3D / 2.5Dアリーナ型）",
+          "public_scale": "Google Play 1,000万+ DL / 約32万レビュー",
+          "verified_control": "simple slide-and-touch controls",
+          "lesson": "複数人対戦を少数のスライド・タッチへ簡略化",
+          "limit": "横視点ではなく奥行き移動がある"
+        },
+        {
+          "order": 4,
+          "game": "Brawl Stars",
+          "similarity": "操作設計のみ参考（見下ろし型）",
+          "public_scale": "Google Play 5億+ DL / 約2,600万レビュー",
+          "verified_control": "配置カスタマイズ、タップと照準ドラッグの併用例",
+          "lesson": "初心者のタップと熟練者のドラッグを同じ操作に共存",
+          "limit": "ゲームジャンルは異なる"
+        }
+      ],
+      "prototypes": [
+        {
+          "order": 1,
+          "prototype": "A: 現行ルール忠実版",
+          "left_thumb": "フローティング4方向スティック",
+          "right_thumb": "攻撃・ジャンプ・ガード・風船",
+          "mechanic_change": "なし",
+          "implementation_risk": "低 — 既存InputSampleを維持",
+          "purpose": "比較基準と最短の実機検証"
+        },
+        {
+          "order": 2,
+          "prototype": "B: タッチ最適化版",
+          "left_thumb": "フローティング移動スティック",
+          "right_thumb": "攻撃パッド・ジャンプ・状況依存ユーティリティ",
+          "mechanic_change": "あり — 攻撃方向とガード/風船の扱い",
+          "implementation_risk": "中 — 入力仕様と同期の版管理が必要になり得る",
+          "purpose": "誤操作・右手の混雑を減らせるかA/B検証"
+        },
+        {
+          "order": 3,
+          "prototype": "C: 物理コントローラー",
+          "left_thumb": "スティック / 十字キー",
+          "right_thumb": "現行ゲームパッド操作",
+          "mechanic_change": "なし",
+          "implementation_risk": "低 — 既に対応",
+          "purpose": "タブレット・熟練者向けの代替手段"
+        }
+      ],
+      "touch_control_counts": [
+        {
+          "prototype": "A: 忠実版",
+          "right_action_zones": 4,
+          "controls": "攻撃・ジャンプ・ガード・風船"
+        },
+        {
+          "prototype": "B: 最適化版",
+          "right_action_zones": 3,
+          "controls": "攻撃パッド・ジャンプ・状況依存ユーティリティ"
+        }
+      ]
+    }
+  },
+  "sources": [
+    {
+      "id": "research_notes",
+      "label": "公式情報・現行コードの調査メモ",
+      "path": "source-notes.md"
+    },
+    {
+      "id": "touch_control_design_query",
+      "label": "試作ごとの右親指アクション領域数",
+      "query": {
+        "engine": "inline-design-snapshot",
+        "language": "sql",
+        "description": "調査メモで定義した2つのタッチ試作について、右親指側の独立操作領域を数える。",
+        "executed_at": "2026-07-18T00:00:00+09:00",
+        "sql": "SELECT * FROM (VALUES ('A: 忠実版', 4, '攻撃・ジャンプ・ガード・風船'), ('B: 最適化版', 3, '攻撃パッド・ジャンプ・状況依存ユーティリティ')) AS touch_control_counts(prototype, right_action_zones, controls)"
+      }
+    },
+    {
+      "id": "reference_games_query",
+      "label": "参考タイトル比較スナップショット",
+      "query": {
+        "engine": "inline-research-snapshot",
+        "language": "sql",
+        "description": "公式ページとストア情報を調査メモへ転記した、参考タイトル4件の比較スナップショット。",
+        "executed_at": "2026-07-18T00:00:00+09:00",
+        "sql": "SELECT * FROM (VALUES (1, 'Brawlhalla', '非常に近い（横視点プラットフォームファイター）', 'Google Play 1,000万+ DL / 4.4 / 約34.5万レビュー', 'カスタマイズ可能なタッチ操作＋物理コントローラー', '同ジャンルがスマホで成立。HUDカスタマイズとコントローラー併存', '規模は操作満足度を直接示さない'), (2, 'Flash Party', '非常に近い（横視点プラットフォームファイター）', 'App Store 4.8 / 約1.5万評価', '公式ストアでジャンル・モードを確認', 'キャラクター固有技と複数モードのスマホ展開例', '詳細な現行タッチ配置は実機確認が必要'), (3, 'SMASH LEGENDS', '隣接（3D / 2.5Dアリーナ型）', 'Google Play 1,000万+ DL / 約32万レビュー', 'simple slide-and-touch controls', '複数人対戦を少数のスライド・タッチへ簡略化', '横視点ではなく奥行き移動がある'), (4, 'Brawl Stars', '操作設計のみ参考（見下ろし型）', 'Google Play 5億+ DL / 約2,600万レビュー', '配置カスタマイズ、タップと照準ドラッグの併用例', '初心者のタップと熟練者のドラッグを同じ操作に共存', 'ゲームジャンルは異なる')) AS reference_games(\"order\", game, similarity, public_scale, verified_control, lesson, \"limit\")"
+      }
+    },
+    {
+      "id": "prototype_comparison_query",
+      "label": "操作試作比較スナップショット",
+      "query": {
+        "engine": "inline-design-snapshot",
+        "language": "sql",
+        "description": "調査結果から定義した3つの操作試作の比較。",
+        "executed_at": "2026-07-18T00:00:00+09:00",
+        "sql": "SELECT * FROM (VALUES (1, 'A: 現行ルール忠実版', 'フローティング4方向スティック', '攻撃・ジャンプ・ガード・風船', 'なし', '低 — 既存InputSampleを維持', '比較基準と最短の実機検証'), (2, 'B: タッチ最適化版', 'フローティング移動スティック', '攻撃パッド・ジャンプ・状況依存ユーティリティ', 'あり — 攻撃方向とガード/風船の扱い', '中 — 入力仕様と同期の版管理が必要になり得る', '誤操作・右手の混雑を減らせるかA/B検証'), (3, 'C: 物理コントローラー', 'スティック / 十字キー', '現行ゲームパッド操作', 'なし', '低 — 既に対応', 'タブレット・熟練者向けの代替手段')) AS prototypes(\"order\", prototype, left_thumb, right_thumb, mechanic_change, implementation_risk, purpose)"
+      }
+    }
+  ],
+  "package_info": {
+    "originUrl": "artifact://uchi-smash-mobile-controls",
+    "controls": { "edit": false, "refresh": false }
+  }
+}
