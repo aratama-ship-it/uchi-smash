@@ -3586,6 +3586,19 @@ function normalizeHostConnectionIndices() {
   });
 }
 
+// PeerJSエラー種別ごとの分かりやすい日本語メッセージ（誤解を招く「コード間違い？」の一律表示をやめる）
+function netErrorMessage(type) {
+  switch (type) {
+    case "peer-unavailable": return "その番号の部屋が見つかりません。ホストが部屋を作ってから、コードを確認して入り直してください";
+    case "network": return "通信が不安定か、対戦サーバーに繋がりません。少し待ってから入り直してください";
+    case "unavailable-id": return "その部屋番号は使用中です。部屋を作り直してください";
+    case "server-error": case "socket-error": case "socket-closed": return "対戦サーバーでエラーが発生しました。少し待ってから再試行してください";
+    case "browser-incompatible": return "このブラウザはオンライン対戦に対応していません";
+    case "ssl-unavailable": return "接続がブロックされました（HTTPSのページでお試しください）";
+    default: return "接続エラー（" + type + "）。少し待ってから入り直してください";
+  }
+}
+
 function netHost() {
   netCleanup();
   NET.isHost = true; NET.myIndex = 0; NET.code = makeCode();
@@ -3594,7 +3607,13 @@ function netHost() {
   refreshOnlineUI();
   const peer = new Peer(peerIdFor(NET.code));
   NET.peer = peer;
-  peer.on("open", () => { NET.status = "hosting"; NET.msg = ""; refreshOnlineUI(); });
+  let reconTry = 0;
+  peer.on("open", () => { reconTry = 0; NET.status = "hosting"; NET.msg = ""; refreshOnlineUI(); });
+  peer.on("disconnected", () => {
+    if (peer.destroyed || NET.peer !== peer) return;   // 中断済み/別セッションなら何もしない
+    if (reconTry++ < 5) { NET.msg = "サーバーとの接続が切れました。再接続中…(" + reconTry + "/5)"; refreshOnlineUI(); try { peer.reconnect(); } catch (e) {} }
+    else { NET.status = "idle"; NET.msg = "サーバーに再接続できませんでした。部屋を作り直してください"; refreshOnlineUI(); }
+  });
   peer.on("connection", conn => {
     if (NET.conns.length >= 3 || APP.phase !== "lobby") { conn.close(); return; }  // 満員/試合中・結果画面は拒否
     const idx = NET.conns.length + 1;   // 参加順に 1,2,3
@@ -3608,7 +3627,10 @@ function netHost() {
     conn.on("data", d => netHostOnData(d, entry));
     conn.on("close", () => netHostConnClosed(entry));
   });
-  peer.on("error", e => { NET.status = "idle"; NET.msg = "エラー: " + e.type; refreshOnlineUI(); });
+  peer.on("error", e => {
+    if (e.type === "network" && !peer.destroyed) { NET.msg = "通信が不安定です。再接続中…"; refreshOnlineUI(); return; }   // disconnectedハンドラの再接続に任せる
+    NET.status = "idle"; NET.msg = netErrorMessage(e.type); refreshOnlineUI();
+  });
 }
 
 function netJoin(code) {
@@ -3620,7 +3642,11 @@ function netJoin(code) {
   refreshOnlineUI();
   const peer = new Peer();
   NET.peer = peer;
+  let reconTry = 0, joined = false;
   peer.on("open", () => {
+    reconTry = 0;
+    if (joined) return;   // 再接続時は既存のデータ接続を維持（重複connectしない）
+    joined = true;
     const conn = peer.connect(peerIdFor(code), { reliable: true, serialization: "json" });
     NET.hostConn = conn;
     conn.on("open", () => {
@@ -3637,7 +3663,14 @@ function netJoin(code) {
       refreshOnlineUI();
     });
   });
-  peer.on("error", e => { NET.status = "idle"; NET.msg = "エラー: " + e.type + "（コード間違い？）"; refreshOnlineUI(); });
+  peer.on("disconnected", () => {
+    if (peer.destroyed || NET.peer !== peer) return;
+    if (reconTry++ < 5) { try { peer.reconnect(); } catch (e) {} }
+  });
+  peer.on("error", e => {
+    if (e.type === "network" && !peer.destroyed) { NET.msg = "通信が不安定です。再接続中…"; refreshOnlineUI(); return; }
+    NET.status = "idle"; NET.msg = netErrorMessage(e.type); refreshOnlineUI();
+  });
 }
 
 // ホスト: 参加者からのデータ受信
