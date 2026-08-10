@@ -841,10 +841,10 @@ const STAGES = [
   },
   {
     // しせん回廊: 物理と入力は従来の2Dのまま、試合開始10秒後に各自の視点だけを
-    // 自キャラクターの後ろから回廊を見通す三人称風へ切り替えるオンライン専用ステージ。
+    // 自キャラクターの後ろから回廊を見通す三人称風へ切り替え、10秒後に通常視点へ戻す。
     name: "しせん回廊",
     onlineOnly: true,
-    perspectiveShift: { afterTicks: 600, warningTicks: 120, transitionTicks: 45 },
+    perspectiveShift: { afterTicks: 600, warningTicks: 120, transitionTicks: 45, holdTicks: 600 },
     theme: { sky:["#080b10","#151c24","#252d34"], mountain:"rgba(4,7,10,0.8)", corridor:true,
              dirt:"#242a2e", grass:"#d9c07a", grass2:"#857448", plat:"#59636a", platTop:"#d7dee2" },
     platforms: [
@@ -3240,7 +3240,7 @@ function applyBodyBouncePreviewFromUrl() {
 }
 applyBodyBouncePreviewFromUrl();
 
-// オンライン専用「しせん回廊」のQA用URL（?preview=perspective&view=normal|warning|transition|first|third）。
+// オンライン専用「しせん回廊」のQA用URL（?preview=perspective&view=normal|warning|transition|first|third|return）。
 // 通信を開始せず、同じ2D状態を通常・一人称風・三人称風の各視点で即確認できる。
 function applyPerspectivePreviewFromUrl() {
   const params = new URLSearchParams(location.search);
@@ -3251,9 +3251,9 @@ function applyPerspectivePreviewFromUrl() {
   const previewMatch = makeMatchState([0, 1, 2, 3], stageIndex);
   const config = previewMatch.stage.perspectiveShift;
   const requestedView = params.get("view") || "third";
-  previewMatch.perspectivePreviewMode = requestedView === "first" || requestedView === "third" ? requestedView : null;
+  previewMatch.perspectivePreviewMode = ["first", "third", "return"].includes(requestedView) ? requestedView : null;
   previewMatch.countdown = 0;
-  if (requestedView === "normal") previewMatch.tick = COUNTDOWN_TICKS + 120;
+  if (requestedView === "normal") previewMatch.tick = COUNTDOWN_TICKS;
   else if (requestedView === "warning") previewMatch.tick = COUNTDOWN_TICKS + config.afterTicks - 60;
   else if (requestedView === "transition") previewMatch.tick = COUNTDOWN_TICKS + config.afterTicks + Math.floor(config.transitionTicks / 2);
   else previewMatch.tick = COUNTDOWN_TICKS + config.afterTicks + config.transitionTicks + 60;
@@ -3269,6 +3269,10 @@ function applyPerspectivePreviewFromUrl() {
     const player = previewMatch.players[i], position = positions[i];
     player.x = position.x; player.y = position.y;
     player.vx = player.vy = 0; player.onGround = true; player.invuln = 0;
+  }
+  if (params.get("item") === "beam") {
+    previewMatch.players[0].itemType = "beam";
+    previewMatch.players[0].itemTimer = ITEM.duration.beam;
   }
   attachPreviewInputs(previewMatch);
   // 三人称の操作体験ではP1だけを、1人・オンライン用のキーボード設定と
@@ -5688,7 +5692,7 @@ function drawTauntPose(p, cameraDirection = 0) {
   }
 }
 
-function drawPlayer(p, cameraDirection = 0) {
+function drawPlayer(p, cameraDirection = 0, suppressAttackVisual = false) {
   if (!p.alive) return;
   // 巨大化中は足元(p.x,p.y)を基準に拡大して描く
   const _gs = p.itemType === "giant" ? GIANT.size : 1;
@@ -5781,7 +5785,8 @@ function drawPlayer(p, cameraDirection = 0) {
   // 攻撃スイング（通常/必殺で色・大きさ、reach延長、向き別 fwd/up/down）
   const atk = attackData(p);
   const activeWindow = attackActiveWindow(p, atk);
-  if (p.attackTimer <= activeWindow.activeFrom && p.attackTimer >= activeWindow.activeTo && p.attackTimer > 0) {
+  if (!suppressAttackVisual
+      && p.attackTimer <= activeWindow.activeFrom && p.attackTimer >= activeWindow.activeTo && p.attackTimer > 0) {
     const prog = (activeWindow.activeFrom - p.attackTimer) / (activeWindow.activeFrom - activeWindow.activeTo);
     if (p.itemType === "beam") {
       // ビーム: 長距離の光線を描く
@@ -6154,18 +6159,29 @@ function perspectiveViewState(m) {
   // QAでは旧一人称と採用した三人称を直接比較できる。本番の転換先は三人称。
   if (m.perspectivePreviewMode === "first") return { mode: "first", progress: 1, remainingTicks: 0 };
   if (m.perspectivePreviewMode === "third") return { mode: "third", progress: 1, remainingTicks: 0 };
+  if (m.perspectivePreviewMode === "return") return { mode: "return", progress: 0.5, remainingTicks: 0 };
   const elapsed = Math.max(0, m.tick - COUNTDOWN_TICKS);
   const warningStart = Math.max(0, config.afterTicks - config.warningTicks);
+  const transitionEnd = config.afterTicks + config.transitionTicks;
+  const thirdEnd = transitionEnd + config.holdTicks;
+  const returnEnd = thirdEnd + config.transitionTicks;
   if (elapsed < warningStart) return { mode: "normal", progress: 0, remainingTicks: config.afterTicks - elapsed };
   if (elapsed < config.afterTicks) {
     return { mode: "warning", progress: (elapsed - warningStart) / Math.max(1, config.warningTicks),
       remainingTicks: config.afterTicks - elapsed };
   }
-  if (elapsed < config.afterTicks + config.transitionTicks) {
+  if (elapsed < transitionEnd) {
     return { mode: "transition", progress: (elapsed - config.afterTicks) / Math.max(1, config.transitionTicks),
       remainingTicks: 0 };
   }
-  return { mode: "third", progress: 1, remainingTicks: 0 };
+  if (elapsed < thirdEnd) {
+    return { mode: "third", progress: 1, remainingTicks: thirdEnd - elapsed };
+  }
+  if (elapsed < returnEnd) {
+    return { mode: "return", progress: (elapsed - thirdEnd) / Math.max(1, config.transitionTicks),
+      remainingTicks: returnEnd - elapsed };
+  }
+  return { mode: "normal", progress: 0, remainingTicks: 0, restored: true };
 }
 
 function perspectiveViewer(m) {
@@ -6224,6 +6240,8 @@ const THIRD_PERSON_VIEW = {
   attackCircleScale: 0.62,
   attackCircleMin: 24,
   attackCircleMax: 112,
+  beamMinLength: 140,
+  beamMaxLength: 520,
 };
 
 function thirdPersonPlayerScale(depth, isViewer = false) {
@@ -6234,17 +6252,42 @@ function thirdPersonPlayerScale(depth, isViewer = false) {
   return Math.max(THIRD_PERSON_VIEW.enemyMin, Math.min(THIRD_PERSON_VIEW.enemyMax, projected));
 }
 
-function thirdPersonAttackCircleState(player, scale) {
+function thirdPersonAttackVisualState(player, scale, cameraDirection = 0) {
   if (!player || player.attackTimer <= 0) return null;
   const attack = attackData(player);
   const window = attackActiveWindow(player, attack);
   const active = player.attackTimer <= window.activeFrom && player.attackTimer >= window.activeTo;
+  const isBeam = player.itemType === "beam";
+  const isChargedBeam = isBeam && player.attackDir === "fwd"
+    && (player.attackIsCharged || player.attackIsSpecial);
+  const beamWorldLength = ITEM.beamRange * (isChargedBeam ? ITEM.chargedBeamRangeMult : 1);
+  const beamWorldWidth = isChargedBeam ? ITEM.chargedBeamThick : ITEM.beamThick;
+  const hasReach = player.itemType === "reach";
+  const strikeRange = attack.range * (hasReach ? ITEM.reachMult : 1);
   return {
     active,
+    kind: isBeam ? "beam" : "strike",
+    attackDir: player.attackDir,
+    towardCamera: !!cameraDirection && player.facing !== cameraDirection,
+    progress: active
+      ? (window.activeFrom - player.attackTimer) / Math.max(1, window.activeFrom - window.activeTo)
+      : 0,
     radius: Math.max(THIRD_PERSON_VIEW.attackCircleMin,
-      Math.min(THIRD_PERSON_VIEW.attackCircleMax, attack.range * scale * THIRD_PERSON_VIEW.attackCircleScale)),
-    color: player.attackIsSpecial ? "#ffad4a" : player.attackIsCharged ? "#ffd85a" : COLORS[player.slot],
+      Math.min(THIRD_PERSON_VIEW.attackCircleMax, strikeRange * scale * THIRD_PERSON_VIEW.attackCircleScale)),
+    beamLength: Math.max(THIRD_PERSON_VIEW.beamMinLength,
+      Math.min(THIRD_PERSON_VIEW.beamMaxLength, beamWorldLength * scale * 0.38)),
+    beamWidth: Math.max(24, Math.min(118, beamWorldWidth * scale * 0.8)),
+    color: isBeam ? "#c86bff"
+      : hasReach ? "#ff963c"
+        : player.attackIsSpecial ? "#ffad4a" : player.attackIsCharged ? "#ffd85a" : COLORS[player.slot],
   };
+}
+
+// 既存テストと、攻撃開始時から丸を見せる仕様のための小さな互換API。
+function thirdPersonAttackCircleState(player, scale) {
+  const state = thirdPersonAttackVisualState(player, scale);
+  if (!state) return null;
+  return { active: state.active, radius: state.radius, color: state.color };
 }
 
 function drawPerspectiveBackdrop(m, viewer, direction, widthScale = 1) {
@@ -6440,18 +6483,75 @@ function drawPerspectiveScene(m) {
   drawPerspectiveLocalFeedback(viewer, behind);
 }
 
-function drawThirdPersonAttackCircle(player, projection, scale, isViewer) {
-  const state = thirdPersonAttackCircleState(player, scale);
+function drawThirdPersonBeam(state, player, projection, scale, isViewer) {
+  const startX = projection.x;
+  const bodyCenterY = projection.y - pH(player) * scale * 0.5;
+  const directionY = state.attackDir === "up" ? -1
+    : state.attackDir === "down" ? 1
+      : state.towardCamera ? 1 : -1;
+  const length = state.attackDir === "fwd" ? state.beamLength : state.beamLength * 0.72;
+  const endY = bodyCenterY + directionY * length;
+  const startHalf = state.beamWidth * 0.5;
+  const endHalf = state.attackDir === "fwd"
+    ? (state.towardCamera ? startHalf * 1.9 : Math.max(3, startHalf * 0.16))
+    : startHalf * 0.72;
+  const alpha = 0.9 - state.progress * 0.28;
+
+  const drawQuad = (nearHalf, farHalf, color, opacity) => {
+    ctx.fillStyle = color;
+    ctx.globalAlpha = opacity;
+    ctx.beginPath();
+    ctx.moveTo(startX - nearHalf, bodyCenterY);
+    ctx.lineTo(startX + nearHalf, bodyCenterY);
+    ctx.lineTo(startX + farHalf, endY);
+    ctx.lineTo(startX - farHalf, endY);
+    ctx.closePath();
+    ctx.fill();
+  };
+
+  ctx.save();
+  drawQuad(startHalf, endHalf, state.color, alpha * 0.72);
+  drawQuad(Math.max(4, startHalf * 0.32), Math.max(2, endHalf * 0.32), "#ffffff", alpha);
+  ctx.globalAlpha = alpha * 0.9;
+  ctx.strokeStyle = "#efd9ff";
+  ctx.lineWidth = isViewer ? 4 : 2.5;
+  ctx.beginPath();
+  ctx.ellipse(startX, endY, Math.max(5, endHalf), Math.max(3, endHalf * 0.28), 0, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawThirdPersonAttackEffect(player, projection, scale, isViewer, cameraDirection) {
+  const state = thirdPersonAttackVisualState(player, scale, cameraDirection);
   if (!state) return;
-  const centerY = projection.y - pH(player) * scale * 0.5;
+  if (state.kind === "beam" && state.active) {
+    drawThirdPersonBeam(state, player, projection, scale, isViewer);
+    return;
+  }
+
+  let centerY = projection.y - pH(player) * scale * 0.5;
+  let radiusX = state.radius;
+  let radiusY = state.radius;
+  if (state.attackDir === "fwd") {
+    centerY += state.towardCamera ? state.radius * 0.62 : -state.radius * 0.62;
+    radiusY *= 0.38;
+  } else if (state.attackDir === "up") {
+    centerY -= state.radius * 0.82;
+    radiusX *= 0.58;
+    radiusY *= 0.82;
+  } else {
+    centerY = projection.y + state.radius * 0.12;
+    radiusY *= 0.34;
+  }
+
   ctx.save();
   ctx.fillStyle = state.color;
   ctx.globalAlpha = state.active ? 0.14 : 0.045;
-  ctx.beginPath(); ctx.arc(projection.x, centerY, state.radius, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(projection.x, centerY, radiusX, radiusY, 0, 0, Math.PI * 2); ctx.fill();
   ctx.globalAlpha = state.active ? 0.9 : 0.38;
   ctx.strokeStyle = state.color;
   ctx.lineWidth = isViewer ? 5 : 3;
-  ctx.beginPath(); ctx.arc(projection.x, centerY, state.radius, 0, Math.PI * 2); ctx.stroke();
+  ctx.beginPath(); ctx.ellipse(projection.x, centerY, radiusX, radiusY, 0, 0, Math.PI * 2); ctx.stroke();
   ctx.restore();
 }
 
@@ -6487,8 +6587,9 @@ function drawThirdPersonScene(m) {
   for (const entry of visiblePlayers) {
     const isViewer = entry.player.slot === viewer.slot;
     const scale = thirdPersonPlayerScale(entry.projection.depth, isViewer);
-    drawThirdPersonAttackCircle(entry.player, entry.projection, scale, isViewer);
-    drawPerspectiveEntity(() => drawPlayer(entry.player, direction), entry.player.x, entry.player.y, entry.projection, scale);
+    drawThirdPersonAttackEffect(entry.player, entry.projection, scale, isViewer, direction);
+    drawPerspectiveEntity(() => drawPlayer(entry.player, direction, true),
+      entry.player.x, entry.player.y, entry.projection, scale);
     if (isViewer) { viewerProjection = entry.projection; viewerDrawScale = scale; }
   }
 
@@ -6561,7 +6662,7 @@ function drawPerspectiveOverlay(m, viewState) {
     ctx.fillText("CAMERA SHIFT", W / 2, 101);
     ctx.fillStyle = "#fff"; ctx.font = "bold 25px sans-serif";
     ctx.fillText("視点転換まで " + seconds, W / 2, 132);
-  } else if (viewState.mode === "transition") {
+  } else if (viewState.mode === "transition" || viewState.mode === "return") {
     const shutter = 1 - Math.abs(viewState.progress - 0.5) * 2;
     ctx.fillStyle = "rgba(0,0,0," + (0.18 + shutter * 0.76) + ")";
     ctx.fillRect(0, 0, W, H);
@@ -6569,7 +6670,7 @@ function drawPerspectiveOverlay(m, viewState) {
     ctx.lineWidth = 4;
     ctx.beginPath(); ctx.moveTo(W / 2, 0); ctx.lineTo(W / 2, H); ctx.stroke();
     ctx.fillStyle = "#fff"; ctx.font = "bold 22px sans-serif"; ctx.textAlign = "center";
-    ctx.fillText("視点同期中", W / 2, H / 2 + 42);
+    ctx.fillText(viewState.mode === "return" ? "通常視点へ復帰中" : "視点同期中", W / 2, H / 2 + 42);
   } else if (viewState.mode === "first" || viewState.mode === "third") {
     const viewer = perspectiveViewer(m);
     const playable = viewState.mode === "third" && !!m.perspectivePlayable;
@@ -6590,7 +6691,18 @@ function drawPerspectiveOverlay(m, viewState) {
       ctx.fillStyle = m.perspectiveInputLabel ? "#8ff0a4" : "rgba(255,255,255,0.58)";
       ctx.fillText(m.perspectiveInputLabel ? "入力：" + m.perspectiveInputLabel : "入力待ち：画面をクリックしてキーを長押し", 32, 126);
     } else {
-      ctx.fillText(viewState.mode === "third" ? "背後追従カメラ / 操作・物理は2D" : "左右＝前後移動　ジャンプ＝上", 32, 64);
+      const thirdRemaining = viewState.mode === "third" && viewState.remainingTicks > 0
+        ? " / 復帰まで " + Math.ceil(viewState.remainingTicks / 60) + "秒" : "";
+      ctx.fillText(viewState.mode === "third" ? "背後追従カメラ" + thirdRemaining : "左右＝前後移動　ジャンプ＝上", 32, 64);
+    }
+    if (viewState.mode === "third" && viewState.remainingTicks > 0) {
+      const seconds = Math.ceil(viewState.remainingTicks / 60);
+      ctx.fillStyle = "rgba(5,8,11,0.78)";
+      roundRect(W - 202, 18, 184, 44, 8); ctx.fill();
+      ctx.strokeStyle = "rgba(217,192,122,0.68)"; ctx.lineWidth = 1.5;
+      roundRect(W - 202, 18, 184, 44, 8); ctx.stroke();
+      ctx.fillStyle = "#d9c07a"; ctx.font = "bold 15px sans-serif"; ctx.textAlign = "center";
+      ctx.fillText("2D復帰まで " + seconds + "秒", W - 110, 46);
     }
   }
 }
@@ -6603,7 +6715,8 @@ function drawMatch() {
     ctx.translate((Math.random() - 0.5) * fx.shake, (Math.random() - 0.5) * fx.shake);
   }
   const useThirdPerson = viewState.mode === "third"
-    || (viewState.mode === "transition" && viewState.progress >= 0.5);
+    || (viewState.mode === "transition" && viewState.progress >= 0.5)
+    || (viewState.mode === "return" && viewState.progress < 0.5);
   if (useThirdPerson) drawThirdPersonScene(m);
   else if (viewState.mode === "first") drawPerspectiveScene(m);
   else drawWorldScene(m);
@@ -7099,7 +7212,8 @@ window.UCHI = {
   PHYS, ATTACK, CHARGED_ATTACK, SPECIAL, MID_CHARGE, SPECIAL_CHARGE, DOWN_ATTACK, GUARD, HITSTUN_CONTROL,
   STAGES, selectableStageIndices, nextStageIndex, stageOrdinal,
   perspectiveViewState, perspectiveViewer, perspectiveDirection, thirdPersonCamera,
-  perspectiveProjectPoint, perspectiveEnemyScale, thirdPersonPlayerScale, thirdPersonAttackCircleState,
+  perspectiveProjectPoint, perspectiveEnemyScale, thirdPersonPlayerScale,
+  thirdPersonAttackCircleState, thirdPersonAttackVisualState,
   thirdPersonEyeMode, THIRD_PERSON_VIEW,
   BLAST, STOCKS, ITEM, BALLOON, MOB, PENGUIN, rngNext,
   LOBBY_CORNER_CHARACTERS,

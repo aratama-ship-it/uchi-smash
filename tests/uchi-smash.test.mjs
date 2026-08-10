@@ -165,7 +165,8 @@ test("release constants and input codec stay coherent", () => {
   const perspectiveStage = game.STAGES.find(stage => stage.name === "しせん回廊");
   assert.ok(perspectiveStage);
   assert.equal(perspectiveStage.onlineOnly, true);
-  assert.deepEqual({ ...perspectiveStage.perspectiveShift }, { afterTicks: 600, warningTicks: 120, transitionTicks: 45 });
+  assert.deepEqual({ ...perspectiveStage.perspectiveShift },
+    { afterTicks: 600, warningTicks: 120, transitionTicks: 45, holdTicks: 600 });
   assert.equal(game.LOBBY_CORNER_CHARACTERS.length, 4);
   assert.deepEqual([...game.LOBBY_CORNER_CHARACTERS].map(character => character.slot), [0, 1, 2, 3]);
   assert.equal(game.LOBBY_CORNER_CHARACTERS.filter(character => character.x < 640).length, 2);
@@ -289,6 +290,12 @@ test("the perspective corridor changes only its view after a deterministic warni
   assert.equal(game.perspectiveViewState(match).mode, "transition");
   match.tick += config.transitionTicks;
   assert.equal(game.perspectiveViewState(match).mode, "third");
+  assert.equal(game.perspectiveViewState(match).remainingTicks, config.holdTicks);
+  match.tick += config.holdTicks;
+  assert.equal(game.perspectiveViewState(match).mode, "return");
+  match.tick += config.transitionTicks;
+  assert.equal(game.perspectiveViewState(match).mode, "normal");
+  assert.equal(game.perspectiveViewState(match).restored, true);
 
   // 視点の向きは各slotの初期側で固定され、物理座標や操作軸は変更しない。
   assert.equal(game.perspectiveDirection(match, match.players[0]), 1);
@@ -328,12 +335,25 @@ test("the perspective corridor changes only its view after a deterministic warni
   const activeCircle = game.thirdPersonAttackCircleState(attacker, 2.2);
   assert.equal(activeCircle.active, true);
   assert.ok(activeCircle.radius >= game.THIRD_PERSON_VIEW.attackCircleMin);
+  const strikeVisual = game.thirdPersonAttackVisualState(attacker, 2.2, 1);
+  assert.equal(strikeVisual.kind, "strike");
+  assert.equal(strikeVisual.towardCamera, false);
+  attacker.itemType = "beam";
+  const beamVisual = game.thirdPersonAttackVisualState(attacker, 2.2, 1);
+  assert.equal(beamVisual.kind, "beam");
+  assert.ok(beamVisual.beamLength >= game.THIRD_PERSON_VIEW.beamMinLength);
+  assert.ok(beamVisual.beamWidth >= 24);
+  attacker.facing = -1;
+  assert.equal(game.thirdPersonAttackVisualState(attacker, 2.2, 1).towardCamera, true);
   attacker.attackTimer = 0;
   assert.equal(game.thirdPersonAttackCircleState(attacker, 2.2), null);
+  assert.match(HTML, /drawPlayer\(entry\.player, direction, true\)/);
 });
 
 test("the perspective QA URL opens normal, warning, first-person, and third-person mock views", () => {
-  for (const [view, expected] of [["normal", "normal"], ["warning", "warning"], ["first", "first"], ["third", "third"]]) {
+  for (const [view, expected] of [
+    ["normal", "normal"], ["warning", "warning"], ["first", "first"], ["third", "third"], ["return", "return"],
+  ]) {
     const { UCHI: game } = loadGame("?preview=perspective&view=" + view);
     assert.equal(game.APP.phase, "match");
     assert.equal(game.APP.match.stage.name, "しせん回廊");
@@ -346,6 +366,12 @@ test("the perspective QA URL opens normal, warning, first-person, and third-pers
   assert.equal(defaultPreview.APP.match.perspectivePlayable, true);
   assert.equal(defaultPreview.APP.soloSlot, 0);
   assert.equal(defaultPreview.APP.slots[0].cpu, false);
+
+  const beamPreview = loadGame("?preview=perspective&view=third&item=beam").UCHI;
+  assert.equal(beamPreview.APP.match.players[0].itemType, "beam");
+  beamPreview.APP.match.players[0].attackTimer = beamPreview.ATTACK.activeFrom;
+  beamPreview.APP.match.players[0].attackDir = "fwd";
+  assert.doesNotThrow(() => beamPreview.renderNow());
 
   const beforeX = defaultPreview.APP.match.players[0].x;
   defaultPreview.keys.add("KeyD");
